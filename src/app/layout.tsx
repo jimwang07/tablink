@@ -1,10 +1,7 @@
 import type { Metadata } from 'next'
-import { Inter } from 'next/font/google'
 import '../styles/globals.css'
 import { metadata as sharedMetadata } from './metadata'
-import Navbar from '../components/Navbar'
-
-const inter = Inter({ subsets: ['latin'] })
+import Navbar from '@/components/Navbar'
 
 export const metadata: Metadata = sharedMetadata
 
@@ -15,7 +12,7 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <body className={inter.className}>
+      <body className="font-sans">
         <Navbar />
         <main className="container mx-auto px-4">
           {children}
