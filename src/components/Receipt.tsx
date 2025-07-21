@@ -1,21 +1,19 @@
 import React, { useState } from 'react';
-import { Receipt as ReceiptType, ReceiptItem as ReceiptItemType } from '../types/receipt';
+import { Receipt as ReceiptType, ReceiptItem as ReceiptItemType, ItemClaim as ItemClaimType } from '@/types/supabase';
 import ReceiptItem from './ReceiptItem';
 import ItemBubbleMenu from './ItemBubbleMenu';
 
 interface ReceiptProps {
   receipt: ReceiptType;
-  onItemClick: (item: ReceiptItemType) => void;
+  items: (ReceiptItemType & { claimers: ItemClaimType[] })[];
+  onItemClick: (item: ReceiptItemType, event: React.MouseEvent) => void;
 }
 
-const Receipt: React.FC<ReceiptProps> = ({ receipt, onItemClick }) => {
+const Receipt: React.FC<ReceiptProps> = ({ receipt, items, onItemClick }) => {
   const [selectedItem, setSelectedItem] = useState<ReceiptItemType | null>(null);
   const [bubblePosition, setBubblePosition] = useState({ x: 0, y: 0 });
 
-  const formatPrice = (price: number) => {
-    return `$${price.toFixed(2)}`;
-  };
-
+  const formatPrice = (price: number) => `$${price.toFixed(2)}`;
   const formatDate = (dateString: string) => {
     const date = new Date(dateString);
     return date.toLocaleDateString('en-US', {
@@ -34,31 +32,28 @@ const Receipt: React.FC<ReceiptProps> = ({ receipt, onItemClick }) => {
     
     if (receiptRect) {
       setBubblePosition({
-        x: receiptRect.left - 320, // Position to the left of receipt with some margin
+        x: receiptRect.left - 320,
         y: itemRect.top + window.scrollY
       });
     }
     setSelectedItem(item);
-    onItemClick(item);
+    onItemClick(item, event);
   };
 
-  const closeBubble = () => {
-    setSelectedItem(null);
-  };
+  const closeBubble = () => setSelectedItem(null);
 
   return (
     <div className="receipt-container">
       <div className="receipt-header">
-        <h1 className="restaurant-name">{receipt.restaurantName}</h1>
-        <p className="restaurant-address">{receipt.restaurantAddress}</p>
+        <h1 className="restaurant-name">{receipt.merchant_name}</h1>
         <p className="receipt-date">{formatDate(receipt.date)}</p>
       </div>
 
       <div className="receipt-items">
-        {receipt.items.map((item) => (
+        {items.map((item) => (
           <ReceiptItem
             key={item.id}
-            item={item}
+            item={{ ...item, claimers: item.claimers || [] }}
             onItemClick={handleItemClick}
           />
         ))}
@@ -75,7 +70,7 @@ const Receipt: React.FC<ReceiptProps> = ({ receipt, onItemClick }) => {
         </div>
         <div className="summary-line">
           <span className="summary-label">Tip</span>
-          <span className="summary-value">{formatPrice(receipt.tip)}</span>
+          <span className="summary-value">{formatPrice(receipt.tip ?? 0)}</span>
         </div>
         <div className="summary-line total">
           <span className="summary-label">Total</span>
