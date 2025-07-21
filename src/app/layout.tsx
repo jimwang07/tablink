@@ -4,7 +4,11 @@ import '../styles/globals.css'
 import { metadata as sharedMetadata } from './metadata'
 import Navbar from '@/components/Navbar'
 
-const inter = Inter({ subsets: ['latin'] })
+const inter = Inter({
+  subsets: ['latin'],
+  display: 'swap',
+  adjustFontFallback: false,
+})
 
 export const metadata: Metadata = sharedMetadata
 
