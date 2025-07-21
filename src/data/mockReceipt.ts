@@ -1,4 +1,4 @@
-import { Receipt, ItemStatus } from '@/types/Receipt';
+import { Receipt, ItemStatus } from '@/types/receipt';
 
 export const mockReceipt12: Receipt = {
   id: 'receipt-001',

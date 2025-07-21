@@ -4,7 +4,7 @@ import { use, useState } from 'react';
 import Receipt from '@/components/Receipt';
 import PaymentSummary from '@/components/PaymentSummary';
 import { mockReceipt12, mockReceipt, mockReceipt3 } from '@/data/mockReceipt';
-import { ReceiptItem } from '@/types/Receipt';
+import { ReceiptItem } from '@/types/receipt';
 
 export default function BillFronterPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params); // Unwrap the params Promise

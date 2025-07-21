@@ -1,5 +1,5 @@
 import React from 'react';
-import { ReceiptItem as ReceiptItemType, ItemStatus } from '../types/Receipt';
+import { ReceiptItem as ReceiptItemType, ItemStatus } from '../types/receipt';
 
 interface ReceiptItemProps {
   item: ReceiptItemType;

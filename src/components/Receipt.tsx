@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Receipt as ReceiptType, ReceiptItem as ReceiptItemType } from '../types/Receipt';
+import { Receipt as ReceiptType, ReceiptItem as ReceiptItemType } from '../types/receipt';
 import ReceiptItem from './ReceiptItem';
 import ItemBubbleMenu from './ItemBubbleMenu';
 
