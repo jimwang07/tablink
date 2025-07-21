@@ -1,8 +1,7 @@
-import React from 'react';
-import { Link } from 'react-router-dom';
+import Link from 'next/link';
 import { mockReceipt12, mockReceipt, mockReceipt3 } from '../data/mockReceipt';
 
-const HomePage: React.FC = () => {
+export default function HomePage() {
   const receipts = [
     {
       receipt: mockReceipt12,
@@ -24,10 +23,7 @@ const HomePage: React.FC = () => {
     }
   ];
 
-  const formatPrice = (price: number) => {
-    return `$${price.toFixed(2)}`;
-  };
-
+  const formatPrice = (price: number) => `$${price.toFixed(2)}`;
   const formatDate = (dateString: string) => {
     const date = new Date(dateString);
     return date.toLocaleDateString('en-US', {
@@ -49,7 +45,7 @@ const HomePage: React.FC = () => {
       </div>
 
       <div className="receipts-grid">
-        {receipts.map((receiptData, index) => (
+        {receipts.map((receiptData) => (
           <div key={receiptData.receipt.id} className="receipt-card">
             <div className="receipt-card-header">
               <div className="receipt-icon">{receiptData.image}</div>
@@ -78,13 +74,13 @@ const HomePage: React.FC = () => {
 
             <div className="receipt-actions">
               <Link 
-                to={`/bill-fronter/${receiptData.receipt.id}`} 
+                href={`/bill-fronter/${receiptData.receipt.id}`} 
                 className="action-button primary"
               >
                 I Paid the Bill
               </Link>
               <Link 
-                to={`/item-claimer/${receiptData.receipt.id}`} 
+                href={`/item-claimer/${receiptData.receipt.id}`} 
                 className="action-button secondary"
               >
                 Claim My Items
@@ -99,6 +95,4 @@ const HomePage: React.FC = () => {
       </div>
     </div>
   );
-};
-
-export default HomePage;
+}

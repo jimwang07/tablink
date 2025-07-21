@@ -1,22 +1,21 @@
-import React from 'react';
-import { Link } from 'react-router-dom';
+import Link from 'next/link';
 
 const Navbar: React.FC = () => {
   return (
     <nav className="navbar">
       <div className="navbar-content">
         <div className="navbar-logo">
-          <Link to="/">
+          <Link href="/">
             <img src="/cashapp-logo.svg" alt="CashApp" className="cashapp-logo-nav" />
           </Link>
         </div>
         <div className="navbar-links">
-          <Link to="/fronter" className="nav-link">Bill Fronter</Link>
-          <Link to="/claimer" className="nav-link">Item Claimer</Link>
+          <Link href="/fronter" className="nav-link">Bill Fronter</Link>
+          <Link href="/claimer" className="nav-link">Item Claimer</Link>
         </div>
       </div>
     </nav>
   );
 };
 
-export default Navbar;
+export default Navbar; 
