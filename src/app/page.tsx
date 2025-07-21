@@ -1,5 +1,5 @@
 import Link from 'next/link';
-import { mockReceipt12, mockReceipt, mockReceipt3 } from '../data/mockReceipt';
+import { mockReceipt12, mockReceipt, mockReceipt3 } from '../../data/mockReceipt';
 
 export default function HomePage() {
   const receipts = [
