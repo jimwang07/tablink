@@ -1,20 +1,69 @@
 'use client';
 
 import { use } from 'react';
+import { useEffect, useState } from 'react';
 import Receipt from '@/components/Receipt';
-import { mockReceipt12, mockReceipt, mockReceipt3 } from '@/data/mockReceipt';
-import { ReceiptItem } from '@/types/receipt';
+import { supabase } from '@/libs/supabase';
+import { Receipt as ReceiptType, ReceiptItem as ReceiptItemType, ItemClaim as ItemClaimType } from '@/types/supabase';
 
 export default function ItemClaimerPage({ params }: { params: Promise<{ id: string }> }) {
-  const { id } = use(params); // Unwrap the params Promise
+  const { id } = use(params);
+  const [receipt, setReceipt] = useState<ReceiptType | null>(null);
+  const [items, setItems] = useState<ReceiptItemType[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [claimsByItemId, setClaimsByItemId] = useState<Record<string, ItemClaimType[]>>({});
 
-  // Find the receipt based on the ID
-  const allReceipts = [mockReceipt12, mockReceipt, mockReceipt3];
-  const currentReceipt = allReceipts.find(r => r.id === id) ?? mockReceipt;
+  useEffect(() => {
+    async function fetchData() {
+      setLoading(true);
+      // Fetch the receipt
+      const { data: receiptData, error: receiptError } = await supabase
+        .from('receipts')
+        .select('*')
+        .eq('id', id)
+        .single();
 
-  const handleItemClick = (item: ReceiptItem) => {
+      // Fetch the items for this receipt
+      const { data: itemsData, error: itemsError } = await supabase
+        .from('receipt_items')
+        .select('*')
+        .eq('receipt_id', id);
+
+      // Fetch claims for all items
+      let claimsByItem: Record<string, ItemClaimType[]> = {};
+      if (itemsData && itemsData.length > 0) {
+        const { data: claimsData } = await supabase
+          .from('item_claims')
+          .select('*')
+          .in('item_id', itemsData.map(i => i.id));
+        if (claimsData) {
+          claimsByItem = itemsData.reduce((acc, item) => {
+            acc[item.id] = claimsData.filter(c => c.item_id === item.id);
+            return acc;
+          }, {} as Record<string, ItemClaimType[]>);
+        }
+      }
+
+      if (receiptError || itemsError) {
+        setReceipt(null);
+        setItems([]);
+        setClaimsByItemId({});
+      } else {
+        setReceipt(receiptData);
+        setItems(itemsData || []);
+        setClaimsByItemId(claimsByItem);
+      }
+      setLoading(false);
+    }
+    fetchData();
+  }, [id]);
+
+  const handleItemClick = (item: ReceiptItemType) => {
     console.log('Item claimer clicked item:', item);
   };
+
+  if (loading) return <div>Loading...</div>;
+  if (!receipt) return <div>Receipt not found</div>;
 
   return (
     <div className="page-container">
@@ -25,7 +74,8 @@ export default function ItemClaimerPage({ params }: { params: Promise<{ id: stri
         </p>
       </div>
       <Receipt 
-        receipt={currentReceipt} 
+        receipt={receipt}
+        items={items.map(item => ({ ...item, claimers: claimsByItemId[item.id] || [] }))}
         onItemClick={handleItemClick}
       />
     </div>
