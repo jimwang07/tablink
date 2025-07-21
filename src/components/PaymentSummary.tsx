@@ -1,5 +1,5 @@
 import React from 'react';
-import { Receipt, ItemStatus } from '../types/Receipt';
+import { Receipt, ItemStatus } from '../types/receipt';
 
 interface PaymentSummaryProps {
   receipt: Receipt;

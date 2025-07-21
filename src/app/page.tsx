@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { mockReceipt12, mockReceipt, mockReceipt3 } from '@/data/mockReceipt';
+import { supabase } from '@/libs/supabase';
 
 export default function HomePage() {
   const receipts = [

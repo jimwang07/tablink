@@ -1,5 +1,5 @@
 import React from 'react';
-import { ReceiptItem } from '../types/Receipt';
+import { ReceiptItem } from '../types/receipt';
 
 interface ItemBubbleMenuProps {
   item: ReceiptItem | null;

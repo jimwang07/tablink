@@ -3,7 +3,7 @@
 import { use } from 'react';
 import Receipt from '@/components/Receipt';
 import { mockReceipt12, mockReceipt, mockReceipt3 } from '@/data/mockReceipt';
-import { ReceiptItem } from '@/types/Receipt';
+import { ReceiptItem } from '@/types/receipt';
 
 export default function ItemClaimerPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params); // Unwrap the params Promise
