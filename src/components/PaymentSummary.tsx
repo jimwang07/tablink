@@ -1,5 +1,6 @@
 import React from 'react';
 import { Receipt as ReceiptType, ReceiptItem as ReceiptItemType, ItemClaim as ItemClaimType } from '@/types/supabase';
+import { formatPrice } from '@/utils/formatters';
 
 interface PaymentSummaryProps {
   receipt: ReceiptType;
@@ -52,8 +53,6 @@ const PaymentSummary: React.FC<PaymentSummaryProps> = ({ receipt, items, isVisib
 
     return { paidAmount, pendingAmount, unclaimedAmount };
   };
-
-  const formatPrice = (price: number) => `$${price.toFixed(2)}`;
 
   const { paidAmount, pendingAmount, unclaimedAmount } = calculateAmounts();
   const totalAmount = receipt.total;

@@ -6,6 +6,7 @@ import Link from 'next/link';
 import { receiptService } from '@/services/receipts';
 import { ParsedReceiptData } from '@/types/parsedReceipt';
 import { generateMockReceiptData } from '@/utils/mockData';
+import { formatPrice, formatDate } from '@/utils/formatters';
 
 type Step = 'upload' | 'preview' | 'saving';
 
@@ -86,18 +87,6 @@ export default function CreateReceiptPage() {
   const handleReject = () => {
     setCurrentStep('upload');
     setParsedReceipt(null);
-  };
-
-  const formatPrice = (price: number) => `$${price.toFixed(2)}`;
-  const formatDate = (dateString: string) => {
-    const date = new Date(dateString);
-    return date.toLocaleDateString('en-US', {
-      year: 'numeric',
-      month: 'short',
-      day: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit'
-    });
   };
 
   return (

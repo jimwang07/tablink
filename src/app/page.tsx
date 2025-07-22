@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { receiptService } from '@/services/receipts';
+import { formatPrice, formatDate } from '@/utils/formatters';
 import Link from 'next/link';
 
 export default function HomePage() {
@@ -32,17 +33,6 @@ export default function HomePage() {
     }
   };
 
-  const formatPrice = (price: number) => `$${price.toFixed(2)}`;
-  const formatDate = (dateString: string) => {
-    const date = new Date(dateString);
-    return date.toLocaleDateString('en-US', {
-      year: 'numeric',
-      month: 'short',
-      day: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit'
-    });
-  };
 
   return (
     <div className="page-container">
