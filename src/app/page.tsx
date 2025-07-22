@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { supabase } from '@/libs/supabase';
+import { receiptService } from '@/services/receipts';
 import Link from 'next/link';
 
 export default function HomePage() {
@@ -9,15 +9,28 @@ export default function HomePage() {
 
   useEffect(() => {
     async function fetchReceipts() {
-      const { data, error } = await supabase.from('receipts').select('*');
-      if (error) {
+      try {
+        const data = await receiptService.getAllReceipts();
+        setReceipts(data);
+      } catch (error) {
         console.error('Error fetching receipts:', error);
-      } else {
-        setReceipts(data || []);
       }
     }
     fetchReceipts();
   }, []);
+
+  const handleDeleteTestReceipt = async () => {
+    try {
+      await receiptService.deleteReceipt('1d1c488a-915f-4548-bffc-0740087b67b4');
+      console.log('Test receipt deleted successfully');
+      // Refresh the receipts list
+      const data = await receiptService.getAllReceipts();
+      setReceipts(data);
+    } catch (error) {
+      console.error('Failed to delete test receipt:', error);
+      alert('Failed to delete test receipt. Check console for details.');
+    }
+  };
 
   const formatPrice = (price: number) => `$${price.toFixed(2)}`;
   const formatDate = (dateString: string) => {
@@ -38,6 +51,13 @@ export default function HomePage() {
         <p className="page-description">
           Select a receipt to start splitting the bill with your friends
         </p>
+        <button 
+          onClick={handleDeleteTestReceipt}
+          className="action-button secondary"
+          style={{ marginTop: '10px' }}
+        >
+          🗑️ Delete Test Receipt (ID: 1d1c488a...)
+        </button>
       </div>
 
       <div className="receipts-grid">
