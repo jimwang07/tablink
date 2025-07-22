@@ -1229,3 +1229,31 @@ body {
   transform: translateY(-1px);
   box-shadow: 0 4px 12px rgba(0, 224, 19, 0.4);
 }
+
+/* Preview Container Styles */
+.preview-container {
+  max-width: 600px;
+  margin: 0 auto;
+}
+
+.receipt-preview {
+  margin-bottom: 30px;
+}
+
+.preview-actions {
+  display: flex;
+  gap: 16px;
+  justify-content: center;
+  margin-bottom: 30px;
+}
+
+.preview-actions .action-button {
+  flex: 0 0 auto;
+  min-width: 150px;
+}
+
+.item-quantity {
+  font-size: 0.8rem;
+  color: #666;
+  margin-top: 2px;
+}

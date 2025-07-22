@@ -23,7 +23,7 @@ export interface ReceiptItem {
 export interface Receipt {
   id: string;
   restaurantName: string;
-  restaurantAddress: string;
+  restaurntAddress: string;
   date: string;
   items: ReceiptItem[];
   subtotal: number;
