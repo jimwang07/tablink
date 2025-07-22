@@ -3,32 +3,11 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { supabase } from '@/libs/supabase';
+import { receiptService } from '@/services/receipts';
+import { ParsedReceiptData } from '@/types/parsedReceipt';
+import { generateMockReceiptData } from '@/utils/mockData';
 
 type Step = 'upload' | 'preview' | 'saving';
-
-interface ParsedReceiptData {
-  receiptData: {
-    id: string;
-    created_by: string;
-    merchant_name: string;
-    description: string;
-    date: string;
-    subtotal: number;
-    tax: number;
-    tip: number;
-    total: number;
-    status: string;
-    share_link: string;
-  };
-  items: {
-    id: string;
-    receipt_id: string;
-    name: string;
-    price: number;
-    quantity: number;
-  }[];
-}
 
 export default function CreateReceiptPage() {
   const [file, setFile] = useState<File | null>(null);
@@ -75,44 +54,7 @@ export default function CreateReceiptPage() {
       await new Promise(resolve => setTimeout(resolve, 2000));
       
       // Use mock JSON data for preview
-      const mockParsedReceipt = {
-        receiptData: {
-          id: "1d1c488a-915f-4548-bffc-0740087b67b4",
-          created_by: '$sarah',
-          merchant_name: 'Tony\'s Italian',
-          description: 'Team dinner',
-          date: '2025-07-20T19:30:00',
-          subtotal: 93.00,
-          tax: 7.44,
-          tip: 18.60,
-          total: 119.04,
-          status: 'partially_claimed',
-          share_link: `cashlink.app/r/${Math.random().toString(36).substring(2, 10)}`
-        },
-        items: [
-          {
-            id: "a8f37bb5-631e-47db-b594-f1b788163fb8",
-            receipt_id: "1d1c488a-915f-4548-bffc-0740087b67b4",
-            name: 'Caesar Salad',
-            price: 12.99,
-            quantity: 1
-          },
-          {
-            id: "df05843c-d252-47e9-9c34-fbe9fd36c7be",
-            receipt_id: "1d1c488a-915f-4548-bffc-0740087b67b4",
-            name: 'Grilled Chicken Sandwich',
-            price: 16.99,
-            quantity: 1
-          },
-          {
-            id: "f951f7a8-f90c-4dc7-87f4-b6f4897876cf",
-            receipt_id: "1d1c488a-915f-4548-bffc-0740087b67b4",
-            name: 'Margherita Pizza',
-            price: 15.52,
-            quantity: 1
-          }
-        ]
-      };
+      const mockParsedReceipt = generateMockReceiptData();
       
       setParsedReceipt(mockParsedReceipt);
       setCurrentStep('preview');
@@ -129,48 +71,10 @@ export default function CreateReceiptPage() {
 
     setIsSaving(true);
     try {
-      // First, insert the receipt column by column
-      const { data: receiptData, error: receiptError } = await supabase
-        .from('receipts')
-        .insert([{
-          id: parsedReceipt.receiptData.id,
-          created_by: parsedReceipt.receiptData.created_by,
-          merchant_name: parsedReceipt.receiptData.merchant_name,
-          description: parsedReceipt.receiptData.description,
-          date: parsedReceipt.receiptData.date,
-          subtotal: parsedReceipt.receiptData.subtotal,
-          tax: parsedReceipt.receiptData.tax,
-          tip: parsedReceipt.receiptData.tip,
-          total: parsedReceipt.receiptData.total,
-          status: parsedReceipt.receiptData.status,
-          share_link: parsedReceipt.receiptData.share_link
-        }])
-
-      if (receiptError) {
-        console.error('Receipt insert error:', receiptError);
-        throw new Error('Failed to save receipt');
-      }
-
-      // Then, insert the receipt items column by column
-      const itemsToInsert = parsedReceipt.items.map(item => ({
-        id: item.id,
-        receipt_id: item.receipt_id,
-        name: item.name,
-        price: item.price,
-        quantity: item.quantity
-      }));
-
-      const { error: itemsError } = await supabase
-        .from('receipt_items')
-        .insert(itemsToInsert);
-
-      if (itemsError) {
-        console.error('Items insert error:', itemsError);
-        throw new Error('Failed to save receipt items');
-      }
-
+      const receiptData = await receiptService.createReceipt(parsedReceipt);
+      
       // Redirect to bill fronter page with the new receipt
-      router.push(`/bill-fronter/${parsedReceipt.receiptData.id}`);
+      router.push(`/bill-fronter/${receiptData.id}`);
     } catch (error) {
       console.error('Save failed:', error);
       alert('Failed to save receipt. Please try again.');
