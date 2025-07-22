@@ -1,5 +1,6 @@
 import React from 'react';
 import { ReceiptItem as ReceiptItemType, ItemClaim as ItemClaimType } from '@/types/supabase';
+import { formatPrice } from '@/utils/formatters';
 
 interface ReceiptItemProps {
   item: ReceiptItemType & { claimers: ItemClaimType[] };
@@ -10,8 +11,6 @@ const ReceiptItem: React.FC<ReceiptItemProps> = ({ item, onItemClick }) => {
   const handleClick = (event: React.MouseEvent) => {
     onItemClick(item, event);
   };
-
-  const formatPrice = (price: number) => `$${price.toFixed(2)}`;
 
   // Compute status based on claimers
   let status = 'available';

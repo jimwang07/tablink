@@ -1,5 +1,6 @@
 import React from 'react';
 import { ReceiptItem } from '@/types/supabase';
+import { formatPrice } from '@/utils/formatters';
 
 interface ItemBubbleMenuProps {
   item: ReceiptItem | null;
@@ -15,8 +16,6 @@ const ItemBubbleMenu: React.FC<ItemBubbleMenuProps> = ({
   onClose 
 }) => {
   if (!isVisible || !item) return null;
-
-  const formatPrice = (price: number) => `$${price.toFixed(2)}`;
 
   return (
     <>

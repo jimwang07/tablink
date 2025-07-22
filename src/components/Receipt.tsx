@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Receipt as ReceiptType, ReceiptItem as ReceiptItemType, ItemClaim as ItemClaimType } from '@/types/supabase';
 import ReceiptItem from './ReceiptItem';
 import ItemBubbleMenu from './ItemBubbleMenu';
+import { formatPrice, formatDate } from '@/utils/formatters';
 
 interface ReceiptProps {
   receipt: ReceiptType;
@@ -12,18 +13,6 @@ interface ReceiptProps {
 const Receipt: React.FC<ReceiptProps> = ({ receipt, items, onItemClick }) => {
   const [selectedItem, setSelectedItem] = useState<ReceiptItemType | null>(null);
   const [bubblePosition, setBubblePosition] = useState({ x: 0, y: 0 });
-
-  const formatPrice = (price: number) => `$${price.toFixed(2)}`;
-  const formatDate = (dateString: string) => {
-    const date = new Date(dateString);
-    return date.toLocaleDateString('en-US', {
-      year: 'numeric',
-      month: 'long',
-      day: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit'
-    });
-  };
 
   const handleItemClick = (item: ReceiptItemType, event: React.MouseEvent) => {
     const receiptContainer = document.querySelector('.receipt-container');
