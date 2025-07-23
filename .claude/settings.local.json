@@ -5,5 +5,11 @@
       "Bash(npm install:*)"
     ],
     "deny": []
+  },
+  "env": {
+      "AWS_PROFILE": "cline-bedrock-staging--bedrock-access-role",
+      "AWS_REGION": "us-west-2",
+      "CLAUDE_CODE_USE_BEDROCK": "1",
+      "ANTHROPIC_MODEL": "us.anthropic.claude-sonnet-4-20250514-v1:0"
   }
 }
