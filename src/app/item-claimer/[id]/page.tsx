@@ -6,6 +6,7 @@ import Receipt from '@/components/Receipt';
 import { receiptService } from '@/services/receipts';
 import { itemClaimsService } from '@/services/itemClaims';
 import { Receipt as ReceiptType, ReceiptItem as ReceiptItemType, ItemClaim as ItemClaimType } from '@/types/supabase';
+import { useClaimerSession } from '@/hooks/useClaimerSession';
 
 export default function ItemClaimerPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
@@ -13,6 +14,8 @@ export default function ItemClaimerPage({ params }: { params: Promise<{ id: stri
   const [items, setItems] = useState<ReceiptItemType[]>([]);
   const [loading, setLoading] = useState(true);
   const [claimsByItemId, setClaimsByItemId] = useState<Record<string, ItemClaimType[]>>({});
+  const { claimerName, setName, isLoggedIn } = useClaimerSession();
+  const [nameInput, setNameInput] = useState('');
 
   useEffect(() => {
     async function fetchData() {
@@ -56,17 +59,44 @@ export default function ItemClaimerPage({ params }: { params: Promise<{ id: stri
 
   return (
     <div className="page-container">
-      <div className="page-header">
-        <h2 className="page-title">Claim Your Items</h2>
-        <p className="page-description">
-          Click on the items you ordered to claim them and pay your share.
-        </p>
-      </div>
-      <Receipt 
-        receipt={receipt}
-        items={items.map(item => ({ ...item, claimers: claimsByItemId[item.id] || [] }))}
-        onItemClick={handleItemClick}
-      />
+      {!isLoggedIn && (
+        <div className="modal-overlay">
+          <div className="modal">
+            <h2>Enter Your Name</h2>
+            <input
+              type="text"
+              value={nameInput}
+              onChange={e => setNameInput(e.target.value)}
+              placeholder="Your name"
+              className="modal-input"
+            />
+            <button
+              className="action-button primary"
+              onClick={() => {
+                if (nameInput.trim()) setName(nameInput.trim());
+              }}
+            >
+              Continue
+            </button>
+          </div>
+        </div>
+      )}
+      {/* The rest of your page is only visible if logged in */}
+      {isLoggedIn && (
+        <>
+          <div className="page-header">
+            <h2 className="page-title">Claim Your Items</h2>
+            <p className="page-description">
+              Click on the items you ordered to claim them and pay your share.
+            </p>
+          </div>
+          <Receipt 
+            receipt={receipt}
+            items={items.map(item => ({ ...item, claimers: claimsByItemId[item.id] || [] }))}
+            onItemClick={handleItemClick}
+          />
+        </>
+      )}
     </div>
   );
 }

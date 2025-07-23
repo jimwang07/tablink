@@ -21,27 +21,30 @@ export function useItemClaims(itemId: string) {
 
     // Function to make a new claim
     const makeClaim = async (claimerName: string, portion: number, amount: number) => {
+        console.log('Making claim:', { claimerName, portion, amount });
+        const claim = {
+            id: crypto.randomUUID(), // or use another unique ID generator
+            item_id: itemId,
+            claimer: claimerName,
+            portion: portion,
+            amount_owed: amount,
+            payment_status: 'pending'
+        };
         const { data, error } = await supabase
             .from('item_claims')
-            .insert({
-                item_id: itemId,
-                claimer: claimerName,
-                portion: portion,
-                amount_owed: amount,
-                payment_status: 'pending'
-            })
+            .insert(claim)
             .select()
-            .single()
+            .single();
+
+        console.log('Supabase insert response:', { data, error });
 
         if (error) {
-            throw error
+            throw error;
         }
 
-        // Update local state with new claim
-        setClaims(prev => [...prev, data])
-        
-        return data
-    }
+        setClaims(prev => [...prev, data]);
+        return data;
+    };
 
     return { 
         claims, 
