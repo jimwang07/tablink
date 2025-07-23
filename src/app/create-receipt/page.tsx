@@ -8,15 +8,14 @@ import { ParsedReceiptData } from '@/types/parsedReceipt';
 import { generateMockReceiptData } from '@/utils/mockData';
 import { formatPrice, formatDate } from '@/utils/formatters';
 
-type Step = 'upload' | 'preview' | 'saving';
+type Step = 'upload' | 'processing' | 'preview' | 'saving';
 
 export default function CreateReceiptPage() {
   const [file, setFile] = useState<File | null>(null);
-  const [isProcessing, setIsProcessing] = useState(false);
-  const [dragOver, setDragOver] = useState(false);
   const [currentStep, setCurrentStep] = useState<Step>('upload');
   const [parsedReceipt, setParsedReceipt] = useState<ParsedReceiptData | null>(null);
-  const [isSaving, setIsSaving] = useState(false);
+  const [showAddItemForm, setShowAddItemForm] = useState(false);
+  const [newItem, setNewItem] = useState({ name: '', price: '', quantity: '1' });
   const router = useRouter();
 
   const handleFileSelect = (selectedFile: File) => {
@@ -29,7 +28,6 @@ export default function CreateReceiptPage() {
 
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
-    setDragOver(false);
     const droppedFile = e.dataTransfer.files[0];
     if (droppedFile) {
       handleFileSelect(droppedFile);
@@ -38,18 +36,12 @@ export default function CreateReceiptPage() {
 
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
-    setDragOver(true);
-  };
-
-  const handleDragLeave = (e: React.DragEvent) => {
-    e.preventDefault();
-    setDragOver(false);
   };
 
   const handleParseReceipt = async () => {
     if (!file) return;
 
-    setIsProcessing(true);
+    setCurrentStep('processing');
     try {
       // Simulate receipt parsing - in production, this would be an actual OCR/AI service
       await new Promise(resolve => setTimeout(resolve, 2000));
@@ -62,15 +54,14 @@ export default function CreateReceiptPage() {
     } catch (error) {
       console.error('Parsing failed:', error);
       alert('Failed to parse receipt. Please try again.');
-    } finally {
-      setIsProcessing(false);
+      setCurrentStep('upload');
     }
   };
 
   const handleConfirmReceipt = async () => {
     if (!parsedReceipt) return;
 
-    setIsSaving(true);
+    setCurrentStep('saving');
     try {
       const receiptData = await receiptService.createReceipt(parsedReceipt);
       
@@ -79,8 +70,7 @@ export default function CreateReceiptPage() {
     } catch (error) {
       console.error('Save failed:', error);
       alert('Failed to save receipt. Please try again.');
-    } finally {
-      setIsSaving(false);
+      setCurrentStep('preview');
     }
   };
 
@@ -89,13 +79,78 @@ export default function CreateReceiptPage() {
     setParsedReceipt(null);
   };
 
+  const handleAddItem = () => {
+    if (!parsedReceipt || !newItem.name || !newItem.price) return;
+
+    const newReceiptItem = {
+      id: `temp-${Date.now()}`,
+      receipt_id: parsedReceipt.receiptData.id,
+      name: newItem.name,
+      price: parseFloat(newItem.price),
+      quantity: parseInt(newItem.quantity) || 1
+    };
+
+    const updatedReceipt = {
+      ...parsedReceipt,
+      items: [...parsedReceipt.items, newReceiptItem]
+    };
+
+    // Recalculate totals
+    const newSubtotal = updatedReceipt.items.reduce((sum, item) => sum + (item.price * item.quantity), 0);
+    const taxRate = parsedReceipt.receiptData.tax / parsedReceipt.receiptData.subtotal;
+    const newTax = newSubtotal * taxRate;
+    const newTotal = newSubtotal + newTax + parsedReceipt.receiptData.tip;
+
+    updatedReceipt.receiptData = {
+      ...updatedReceipt.receiptData,
+      subtotal: newSubtotal,
+      tax: newTax,
+      total: newTotal
+    };
+
+    setParsedReceipt(updatedReceipt);
+    setNewItem({ name: '', price: '', quantity: '1' });
+    setShowAddItemForm(false);
+  };
+
+  const handleDeleteItem = (itemId: string) => {
+    if (!parsedReceipt) return;
+
+    const updatedItems = parsedReceipt.items.filter(item => item.id !== itemId);
+    const updatedReceipt = {
+      ...parsedReceipt,
+      items: updatedItems
+    };
+
+    // Recalculate totals
+    const newSubtotal = updatedItems.reduce((sum, item) => sum + (item.price * item.quantity), 0);
+    const taxRate = parsedReceipt.receiptData.tax / parsedReceipt.receiptData.subtotal;
+    const newTax = newSubtotal * taxRate;
+    const newTotal = newSubtotal + newTax + parsedReceipt.receiptData.tip;
+
+    updatedReceipt.receiptData = {
+      ...updatedReceipt.receiptData,
+      subtotal: newSubtotal,
+      tax: newTax,
+      total: newTotal
+    };
+
+    setParsedReceipt(updatedReceipt);
+  };
+
+  const handleCancelAddItem = () => {
+    setNewItem({ name: '', price: '', quantity: '1' });
+    setShowAddItemForm(false);
+  };
+
   return (
     <div className="page-container">
       <div className="page-header">
         <h1 className="page-title">Create New Receipt</h1>
         <p className="page-description">
           {currentStep === 'upload' && 'Upload a photo of your receipt to automatically extract items and start splitting the bill with friends'}
-          {currentStep === 'preview' && 'Review the extracted receipt details and confirm they are correct'}
+          {currentStep === 'processing' && 'Processing your receipt...'}
+          {currentStep === 'preview' && 'Review the extracted receipt details, add or remove items, and confirm they are correct'}
           {currentStep === 'saving' && 'Saving your receipt...'}
         </p>
       </div>
@@ -103,10 +158,9 @@ export default function CreateReceiptPage() {
       {currentStep === 'upload' && (
         <div className="upload-container">
           <div 
-            className={`upload-dropzone ${dragOver ? 'drag-over' : ''}`}
+            className="upload-dropzone"
             onDrop={handleDrop}
             onDragOver={handleDragOver}
-            onDragLeave={handleDragLeave}
           >
             {file ? (
               <div className="file-preview">
@@ -149,10 +203,10 @@ export default function CreateReceiptPage() {
             )}
             <button 
               onClick={handleParseReceipt}
-              disabled={!file || isProcessing}
+              disabled={!file || currentStep === 'processing'}
               className="action-button primary"
             >
-              {isProcessing ? 'Processing...' : 'Parse Receipt'}
+              {currentStep === 'processing' ? 'Processing...' : 'Parse Receipt'}
             </button>
           </div>
         </div>
@@ -170,16 +224,87 @@ export default function CreateReceiptPage() {
               
               <div className="receipt-items">
                 {parsedReceipt.items.map((item) => (
-                  <div key={item.id} className="receipt-item">
+                  <div key={item.id} className="receipt-item editable">
                     <div className="item-details">
                       <h4 className="item-name">{item.name}</h4>
                     </div>
                     <div className="item-right">
                       <span className="item-price">{formatPrice(item.price)}</span>
                       <span className="item-quantity">Qty: {item.quantity}</span>
+                      <button
+                        onClick={() => handleDeleteItem(item.id)}
+                        className="delete-item-button"
+                        title="Delete item"
+                      >
+                        ×
+                      </button>
                     </div>
                   </div>
                 ))}
+                
+              </div>
+              
+              {showAddItemForm && (
+                <div className="add-item-form">
+                  <div className="form-row">
+                    <div className="form-group">
+                      <label>Item Name</label>
+                      <input
+                        type="text"
+                        value={newItem.name}
+                        onChange={(e) => setNewItem({ ...newItem, name: e.target.value })}
+                        placeholder="Enter item name"
+                        className="form-input"
+                      />
+                    </div>
+                    <div className="form-group">
+                      <label>Price</label>
+                      <input
+                        type="number"
+                        step="0.01"
+                        value={newItem.price}
+                        onChange={(e) => setNewItem({ ...newItem, price: e.target.value })}
+                        placeholder="0.00"
+                        className="form-input"
+                      />
+                    </div>
+                    <div className="form-group">
+                      <label>Quantity</label>
+                      <input
+                        type="number"
+                        min="1"
+                        value={newItem.quantity}
+                        onChange={(e) => setNewItem({ ...newItem, quantity: e.target.value })}
+                        className="form-input"
+                      />
+                    </div>
+                  </div>
+                  <div className="form-actions">
+                    <button
+                      onClick={handleAddItem}
+                      className="action-button primary small"
+                      disabled={!newItem.name || !newItem.price}
+                    >
+                      Add Item
+                    </button>
+                    <button
+                      onClick={handleCancelAddItem}
+                      className="action-button secondary small"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              <div className="receipt-items-summary-divider">
+                <button
+                  onClick={() => setShowAddItemForm(true)}
+                  className="add-item-plus-button"
+                  title="Add Item"
+                >
+                  +
+                </button>
               </div>
 
               <div className="receipt-summary">
@@ -212,10 +337,10 @@ export default function CreateReceiptPage() {
             </button>
             <button 
               onClick={handleConfirmReceipt}
-              disabled={isSaving}
+              disabled={currentStep === 'saving'}
               className="action-button primary"
             >
-              {isSaving ? 'Saving...' : 'Confirm & Create Receipt'}
+              {currentStep === 'saving' ? 'Saving...' : 'Confirm'}
             </button>
           </div>
         </div>
