@@ -33,9 +33,7 @@ export const receiptService = {
     try {
       const { data: receiptData, error: receiptError } = await supabase
         .from('receipts')
-        .insert([payload.receiptData])
-        .select()
-        .single();
+        .insert([payload.receiptData]);
 
       if (receiptError) {
         throw new Error(`Failed to create receipt: ${receiptError.message}`);

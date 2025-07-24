@@ -100,7 +100,7 @@ export default function CreateReceiptPage() {
       const receiptData = await receiptService.createReceipt(parsedReceipt);
       
       // Redirect to bill fronter page with the new receipt
-      router.push(`/bill-fronter/${receiptData.id}`);
+      router.push(`/`);
     } catch (error) {
       console.error('Save failed:', error);
       alert('Failed to save receipt. Please try again.');
@@ -131,7 +131,7 @@ export default function CreateReceiptPage() {
     if (!parsedReceipt || !newItem.name || !newItem.price) return;
 
     const newReceiptItem = {
-      id: `temp-${Date.now()}`,
+      id: crypto.randomUUID(),
       receipt_id: parsedReceipt.receiptData.id,
       name: newItem.name,
       price: parseFloat(newItem.price),

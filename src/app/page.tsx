@@ -36,6 +36,7 @@ export default function HomePage() {
 
   return (
     <div className="page-container">
+      <div className="navbar-spacer"></div>
       <div className="page-header">
         <h1 className="page-title">SplitCash</h1>
         <p className="page-description">
