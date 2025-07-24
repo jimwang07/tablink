@@ -419,10 +419,10 @@ export default function CreateReceiptPage() {
             </button>
             <button 
               onClick={handleConfirmReceipt}
-              disabled={currentStep === 'saving'}
+              disabled={currentStep === ('saving' as Step)}
               className="action-button primary"
             >
-              {currentStep === 'saving' ? 'Saving...' : 'Confirm'}
+              {currentStep === ('saving' as Step) ? 'Saving...' : 'Confirm'}
             </button>
           </div>
         </div>
