@@ -3,19 +3,20 @@ import { ReceiptItem as ReceiptItemType, ItemClaim as ItemClaimType } from '@/ty
 import { formatPrice } from '@/utils/formatters';
 
 interface ReceiptItemProps {
-  item: ReceiptItemType & { claimers: ItemClaimType[] };
+  item: ReceiptItemType;
+  claimers: ItemClaimType[];
   onItemClick: (item: ReceiptItemType, event: React.MouseEvent) => void;
 }
 
-const ReceiptItem: React.FC<ReceiptItemProps> = ({ item, onItemClick }) => {
+const ReceiptItem: React.FC<ReceiptItemProps> = ({ item, claimers, onItemClick }) => {
   const handleClick = (event: React.MouseEvent) => {
     onItemClick(item, event);
   };
 
   // Compute status based on claimers
   let status = 'available';
-  if (item.claimers.length > 0) {
-    if (item.claimers.every(c => c.payment_status === 'paid')) {
+  if (claimers.length > 0) {
+    if (claimers.every(c => c.payment_status === 'paid')) {
       status = 'paid';
     } else {
       status = 'pending';
@@ -33,11 +34,11 @@ const ReceiptItem: React.FC<ReceiptItemProps> = ({ item, onItemClick }) => {
       <div className="item-details">
         <div className="item-name">{item.name}</div>
         {/* Add description if you add it to your schema */}
-        {item.claimers.length > 0 && (
+        {claimers.length > 0 && (
           <div className="claimer-info">
-            {item.claimers.length === 1
-              ? `Claimed by: ${item.claimers[0].claimer}`
-              : `${item.claimers.length} people claimed`}
+            {claimers.length === 1
+              ? `Claimed by: ${claimers[0].claimer}`
+              : `${claimers.length} people claimed`}
           </div>
         )}
       </div>

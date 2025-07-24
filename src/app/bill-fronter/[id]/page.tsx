@@ -74,6 +74,7 @@ export default function BillFronterPage({ params }: { params: Promise<{ id: stri
       <Receipt 
         receipt={receipt}
         items={mappedItems}
+        claimsByItemId={claimsByItemId}
         onItemClick={handleItemClick}
       />
       <PaymentSummary 
