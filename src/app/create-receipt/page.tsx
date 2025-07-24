@@ -10,7 +10,7 @@ import { ParsedReceiptData } from '@/types/parsedReceipt';
 import { formatPrice, formatDate } from '@/utils/formatters';
 import CameraCapture from '@/components/CameraCapture';
 
-type Step = 'upload' | 'processing' | 'preview' | 'saving';
+type Step = 'upload' | 'processing' | 'preview' | 'saving' | 'success';
 
 export default function CreateReceiptPage() {
   const [file, setFile] = useState<File | null>(null);
@@ -21,6 +21,7 @@ export default function CreateReceiptPage() {
   const [showCamera, setShowCamera] = useState(false);
   const [uploadMethod, setUploadMethod] = useState<'file' | 'scan'>('file');
   const [processingStep, setProcessingStep] = useState<'uploading' | 'parsing' | null>(null);
+  const [newReceiptId, setNewReceiptId] = useState<string | null>(null);
   const router = useRouter();
 
   const handleFileSelect = (selectedFile: File) => {
@@ -98,9 +99,8 @@ export default function CreateReceiptPage() {
     setCurrentStep('saving');
     try {
       const receiptData = await receiptService.createReceipt(parsedReceipt);
-      
-      // Redirect to bill fronter page with the new receipt
-      router.push(`/`);
+      setNewReceiptId(receiptData.id);
+      setCurrentStep('success');
     } catch (error) {
       console.error('Save failed:', error);
       alert('Failed to save receipt. Please try again.');
@@ -204,6 +204,7 @@ export default function CreateReceiptPage() {
           )}
           {currentStep === 'preview' && 'Review the extracted receipt details, add or remove items, and confirm they are correct'}
           {currentStep === 'saving' && 'Saving your receipt...'}
+          {currentStep === 'success' && 'Receipt created! Share the link with your friends.'}
         </p>
       </div>
 
@@ -423,6 +424,38 @@ export default function CreateReceiptPage() {
               className="action-button primary"
             >
               {currentStep === ('saving' as Step) ? 'Saving...' : 'Confirm'}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {currentStep === 'success' && newReceiptId && (
+        <div className="modal-overlay">
+          <div className="modal">
+            <h2>Receipt Created!</h2>
+            <p>Share this link with your friends so they can claim their items:</p>
+            <input
+              type="text"
+              value={`${window.location.origin}/item-claimer/${newReceiptId}`}
+              readOnly
+              style={{ width: '100%', marginBottom: 8 }}
+              onFocus={e => e.target.select()}
+            />
+            <button
+              className="action-button primary"
+              onClick={() => {
+                navigator.clipboard.writeText(`${window.location.origin}/item-claimer/${newReceiptId}`);
+                alert('Link copied to clipboard!');
+              }}
+            >
+              Copy Link
+            </button>
+            <button
+              className="action-button secondary"
+              onClick={() => router.push(`/item-claimer/${newReceiptId}`)}
+              style={{ marginLeft: 8 }}
+            >
+              Go to Receipt
             </button>
           </div>
         </div>
