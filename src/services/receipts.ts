@@ -33,7 +33,8 @@ export const receiptService = {
     try {
       const { data: receiptData, error: receiptError } = await supabase
         .from('receipts')
-        .insert([payload.receiptData]);
+        .insert([payload.receiptData])
+        .select() // <-- This returns the inserted row(s) with their IDs
 
       if (receiptError) {
         throw new Error(`Failed to create receipt: ${receiptError.message}`);
@@ -47,7 +48,7 @@ export const receiptService = {
         throw new Error(`Failed to create receipt items: ${itemsError.message}`);
       }
 
-      return receiptData;
+      return receiptData && receiptData[0];
     } catch (error) {
       console.error('Receipt creation error:', error);
       throw error;
