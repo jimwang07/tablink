@@ -278,10 +278,10 @@ export default function CreateReceiptPage() {
             )}
             <button 
               onClick={handleParseReceipt}
-              disabled={!file || currentStep === 'processing'}
+              disabled={!file || currentStep === ('processing' as Step)}
               className="action-button primary"
             >
-              {currentStep === 'processing' ? 'Processing...' : 'Parse Receipt'}
+              {currentStep === ('processing' as Step) ? 'Processing...' : 'Parse Receipt'}
             </button>
           </div>
         </div>
