@@ -6,15 +6,31 @@ const Navbar: React.FC = () => {
       <div className="navbar-content">
         <div className="navbar-logo">
           <Link href="/">
-            <img src="/cashapp-logo.svg" alt="CashApp" className="cashapp-logo-nav" />
+            <div style={{ 
+              width: '32px', 
+              height: '32px', 
+              backgroundColor: '#00D632', 
+              borderRadius: '8px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              color: 'white',
+              fontSize: '18px',
+              fontWeight: '700'
+            }}>
+              $
+            </div>
           </Link>
         </div>
         <div className="navbar-links">
-          <Link href="/create-receipt" className="nav-link upload-nav-button">Upload</Link>
+          <Link href="/create-receipt" className="nav-link upload-nav-button">
+            <span>📷</span>
+            Upload
+          </Link>
         </div>
       </div>
     </nav>
   );
 };
 
-export default Navbar; 
+export default Navbar;
