@@ -37,19 +37,29 @@ export function useItemClaims(itemId: string) {
         {
           event: '*',
           schema: 'public',
-          table: 'item_claims',
-          filter: `item_id=eq.${itemId}`
+          table: 'item_claims'
         },
         (payload) => {
+          const newClaim = payload.new as ItemClaim | undefined;
+          const oldClaim = payload.old as ItemClaim | undefined;
+
+          if (
+            (newClaim && newClaim.item_id === itemId) ||
+            (oldClaim && oldClaim.item_id === itemId)
+          ) {
             if (payload.eventType === 'INSERT') {
-                setClaims(prev => [...prev, payload.new as ItemClaim]);
+              setClaims(prev => {
+                const exists = prev.some(c => c.id === newClaim!.id);
+                return exists ? prev : [...prev, newClaim!];
+              });
             } else if (payload.eventType === 'UPDATE') {
-                setClaims(prev => prev.map(claim =>
-                claim.id === payload.new.id ? payload.new as ItemClaim : claim
-                ));
+              setClaims(prev => prev.map(claim =>
+                claim.id === newClaim!.id ? newClaim! : claim
+              ));
             } else if (payload.eventType === 'DELETE') {
-                setClaims(prev => prev.filter(claim => claim.id !== payload.old.id));
+              setClaims(prev => prev.filter(claim => claim.id !== oldClaim!.id));
             }
+          }
         }
       )
       .subscribe()
@@ -86,12 +96,23 @@ export function useItemClaims(itemId: string) {
     return data
   }
 
+  const deleteClaim = async (claimId: string) => {
+    const { error } = await supabase
+      .from('item_claims')
+      .delete()
+      .eq('id', claimId);
+    if (error) {
+      alert('Failed to delete claim');
+    }
+  };
+
   return {
     claimerName,
     setName,
     claims,
     loading,
     makeClaim,
-    isLoggedIn: !!claimerName
+    isLoggedIn: !!claimerName,
+    deleteClaim,
   }
 }

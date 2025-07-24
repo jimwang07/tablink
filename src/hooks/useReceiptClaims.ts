@@ -33,21 +33,27 @@ export function useReceiptClaims(receiptId: string, itemIds: string[]) {
           table: 'item_claims'
         },
         (payload) => {
-          const claim = payload.new as ItemClaim;
-          if (!itemIds.includes(claim.item_id)) return;
-          setClaimsByItemId(prev => {
-            const updated = { ...prev };
-            if (payload.eventType === 'INSERT') {
-              updated[claim.item_id] = [...(updated[claim.item_id] || []), claim];
-            } else if (payload.eventType === 'UPDATE') {
-              updated[claim.item_id] = (updated[claim.item_id] || []).map(c =>
-                c.id === claim.id ? claim : c
-              );
-            } else if (payload.eventType === 'DELETE') {
-              updated[claim.item_id] = (updated[claim.item_id] || []).filter(c => c.id !== payload.old.id);
-            }
-            return updated;
-          });
+          const newClaim = payload.new as ItemClaim | undefined;
+          const oldClaim = payload.old as ItemClaim | undefined;
+
+          if (
+            (newClaim && itemIds.includes(newClaim.item_id)) ||
+            (oldClaim && itemIds.includes(oldClaim.item_id))
+          ) {
+            setClaimsByItemId(prev => {
+              const updated = { ...prev };
+              if (payload.eventType === 'INSERT') {
+                updated[newClaim!.item_id] = [...(updated[newClaim!.item_id] || []), newClaim!];
+              } else if (payload.eventType === 'UPDATE') {
+                updated[newClaim!.item_id] = (updated[newClaim!.item_id] || []).map(c =>
+                  c.id === newClaim!.id ? newClaim! : c
+                );
+              } else if (payload.eventType === 'DELETE') {
+                updated[oldClaim!.item_id] = (updated[oldClaim!.item_id] || []).filter(c => c.id !== oldClaim!.id);
+              }
+              return updated;
+            });
+          }
         }
       )
       .subscribe();
