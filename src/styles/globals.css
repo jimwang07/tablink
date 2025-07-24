@@ -160,6 +160,32 @@
   box-shadow: 0 4px 12px rgba(0, 224, 19, 0.4);
 }
 
+.page-header-buttons {
+  display: flex;
+  gap: 12px;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+.delete-receipt-button {
+  background-color: #dc3545;
+  color: white;
+  border: none;
+  padding: 12px 24px;
+  border-radius: 25px;
+  font-size: 1rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  box-shadow: 0 2px 8px rgba(220, 53, 69, 0.3);
+}
+
+.delete-receipt-button:hover {
+  background-color: #c82333;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(220, 53, 69, 0.4);
+}
+
 .receipt-container {
   max-width: 500px;
   margin: 0 auto;
@@ -834,6 +860,16 @@
   font-size: 1.125rem;
   font-weight: 600;
   color: var(--cashapp-text-primary);
+}
+
+.receipt-actions-container {
+  margin-top: auto;
+}
+
+.receipt-actions-divider {
+  height: 1px;
+  background-color: var(--receipt-border);
+  margin: 0;
 }
 
 .receipt-actions {

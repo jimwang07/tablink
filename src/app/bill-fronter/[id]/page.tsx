@@ -1,6 +1,7 @@
 'use client';
 
 import { use, useEffect, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import Receipt from '@/components/Receipt';
 import PaymentSummary from '@/components/PaymentSummary';
 import { receiptService } from '@/services/receipts';
@@ -9,6 +10,7 @@ import { Receipt as ReceiptType, ReceiptItem as ReceiptItemType, ItemClaim as It
 
 export default function BillFronterPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
+  const router = useRouter();
   const [receipt, setReceipt] = useState<ReceiptType | null>(null);
   const [items, setItems] = useState<ReceiptItemType[]>([]);
   const [claimsByItemId, setClaimsByItemId] = useState<Record<string, ItemClaimType[]>>({});
@@ -60,6 +62,21 @@ export default function BillFronterPage({ params }: { params: Promise<{ id: stri
   const openPaymentSummary = () => setShowPaymentSummary(true);
   const closePaymentSummary = () => setShowPaymentSummary(false);
 
+  const handleDeleteReceipt = async () => {
+    if (!receipt) return;
+    
+    const confirmDelete = window.confirm('Are you sure you want to delete this receipt? This action cannot be undone.');
+    if (!confirmDelete) return;
+
+    try {
+      await receiptService.deleteReceipt(receipt.id);
+      router.push('/');
+    } catch (error) {
+      console.error('Failed to delete receipt:', error);
+      alert('Failed to delete receipt. Please try again.');
+    }
+  };
+
   return (
     <div className="page-container">
       <div className="page-header">
@@ -67,9 +84,14 @@ export default function BillFronterPage({ params }: { params: Promise<{ id: stri
         <p className="page-description">
           You paid the bill upfront. Share this receipt with others so they can claim their items.
         </p>
-        <button className="payment-summary-button" onClick={openPaymentSummary}>
-          View Payment Status
-        </button>
+        <div className="page-header-buttons">
+          <button className="payment-summary-button" onClick={openPaymentSummary}>
+            View Payment Status
+          </button>
+          <button className="delete-receipt-button" onClick={handleDeleteReceipt}>
+            Delete Receipt
+          </button>
+        </div>
       </div>
       <Receipt 
         receipt={receipt}

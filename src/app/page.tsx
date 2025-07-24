@@ -78,7 +78,6 @@ export default function HomePage() {
           ))}
         </div>
       )}
-
       <div className="home-footer">
         <p>💡 <strong>Pro tip:</strong> Share the "Claim My Items" link with friends so they can select their items and pay you back instantly.</p>
       </div>

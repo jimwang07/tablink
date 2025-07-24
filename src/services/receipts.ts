@@ -33,7 +33,8 @@ export const receiptService = {
     try {
       const { data: receiptData, error: receiptError } = await supabase
         .from('receipts')
-        .insert([payload.receiptData]);
+        .insert([payload.receiptData])
+        .select() // <-- This returns the inserted row(s) with their IDs
 
       if (receiptError) {
         throw new Error(`Failed to create receipt: ${receiptError.message}`);
@@ -47,7 +48,7 @@ export const receiptService = {
         throw new Error(`Failed to create receipt items: ${itemsError.message}`);
       }
 
-      return receiptData;
+      return receiptData && receiptData[0];
     } catch (error) {
       console.error('Receipt creation error:', error);
       throw error;
@@ -128,43 +129,6 @@ export const receiptService = {
       return true;
     } catch (error) {
       console.error('Receipt deletion error:', error);
-      throw error;
-    }
-  },
-
-  async addReceiptItem(item: ReceiptItemData) {
-    try {
-      const { data, error } = await supabase
-        .from('receipt_items')
-        .insert([item])
-        .select()
-        .single();
-
-      if (error) {
-        throw new Error(`Failed to add receipt item: ${error.message}`);
-      }
-
-      return data;
-    } catch (error) {
-      console.error('Receipt item creation error:', error);
-      throw error;
-    }
-  },
-
-  async deleteReceiptItem(id: string) {
-    try {
-      const { error } = await supabase
-        .from('receipt_items')
-        .delete()
-        .eq('id', id);
-
-      if (error) {
-        throw new Error(`Failed to delete receipt item: ${error.message}`);
-      }
-
-      return true;
-    } catch (error) {
-      console.error('Receipt item deletion error:', error);
       throw error;
     }
   }
