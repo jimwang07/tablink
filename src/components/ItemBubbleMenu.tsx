@@ -17,7 +17,7 @@ const ItemBubbleMenu: React.FC<ItemBubbleMenuProps> = ({
   onClose 
 }) => {
   const { claimerName, setName, isLoggedIn } = useClaimerSession();
-  const { claims, loading, makeClaim } = useItemClaims(item?.id || '');
+  const { claims, loading, makeClaim, deleteClaim } = useItemClaims(item?.id || '');
   const [nameInput, setNameInput] = useState('');
   const [portionInput, setPortionInput] = useState(1);
   const [amountInput, setAmountInput] = useState(item ? item.price : 0);
@@ -92,6 +92,24 @@ const ItemBubbleMenu: React.FC<ItemBubbleMenuProps> = ({
                     <span className="claimer-details">
                       {claimer.portion}x {formatPrice(item.price * claimer.portion)}
                     </span>
+                    {claimer.claimer === claimerName && (
+                      <button
+                        onClick={() => deleteClaim(claimer.id)}
+                        className="unclaim-btn"
+                        title="Unclaim"
+                        aria-label="Unclaim"
+                        style={{
+                          background: 'none',
+                          border: 'none',
+                          color: '#d63031',
+                          fontSize: '1.2em',
+                          marginLeft: 8,
+                          cursor: 'pointer'
+                        }}
+                      >
+                        ×
+                      </button>
+                    )}
                   </div>
                 ))}
               </div>
