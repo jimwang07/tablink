@@ -1,27 +1,42 @@
 :root {
-  --max-width: 1100px;
-  --border-radius: 12px;
+  --max-width: 1200px;
+  --border-radius: 16px;
   --font-mono: ui-monospace, Menlo, Monaco, 'Cascadia Mono', 'Segoe UI Mono',
     'Roboto Mono', 'Oxygen Mono', 'Ubuntu Monospace', 'Source Code Pro',
     'Fira Mono', 'Droid Sans Mono', 'Courier New', monospace;
 }
 
 :root {
-  --cashapp-primary: #00e013;
+  /* Cash App Brand Colors */
+  --cashapp-primary: #00D632;
+  --cashapp-primary-hover: #00C12E;
   --cashapp-black: #000000;
   --cashapp-white: #ffffff;
-  --cashapp-cream: #e9e6e0;
-  --cashapp-gray: #1a1a1a;
-  --cashapp-light-gray: #f5f5f5;
+  --cashapp-cream: #F8F8F8;
+  --cashapp-gray: #1A1A1A;
+  --cashapp-light-gray: #F5F5F5;
+  --cashapp-medium-gray: #8E8E93;
+  --cashapp-border: #E5E5E7;
+  --cashapp-text-primary: #000000;
+  --cashapp-text-secondary: #8E8E93;
   --receipt-paper: #ffffff;
-  --receipt-text: #333333;
-  --receipt-border: #dddddd;
+  --receipt-text: #000000;
+  --receipt-border: #E5E5E7;
+  
+  /* Shadows */
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.1);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.1);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.12);
+  --shadow-green: 0 4px 12px rgba(0, 214, 50, 0.25);
 }
 
 .App {
   background-color: var(--cashapp-white);
   min-height: 100vh;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Helvetica Neue', Arial, sans-serif;
+  font-weight: 400;
+  line-height: 1.5;
+  color: var(--cashapp-text-primary);
 }
 
 .navbar {
@@ -29,10 +44,13 @@
   top: 0;
   left: 0;
   right: 0;
-  height: 60px;
-  background-color: transparent;
+  height: 72px;
+  background-color: var(--cashapp-white);
+  border-bottom: 1px solid var(--cashapp-border);
   z-index: 1000;
   padding: 0;
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
 }
 
 .navbar-content {
@@ -41,37 +59,46 @@
   justify-content: space-between;
   height: 100%;
   width: 100%;
-  padding: 0 20px;
+  max-width: var(--max-width);
+  margin: 0 auto;
+  padding: 0 24px;
 }
 
 .navbar-logo {
   display: flex;
   align-items: center;
+  gap: 12px;
 }
 
 .navbar-links {
   display: flex;
-  gap: 20px;
+  gap: 8px;
 }
 
 .nav-link {
-  color: var(--receipt-text);
+  color: var(--cashapp-text-primary);
   text-decoration: none;
   font-weight: 500;
-  padding: 8px 16px;
-  border-radius: 20px;
-  transition: background-color 0.2s ease;
+  font-size: 15px;
+  padding: 10px 16px;
+  border-radius: 24px;
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .nav-link:hover {
-  background-color: var(--cashapp-light-gray);
+  background-color: var(--cashapp-cream);
   text-decoration: none;
+  color: var(--cashapp-text-primary);
 }
 
 .cashapp-logo-nav {
-  width: 40px;
-  height: 40px;
+  width: 32px;
+  height: 32px;
   cursor: pointer;
+  border-radius: 8px;
 }
 
 .app-content {
@@ -79,35 +106,39 @@
 }
 
 .navbar-spacer {
-  height: 25px;
+  height: 72px;
 }
 
 .page-container {
-  max-width: 1200px;
+  max-width: var(--max-width);
   margin: 0 auto;
+  padding: 32px 24px;
 }
 
 .page-header {
   text-align: center;
-  margin-bottom: 30px;
-  padding: 20px;
-  background-color: var(--cashapp-light-gray);
-  border-radius: 8px;
-  border: 1px solid var(--receipt-border);
+  margin-bottom: 48px;
+  padding: 0;
+  background: none;
+  border: none;
 }
 
 .page-title {
-  font-size: 1.5rem;
+  font-size: 2.5rem;
   font-weight: 700;
-  color: var(--receipt-text);
-  margin: 0 0 10px 0;
+  color: var(--cashapp-text-primary);
+  margin: 0 0 16px 0;
+  letter-spacing: -0.02em;
 }
 
 .page-description {
-  font-size: 1rem;
-  color: #666;
-  margin: 0 0 20px 0;
-  line-height: 1.5;
+  font-size: 1.125rem;
+  color: var(--cashapp-text-secondary);
+  margin: 0 0 32px 0;
+  line-height: 1.6;
+  max-width: 600px;
+  margin-left: auto;
+  margin-right: auto;
 }
 
 .payment-summary-button {
@@ -753,38 +784,43 @@
 /* Home Page Styles */
 .receipts-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
-  gap: 30px;
-  margin-bottom: 40px;
+  grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
+  gap: 24px;
+  margin-bottom: 48px;
 }
 
 .receipt-card {
-  background-color: var(--receipt-paper);
-  border: 1px solid var(--receipt-border);
-  border-radius: 12px;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+  background-color: var(--cashapp-white);
+  border: 1px solid var(--cashapp-border);
+  border-radius: var(--border-radius);
+  box-shadow: var(--shadow-sm);
   overflow: hidden;
-  transition: all 0.3s ease;
-  display: flex;
-  flex-direction: column;
-  height: 100%;
+  transition: all 0.2s ease;
 }
 
 .receipt-card:hover {
-  transform: translateY(-4px);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-md);
+  border-color: var(--cashapp-primary);
 }
 
 .receipt-card-header {
   display: flex;
   align-items: flex-start;
   gap: 16px;
-  padding: 24px;
+  padding: 24px 24px 20px 24px;
 }
 
 .receipt-icon {
-  font-size: 2.5rem;
+  font-size: 2rem;
   flex-shrink: 0;
+  width: 48px;
+  height: 48px;
+  background-color: var(--cashapp-cream);
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .receipt-info {
@@ -793,15 +829,16 @@
 }
 
 .receipt-title {
-  font-size: 1.3rem;
-  font-weight: 700;
-  color: var(--receipt-text);
-  margin: 0 0 8px 0;
+  font-size: 1.25rem;
+  font-weight: 600;
+  color: var(--cashapp-text-primary);
+  margin: 0 0 6px 0;
+  line-height: 1.3;
 }
 
 .receipt-description {
-  font-size: 0.9rem;
-  color: #666;
+  font-size: 0.875rem;
+  color: var(--cashapp-text-secondary);
   margin: 0 0 12px 0;
   line-height: 1.4;
 }
@@ -814,42 +851,15 @@
 }
 
 .receipt-date {
-  font-size: 0.8rem;
-  color: #888;
+  font-size: 0.8125rem;
+  color: var(--cashapp-text-secondary);
+  font-weight: 500;
 }
 
 .receipt-total {
-  font-size: 1.1rem;
-  font-weight: 700;
-  color: var(--cashapp-primary);
-}
-
-.receipt-stats {
-  display: flex;
-  justify-content: space-around;
-  padding: 16px 24px;
-  background-color: var(--cashapp-light-gray);
-  border-bottom: 1px solid var(--receipt-border);
-}
-
-.stat {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 4px;
-}
-
-.stat-number {
-  font-size: 1.5rem;
-  font-weight: 700;
-  color: var(--cashapp-primary);
-}
-
-.stat-label {
-  font-size: 0.75rem;
-  color: #666;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
+  font-size: 1.125rem;
+  font-weight: 600;
+  color: var(--cashapp-text-primary);
 }
 
 .receipt-actions-container {
@@ -865,61 +875,94 @@
 .receipt-actions {
   display: flex;
   gap: 12px;
-  padding: 16px 24px 12px 24px;
+  padding: 0 24px 24px 24px;
 }
 
 .action-button {
   flex: 1;
-  padding: 12px 20px;
+  padding: 14px 20px;
   border: none;
-  border-radius: 8px;
-  font-size: 0.9rem;
+  border-radius: 12px;
+  font-size: 0.9375rem;
   font-weight: 600;
   text-decoration: none;
   text-align: center;
   transition: all 0.2s ease;
   cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
 }
 
 .action-button.primary {
   background-color: var(--cashapp-primary);
-  color: white;
-  box-shadow: 0 2px 8px rgba(0, 224, 19, 0.3);
+  color: var(--cashapp-white);
+  box-shadow: var(--shadow-green);
 }
 
 .action-button.primary:hover {
-  background-color: #00cc11;
+  background-color: var(--cashapp-primary-hover);
   transform: translateY(-1px);
-  box-shadow: 0 4px 12px rgba(0, 224, 19, 0.4);
+  box-shadow: var(--shadow-green);
   text-decoration: none;
-  color: white;
+  color: var(--cashapp-white);
 }
 
 .action-button.secondary {
-  background-color: white;
-  color: var(--cashapp-primary);
-  border: 2px solid var(--cashapp-primary);
+  background-color: var(--cashapp-white);
+  color: var(--cashapp-text-primary);
+  border: 1.5px solid var(--cashapp-border);
 }
 
 .action-button.secondary:hover {
-  background-color: var(--cashapp-primary);
-  color: white;
+  background-color: var(--cashapp-cream);
+  border-color: var(--cashapp-text-primary);
   transform: translateY(-1px);
   text-decoration: none;
+  color: var(--cashapp-text-primary);
 }
 
 .home-footer {
   text-align: center;
-  padding: 30px 20px;
-  background-color: var(--cashapp-light-gray);
-  border-radius: 8px;
-  border: 1px solid var(--receipt-border);
+  padding: 32px 24px;
+  background-color: var(--cashapp-cream);
+  border-radius: var(--border-radius);
+  margin-top: 48px;
 }
 
 .home-footer p {
   margin: 0;
-  font-size: 0.9rem;
-  color: #666;
+  font-size: 0.9375rem;
+  color: var(--cashapp-text-secondary);
+  line-height: 1.6;
+}
+
+/* Empty State Styles */
+.empty-state {
+  text-align: center;
+  padding: 64px 24px;
+  max-width: 480px;
+  margin: 0 auto;
+}
+
+.empty-state-icon {
+  font-size: 4rem;
+  margin-bottom: 24px;
+  opacity: 0.6;
+}
+
+.empty-state-title {
+  font-size: 1.5rem;
+  font-weight: 600;
+  color: var(--cashapp-text-primary);
+  margin: 0 0 12px 0;
+}
+
+.empty-state-description {
+  font-size: 1rem;
+  color: var(--cashapp-text-secondary);
+  margin: 0 0 32px 0;
   line-height: 1.5;
 }
 

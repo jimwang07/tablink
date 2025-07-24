@@ -12,9 +12,9 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <body className="font-sans">
+      <body className="App">
         <Navbar />
-        <main className="container mx-auto px-4">
+        <main>
           {children}
         </main>
       </body>
