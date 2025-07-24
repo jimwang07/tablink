@@ -93,6 +93,9 @@ export default function ItemClaimerPage({ params }: { params: Promise<{ id: stri
               Click on the items you ordered to claim them and pay your share.
             </p>
           </div>
+          <a href="https://cash.app/account/pay-and-request" className='action-button'>
+            Pay my amount
+          </a>
           <Receipt 
             receipt={receipt}
             items={items}
