@@ -20,19 +20,6 @@ export default function HomePage() {
     fetchReceipts();
   }, []);
 
-  const handleDeleteTestReceipt = async () => {
-    try {
-      await receiptService.deleteReceipt('1d1c488a-915f-4548-bffc-0740087b67b4');
-      console.log('Test receipt deleted successfully');
-      // Refresh the receipts list
-      const data = await receiptService.getAllReceipts();
-      setReceipts(data);
-    } catch (error) {
-      console.error('Failed to delete test receipt:', error);
-      alert('Failed to delete test receipt. Check console for details.');
-    }
-  };
-
 
   return (
     <div className="page-container">
@@ -42,13 +29,6 @@ export default function HomePage() {
         <p className="page-description">
           Select a receipt to start splitting the bill with your friends
         </p>
-        <button 
-          onClick={handleDeleteTestReceipt}
-          className="action-button secondary"
-          style={{ marginTop: '10px' }}
-        >
-          🗑️ Delete Test Receipt (ID: 1d1c488a...)
-        </button>
       </div>
 
       <div className="receipts-grid">
@@ -66,19 +46,22 @@ export default function HomePage() {
               </div>
             </div>
             {/* You can add stats and actions here, depending on your schema */}
-            <div className="receipt-actions">
-              <Link 
-                href={`/bill-fronter/${receipt.id}`} 
-                className="action-button primary"
-              >
-                I Paid the Bill
-              </Link>
-              <Link 
-                href={`/item-claimer/${receipt.id}`} 
-                className="action-button secondary"
-              >
-                Claim My Items
-              </Link>
+            <div className="receipt-actions-container">
+              <div className="receipt-actions-divider"></div>
+              <div className="receipt-actions">
+                <Link 
+                  href={`/bill-fronter/${receipt.id}`} 
+                  className="action-button primary"
+                >
+                  Fronter
+                </Link>
+                <Link 
+                  href={`/item-claimer/${receipt.id}`} 
+                  className="action-button secondary"
+                >
+                  Claimer
+                </Link>
+              </div>
             </div>
           </div>
         ))}
