@@ -38,7 +38,7 @@ const ItemBubbleMenu: React.FC<ItemBubbleMenuProps> = ({
     if (!claimerName) return;
     setClaiming(true);
     try {
-      await makeClaim(claimerName, portionInput, amountInput);
+      await makeClaim(portionInput, amountInput);
     } catch (e) {
       alert('Failed to claim item.');
     }
@@ -133,20 +133,6 @@ const ItemBubbleMenu: React.FC<ItemBubbleMenuProps> = ({
                 disabled={claiming}
               >
                 {claiming ? 'Claiming...' : 'Claim Item'}
-              </button>
-              <button
-                onClick={async () => {
-                  try {
-                    const result = await makeClaim(claimerName || 'TestUser', 1, item.price);
-                    console.log('Test claim result:', result);
-                    alert('Claim made! Check console for result.');
-                  } catch (e) {
-                    console.error('Error making claim:', e);
-                    alert('Failed to make claim');
-                  }
-                }}
-              >
-                Test MakeClaim
               </button>
             </div>
           )}

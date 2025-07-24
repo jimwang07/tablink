@@ -7,15 +7,18 @@ import { receiptService } from '@/services/receipts';
 import { itemClaimsService } from '@/services/itemClaims';
 import { Receipt as ReceiptType, ReceiptItem as ReceiptItemType, ItemClaim as ItemClaimType } from '@/types/supabase';
 import { useClaimerSession } from '@/hooks/useClaimerSession';
+import { useReceiptClaims } from '@/hooks/useReceiptClaims';
 
 export default function ItemClaimerPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const [receipt, setReceipt] = useState<ReceiptType | null>(null);
   const [items, setItems] = useState<ReceiptItemType[]>([]);
   const [loading, setLoading] = useState(true);
-  const [claimsByItemId, setClaimsByItemId] = useState<Record<string, ItemClaimType[]>>({});
   const { claimerName, setName, isLoggedIn } = useClaimerSession();
   const [nameInput, setNameInput] = useState('');
+
+  const itemIds = items.map(item => item.id);
+  const claimsByItemId = useReceiptClaims(receipt?.id || '', itemIds);
 
   useEffect(() => {
     async function fetchData() {
@@ -38,12 +41,12 @@ export default function ItemClaimerPage({ params }: { params: Promise<{ id: stri
 
         setReceipt(receiptData);
         setItems(itemsData || []);
-        setClaimsByItemId(claimsByItem);
+        // setClaimsByItemId(claimsByItem); // This line is removed as per the edit hint
       } catch (error) {
         console.error('Error fetching receipt data:', error);
         setReceipt(null);
         setItems([]);
-        setClaimsByItemId({});
+        // setClaimsByItemId({}); // This line is removed as per the edit hint
       }
       setLoading(false);
     }
@@ -92,7 +95,8 @@ export default function ItemClaimerPage({ params }: { params: Promise<{ id: stri
           </div>
           <Receipt 
             receipt={receipt}
-            items={items.map(item => ({ ...item, claimers: claimsByItemId[item.id] || [] }))}
+            items={items}
+            claimsByItemId={claimsByItemId}
             onItemClick={handleItemClick}
           />
         </>

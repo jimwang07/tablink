@@ -6,11 +6,12 @@ import { formatPrice, formatDate } from '@/utils/formatters';
 
 interface ReceiptProps {
   receipt: ReceiptType;
-  items: (ReceiptItemType & { claimers: ItemClaimType[] })[];
+  items: ReceiptItemType[];
+  claimsByItemId: Record<string, ItemClaimType[]>;
   onItemClick: (item: ReceiptItemType, event: React.MouseEvent) => void;
 }
 
-const Receipt: React.FC<ReceiptProps> = ({ receipt, items, onItemClick }) => {
+const Receipt: React.FC<ReceiptProps> = ({ receipt, items, claimsByItemId, onItemClick }) => {
   const [selectedItem, setSelectedItem] = useState<ReceiptItemType | null>(null);
   const [bubblePosition, setBubblePosition] = useState({ x: 0, y: 0 });
 
@@ -42,7 +43,8 @@ const Receipt: React.FC<ReceiptProps> = ({ receipt, items, onItemClick }) => {
         {items.map((item) => (
           <ReceiptItem
             key={item.id}
-            item={{ ...item, claimers: item.claimers || [] }}
+            item={item}
+            claimers={claimsByItemId[item.id] || []}
             onItemClick={handleItemClick}
           />
         ))}
