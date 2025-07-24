@@ -75,7 +75,11 @@
 }
 
 .app-content {
-  padding: 80px 20px 20px 20px;
+  padding: 20px;
+}
+
+.navbar-spacer {
+  height: 25px;
 }
 
 .page-container {

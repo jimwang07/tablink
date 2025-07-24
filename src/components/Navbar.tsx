@@ -10,7 +10,7 @@ const Navbar: React.FC = () => {
           </Link>
         </div>
         <div className="navbar-links">
-          <Link href="/create-receipt" className="nav-link upload-nav-button">Upload New Receipt</Link>
+          <Link href="/create-receipt" className="nav-link upload-nav-button">Upload</Link>
         </div>
       </div>
     </nav>
