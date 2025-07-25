@@ -22,6 +22,8 @@ export default function CreateReceiptPage() {
   const [uploadMethod, setUploadMethod] = useState<'file' | 'scan'>('file');
   const [processingStep, setProcessingStep] = useState<'uploading' | 'parsing' | null>(null);
   const [newReceiptId, setNewReceiptId] = useState<string | null>(null);
+  const [editingItemId, setEditingItemId] = useState<string | null>(null);
+  const [editingItem, setEditingItem] = useState({ name: '', price: '', quantity: '1' });
   const router = useRouter();
 
   const handleFileSelect = (selectedFile: File) => {
@@ -191,36 +193,115 @@ export default function CreateReceiptPage() {
     setShowAddItemForm(false);
   };
 
+  const handleEditItem = (itemId: string) => {
+    if (!parsedReceipt) return;
+    
+    const itemToEdit = parsedReceipt.items.find(item => item.id === itemId);
+    if (itemToEdit) {
+      setEditingItemId(itemId);
+      setEditingItem({
+        name: itemToEdit.name,
+        price: itemToEdit.price.toString(),
+        quantity: itemToEdit.quantity.toString()
+      });
+      setShowAddItemForm(false); // Close add form if open
+    }
+  };
+
+  const handleSaveEditedItem = () => {
+    if (!parsedReceipt || !editingItemId) return;
+
+    const updatedItems = parsedReceipt.items.map(item => {
+      if (item.id === editingItemId) {
+        return {
+          ...item,
+          name: editingItem.name,
+          price: parseFloat(editingItem.price),
+          quantity: parseInt(editingItem.quantity) || 1
+        };
+      }
+      return item;
+    });
+
+    const updatedReceipt = {
+      ...parsedReceipt,
+      items: updatedItems
+    };
+
+    // Recalculate totals
+    const newSubtotal = updatedItems.reduce((sum, item) => sum + (item.price * item.quantity), 0);
+    const taxRate = parsedReceipt.receiptData.tax / parsedReceipt.receiptData.subtotal;
+    const newTax = newSubtotal * taxRate;
+    const newTotal = newSubtotal + newTax + parsedReceipt.receiptData.tip;
+
+    updatedReceipt.receiptData = {
+      ...updatedReceipt.receiptData,
+      subtotal: newSubtotal,
+      tax: newTax,
+      total: newTotal
+    };
+
+    setParsedReceipt(updatedReceipt);
+    setEditingItemId(null);
+    setEditingItem({ name: '', price: '', quantity: '1' });
+  };
+
+  const handleCancelEditItem = () => {
+    setEditingItemId(null);
+    setEditingItem({ name: '', price: '', quantity: '1' });
+  };
+
   return (
-    <div className="page-container">
-      <div className="page-header">
-        <h1 className="page-title">Create New Receipt</h1>
-        <p className="page-description">
-          {currentStep === 'upload' && 'Upload a photo of your receipt to automatically extract items and start splitting the bill with friends'}
-          {currentStep === 'processing' && (
-            processingStep === 'uploading' ? 'Uploading your receipt image...' :
-            processingStep === 'parsing' ? 'Analyzing receipt with AI...' :
-            'Processing your receipt...'
-          )}
-          {currentStep === 'preview' && 'Review the extracted receipt details, add or remove items, and confirm they are correct'}
-          {currentStep === 'saving' && 'Saving your receipt...'}
-          {currentStep === 'success' && 'Receipt created! Share the link with your friends.'}
-        </p>
+    <div className="activity-container">
+      {/* Back Button */}
+      <div className="back-button-container">
+        <Link href="/" className="back-button">
+          ← Back to Home
+        </Link>
       </div>
 
+      {currentStep === 'upload' && (
+        <div className="scan-hero-section">
+          <div className="scan-hero-icon">
+            <img src="/scanner-light.svg" alt="Scanner" width="80" height="80" />
+          </div>
+          <h1 className="scan-hero-title">Scan Your Receipt</h1>
+          <p className="scan-hero-description">
+            Upload a photo to automatically extract items and split the bill.
+          </p>
+        </div>
+      )}
+      
+      {currentStep !== 'upload' && (
+        <div className="page-header">
+          <h1 className="page-title">Creating New Receipt</h1>
+          <p className="page-description">
+            {currentStep === 'processing' && (
+              processingStep === 'uploading' ? 'Uploading your receipt image...' :
+              processingStep === 'parsing' ? 'Analyzing receipt with AI...' :
+              'Processing your receipt...'
+            )}
+            {currentStep === 'preview' && 'Review the extracted receipt details, add or remove items, and confirm they are correct'}
+            {currentStep === 'saving' && 'Saving your receipt...'}
+            {currentStep === 'success' && 'Receipt created! Share the link with your friends.'}
+          </p>
+        </div>
+      )}
+
       {currentStep === 'upload' && !showCamera && (
-        <div className="upload-container">
-          {!file && (
-            <div className="upload-methods">
-              <button 
-                onClick={handleScanReceipt}
-                className="scan-receipt-button"
-              >
-                <div className="scan-icon">📷</div>
-                <span>Scan Receipt</span>
-              </button>
+        <div className="upload-section">
+          <div className="upload-actions">
+            <button 
+              onClick={handleScanReceipt}
+              className="hero-action-button"
+            >
+              <span>📷</span>
+              Use Camera
+            </button>
+            <div className="upload-divider">
+              <span>or</span>
             </div>
-          )}
+          </div>
           
           <div 
             className="upload-dropzone"
@@ -288,6 +369,39 @@ export default function CreateReceiptPage() {
         </div>
       )}
 
+      {currentStep === 'processing' && (
+        <div className="processing-container">
+          <div className="processing-animation">
+            <div className="scanner-loading">
+              <img src="/scanner-light.svg" alt="Scanner" width="80" height="80" />
+              <div className="scanning-line"></div>
+            </div>
+            <div className="processing-steps">
+              <div className={`processing-step ${processingStep === 'uploading' ? 'active' : processingStep === 'parsing' ? 'completed' : ''}`}>
+                <div className="step-indicator">
+                  {processingStep === 'uploading' ? (
+                    <div className="loading-spinner"></div>
+                  ) : (
+                    <div className="step-check">✓</div>
+                  )}
+                </div>
+                <span>Uploading image...</span>
+              </div>
+              <div className={`processing-step ${processingStep === 'parsing' ? 'active' : ''}`}>
+                <div className="step-indicator">
+                  {processingStep === 'parsing' ? (
+                    <div className="loading-spinner"></div>
+                  ) : (
+                    <div className="step-number">2</div>
+                  )}
+                </div>
+                <span>Analyzing receipt with AI...</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {currentStep === 'upload' && showCamera && (
         <CameraCapture
           onCapture={handleCameraCapture}
@@ -297,39 +411,134 @@ export default function CreateReceiptPage() {
 
       {currentStep === 'preview' && parsedReceipt && (
         <div className="preview-container">
-          <div className="receipt-preview">
-            <div className="receipt-container">
-              <div className="receipt-header">
-                <h2 className="restaurant-name">{parsedReceipt.receiptData.merchant_name}</h2>
-                <p className="restaurant-address">{parsedReceipt.receiptData.description}</p>
-                <p className="receipt-date">{formatDate(parsedReceipt.receiptData.date)}</p>
+          <div className="receipt-preview-card">
+            <div className="receipt-card-header">
+              <div className="receipt-merchant-info">
+                <div className="merchant-icon">🍽️</div>
+                <div className="merchant-details">
+                  <h2 className="merchant-name">{parsedReceipt.receiptData.merchant_name}</h2>
+                  <p className="merchant-description">{parsedReceipt.receiptData.description}</p>
+                  <p className="receipt-date">{formatDate(parsedReceipt.receiptData.date)}</p>
+                </div>
+              </div>
+              <div className="receipt-total-badge">
+                <span className="total-label">Total</span>
+                <span className="total-amount">{formatPrice(parsedReceipt.receiptData.total)}</span>
+              </div>
+            </div>
+            
+            <div className="receipt-items-section">
+              <div className="items-header">
+                <h3 className="items-title">Items ({parsedReceipt.items.length})</h3>
+                <button
+                  onClick={() => setShowAddItemForm(true)}
+                  className="add-item-button"
+                  disabled={showAddItemForm || editingItemId !== null}
+                >
+                  <span>+</span>
+                  Add Item
+                </button>
               </div>
               
-              <div className="receipt-items">
+              <div className="items-list">
                 {parsedReceipt.items.map((item) => (
-                  <div key={item.id} className="receipt-item editable">
-                    <div className="item-details">
-                      <h4 className="item-name">{item.name}</h4>
-                    </div>
-                    <div className="item-right">
-                      <span className="item-price">{formatPrice(item.price)}</span>
-                      <span className="item-quantity">Qty: {item.quantity}</span>
-                      <button
-                        onClick={() => handleDeleteItem(item.id)}
-                        className="delete-item-button"
-                        title="Delete item"
-                      >
-                        ×
-                      </button>
-                    </div>
+                  <div key={item.id} className="preview-item">
+                    {editingItemId === item.id ? (
+                      <div className="edit-item-form">
+                        <div className="form-content">
+                          <div className="form-group">
+                            <label>Item Name</label>
+                            <input
+                              type="text"
+                              value={editingItem.name}
+                              onChange={(e) => setEditingItem({ ...editingItem, name: e.target.value })}
+                              placeholder="Enter item name"
+                              className="form-input"
+                            />
+                          </div>
+                          <div className="form-row">
+                            <div className="form-group">
+                              <label>Price</label>
+                              <input
+                                type="number"
+                                step="0.01"
+                                value={editingItem.price}
+                                onChange={(e) => setEditingItem({ ...editingItem, price: e.target.value })}
+                                placeholder="0.00"
+                                className="form-input"
+                              />
+                            </div>
+                            <div className="form-group">
+                              <label>Quantity</label>
+                              <input
+                                type="number"
+                                min="1"
+                                value={editingItem.quantity}
+                                onChange={(e) => setEditingItem({ ...editingItem, quantity: e.target.value })}
+                                className="form-input"
+                              />
+                            </div>
+                          </div>
+                          <div className="form-actions">
+                            <button
+                              onClick={handleSaveEditedItem}
+                              className="action-button primary small"
+                              disabled={!editingItem.name || !editingItem.price}
+                            >
+                              Save Changes
+                            </button>
+                            <button
+                              onClick={handleCancelEditItem}
+                              className="action-button secondary small"
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    ) : (
+                      <>
+                        <div className="item-content">
+                          <div className="item-name">{item.name}</div>
+                          <div className="item-details">
+                            <span className="item-quantity">Qty: {item.quantity}</span>
+                            <span className="item-price">{formatPrice(item.price)}</span>
+                          </div>
+                        </div>
+                        <div className="item-actions">
+                          <button
+                            onClick={() => handleEditItem(item.id)}
+                            className="edit-item-btn"
+                            title="Edit item"
+                          >
+                            ✏️
+                          </button>
+                          <button
+                            onClick={() => handleDeleteItem(item.id)}
+                            className="delete-item-btn"
+                            title="Delete item"
+                          >
+                            🗑️
+                          </button>
+                        </div>
+                      </>
+                    )}
                   </div>
                 ))}
-                
               </div>
               
               {showAddItemForm && (
-                <div className="add-item-form">
-                  <div className="form-row">
+                <div className="add-item-form-card">
+                  <div className="form-header">
+                    <h4>Add New Item</h4>
+                    <button
+                      onClick={handleCancelAddItem}
+                      className="form-close-btn"
+                    >
+                      ×
+                    </button>
+                  </div>
+                  <div className="form-content">
                     <div className="form-group">
                       <label>Item Name</label>
                       <input
@@ -340,71 +549,62 @@ export default function CreateReceiptPage() {
                         className="form-input"
                       />
                     </div>
-                    <div className="form-group">
-                      <label>Price</label>
-                      <input
-                        type="number"
-                        step="0.01"
-                        value={newItem.price}
-                        onChange={(e) => setNewItem({ ...newItem, price: e.target.value })}
-                        placeholder="0.00"
-                        className="form-input"
-                      />
+                    <div className="form-row">
+                      <div className="form-group">
+                        <label>Price</label>
+                        <input
+                          type="number"
+                          step="0.01"
+                          value={newItem.price}
+                          onChange={(e) => setNewItem({ ...newItem, price: e.target.value })}
+                          placeholder="0.00"
+                          className="form-input"
+                        />
+                      </div>
+                      <div className="form-group">
+                        <label>Quantity</label>
+                        <input
+                          type="number"
+                          min="1"
+                          value={newItem.quantity}
+                          onChange={(e) => setNewItem({ ...newItem, quantity: e.target.value })}
+                          className="form-input"
+                        />
+                      </div>
                     </div>
-                    <div className="form-group">
-                      <label>Quantity</label>
-                      <input
-                        type="number"
-                        min="1"
-                        value={newItem.quantity}
-                        onChange={(e) => setNewItem({ ...newItem, quantity: e.target.value })}
-                        className="form-input"
-                      />
+                    <div className="form-actions">
+                      <button
+                        onClick={handleAddItem}
+                        className="action-button primary"
+                        disabled={!newItem.name || !newItem.price}
+                      >
+                        Add Item
+                      </button>
                     </div>
-                  </div>
-                  <div className="form-actions">
-                    <button
-                      onClick={handleAddItem}
-                      className="action-button primary small"
-                      disabled={!newItem.name || !newItem.price}
-                    >
-                      Add Item
-                    </button>
-                    <button
-                      onClick={handleCancelAddItem}
-                      className="action-button secondary small"
-                    >
-                      Cancel
-                    </button>
                   </div>
                 </div>
               )}
+            </div>
 
-              <div className="receipt-items-summary-divider">
-                <button
-                  onClick={() => setShowAddItemForm(true)}
-                  className="add-item-plus-button"
-                  title="Add Item"
-                >
-                  +
-                </button>
+            <div className="receipt-summary-section">
+              <div className="summary-header">
+                <h3 className="summary-title">Receipt Summary</h3>
               </div>
-
-              <div className="receipt-summary">
+              <div className="summary-breakdown">
                 <div className="summary-line">
-                  <span className="summary-label">Subtotal:</span>
+                  <span className="summary-label">Subtotal</span>
                   <span className="summary-value">{formatPrice(parsedReceipt.receiptData.subtotal)}</span>
                 </div>
                 <div className="summary-line">
-                  <span className="summary-label">Tax:</span>
+                  <span className="summary-label">Tax</span>
                   <span className="summary-value">{formatPrice(parsedReceipt.receiptData.tax)}</span>
                 </div>
                 <div className="summary-line">
-                  <span className="summary-label">Tip:</span>
+                  <span className="summary-label">Tip</span>
                   <span className="summary-value">{formatPrice(parsedReceipt.receiptData.tip)}</span>
                 </div>
-                <div className="summary-line total">
-                  <span className="summary-label">Total:</span>
+                <div className="summary-line total-line">
+                  <span className="summary-label">Total</span>
                   <span className="summary-value">{formatPrice(parsedReceipt.receiptData.total)}</span>
                 </div>
               </div>
@@ -416,54 +616,85 @@ export default function CreateReceiptPage() {
               onClick={handleReject}
               className="action-button secondary"
             >
-              Try Again
+              ← Try Again
             </button>
             <button 
               onClick={handleConfirmReceipt}
               disabled={currentStep === ('saving' as Step)}
               className="action-button primary"
             >
-              {currentStep === ('saving' as Step) ? 'Saving...' : 'Confirm'}
+              {currentStep === ('saving' as Step) ? 'Saving...' : 'Create Receipt →'}
             </button>
           </div>
         </div>
       )}
 
       {currentStep === 'success' && newReceiptId && (
-        <div className="modal-overlay">
-          <div className="modal">
-            <h2>Receipt Created!</h2>
-            <p>Share this link with your friends so they can claim their items:</p>
-            <input
-              type="text"
-              value={`${window.location.origin}/item-claimer/${newReceiptId}`}
-              readOnly
-              style={{ width: '100%', marginBottom: 8 }}
-              onFocus={e => e.target.select()}
-            />
-            <button
-              className="action-button primary"
-              onClick={() => {
-                navigator.clipboard.writeText(`${window.location.origin}/item-claimer/${newReceiptId}`);
-                alert('Link copied to clipboard!');
-              }}
-            >
-              Copy Link
-            </button>
-            <button
-              className="action-button secondary"
-              onClick={() => router.push(`/item-claimer/${newReceiptId}`)}
-              style={{ marginLeft: 8 }}
-            >
-              Go to Receipt
-            </button>
+        <div className="success-container">
+          <div className="success-card">
+            <div className="success-icon">
+              ✅
+            </div>
+            <h2 className="success-title">Receipt Created Successfully!</h2>
+            <p className="success-description">
+              Your receipt has been created and is ready to be shared. Friends can claim their items and pay you directly.
+            </p>
+            
+            <div className="share-section">
+              <div className="share-header">
+                <h3 className="share-title">Share with Friends</h3>
+                <p className="share-subtitle">Send this link to let friends claim their items</p>
+              </div>
+              
+              <div className="link-container">
+                <input
+                  type="text"
+                  value={`${window.location.origin}/item-claimer/${newReceiptId}`}
+                  readOnly
+                  className="share-link-input"
+                  onFocus={e => e.target.select()}
+                />
+                <button
+                  className="copy-link-btn"
+                  onClick={() => {
+                    navigator.clipboard.writeText(`${window.location.origin}/item-claimer/${newReceiptId}`);
+                    // TODO: Replace with toast notification
+                    alert('Link copied to clipboard!');
+                  }}
+                  title="Copy link"
+                >
+                  📋
+                </button>
+              </div>
+            </div>
+            
+            <div className="success-actions">
+              <button
+                className="action-button primary"
+                onClick={() => router.push(`/bill-fronter/${newReceiptId}`)}
+              >
+                📊 View Receipt
+              </button>
+              <button
+                className="action-button secondary"
+                onClick={() => router.push('/')}
+              >
+                🏠 Back to Home
+              </button>
+            </div>
+            
+            <div className="next-steps">
+              <h4 className="next-steps-title">What's Next?</h4>
+              <ul className="next-steps-list">
+                <li>Share the link with friends who were at the meal</li>
+                <li>Friends can claim items and pay their portion</li>
+                <li>Track payments in your dashboard</li>
+              </ul>
+            </div>
           </div>
         </div>
       )}
 
-      <div className="back-link">
-        <Link href="/" className="nav-link">← Back to Home</Link>
-      </div>
     </div>
   );
 }

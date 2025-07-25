@@ -17,32 +17,51 @@ const PaymentSummary: React.FC<PaymentSummaryProps> = ({ receipt, items, isVisib
     let pendingAmount = 0;
     let unclaimedAmount = 0;
 
-    const taxTipMultiplier = receipt.total / receipt.subtotal;
+    // Handle null tip and ensure we have valid numbers
+    const receiptSubtotal = receipt.subtotal || 0;
+    const receiptTax = receipt.tax || 0;
+    const receiptTip = receipt.tip || 0;
+    const receiptTotal = receipt.total || 0;
 
+    // Calculate the total of all items at their base price
+    const itemsSubtotal = items.reduce((sum, item) => sum + ((item.price || 0) * (item.quantity || 1)), 0);
+    
     items.forEach(item => {
-      const itemSubtotal = item.price * item.quantity;
-      const itemTotalWithTaxTip = itemSubtotal * taxTipMultiplier;
+      const itemSubtotal = (item.price || 0) * (item.quantity || 1);
+      
+      // Calculate this item's share of tax and tip based on its proportion of the subtotal
+      let itemTotalWithTaxTip = itemSubtotal;
+      if (receiptSubtotal > 0) {
+        const itemProportion = itemSubtotal / receiptSubtotal;
+        const itemTax = receiptTax * itemProportion;
+        const itemTip = receiptTip * itemProportion;
+        itemTotalWithTaxTip = itemSubtotal + itemTax + itemTip;
+      }
 
       // Compute status based on claimers
       let status = 'available';
       if (item.claimers.length > 0) {
         if (item.claimers.every(c => c.payment_status === 'paid')) {
-          status = 'paid';
+          status = 'settled';
         } else {
-          status = 'pending';
+          status = 'claimed';
         }
       }
 
-      if (status === 'paid') {
+      if (status === 'settled') {
         paidAmount += itemTotalWithTaxTip;
-      } else if (status === 'pending') {
-        // Calculate paid portion from claimers who have paid
+      } else if (status === 'claimed') {
+        // Calculate paid and pending portions for claimed items
+        const totalClaimedPortion = item.claimers.reduce((sum, claimer) => sum + (claimer.portion || 0), 0);
         const paidPortion = item.claimers
           .filter(claimer => claimer.payment_status === 'paid')
-          .reduce((sum, claimer) => sum + (claimer.portion * item.price), 0);
-
-        const paidPortionWithTaxTip = paidPortion * taxTipMultiplier;
-        const pendingPortionWithTaxTip = (itemSubtotal - paidPortion) * taxTipMultiplier;
+          .reduce((sum, claimer) => sum + (claimer.portion || 0), 0);
+        
+        const pendingPortion = Math.max(0, totalClaimedPortion - paidPortion);
+        
+        // Calculate actual amounts with tax and tip
+        const paidPortionWithTaxTip = (paidPortion * itemTotalWithTaxTip) / (item.quantity || 1);
+        const pendingPortionWithTaxTip = (pendingPortion * itemTotalWithTaxTip) / (item.quantity || 1);
 
         paidAmount += paidPortionWithTaxTip;
         pendingAmount += pendingPortionWithTaxTip;
@@ -51,7 +70,11 @@ const PaymentSummary: React.FC<PaymentSummaryProps> = ({ receipt, items, isVisib
       }
     });
 
-    return { paidAmount, pendingAmount, unclaimedAmount };
+    return { 
+      paidAmount: isNaN(paidAmount) ? 0 : paidAmount,
+      pendingAmount: isNaN(pendingAmount) ? 0 : pendingAmount,
+      unclaimedAmount: isNaN(unclaimedAmount) ? 0 : unclaimedAmount
+    };
   };
 
   const { paidAmount, pendingAmount, unclaimedAmount } = calculateAmounts();
@@ -68,24 +91,24 @@ const PaymentSummary: React.FC<PaymentSummaryProps> = ({ receipt, items, isVisib
         </div>
         <div className="summary-content">
           <div className="amount-breakdown">
-            <div className="amount-item paid">
+            <div className="amount-item settled">
               <div className="amount-label">
-                <span className="status-dot paid-dot"></span>
-                Paid
+                <span className="status-dot settled-dot"></span>
+                Settled
               </div>
               <div className="amount-value">{formatPrice(paidAmount)}</div>
             </div>
-            <div className="amount-item pending">
+            <div className="amount-item claimed">
               <div className="amount-label">
-                <span className="status-dot pending-dot"></span>
-                Pending Payment
+                <span className="status-dot claimed-dot"></span>
+                Claimed
               </div>
               <div className="amount-value">{formatPrice(pendingAmount)}</div>
             </div>
-            <div className="amount-item unclaimed">
+            <div className="amount-item available">
               <div className="amount-label">
-                <span className="status-dot unclaimed-dot"></span>
-                Unclaimed
+                <span className="status-dot available-dot"></span>
+                Available
               </div>
               <div className="amount-value">{formatPrice(unclaimedAmount)}</div>
             </div>
@@ -113,26 +136,26 @@ const PaymentSummary: React.FC<PaymentSummaryProps> = ({ receipt, items, isVisib
             <div className="progress-label">Collection Progress</div>
             <div className="progress-track">
               <div 
-                className="progress-fill paid-progress" 
-                style={{ width: `${(paidAmount / totalAmount) * 100}%` }}
+                className="progress-fill settled-progress" 
+                style={{ width: `${totalAmount > 0 ? (paidAmount / totalAmount) * 100 : 0}%` }}
               ></div>
               <div 
-                className="progress-fill pending-progress" 
+                className="progress-fill claimed-progress" 
                 style={{ 
-                  width: `${(pendingAmount / totalAmount) * 100}%`,
-                  left: `${(paidAmount / totalAmount) * 100}%`
+                  width: `${totalAmount > 0 ? (pendingAmount / totalAmount) * 100 : 0}%`,
+                  left: `${totalAmount > 0 ? (paidAmount / totalAmount) * 100 : 0}%`
                 }}
               ></div>
               <div 
-                className="progress-fill unclaimed-progress" 
+                className="progress-fill available-progress" 
                 style={{ 
-                  width: `${(unclaimedAmount / totalAmount) * 100}%`,
-                  left: `${((paidAmount + pendingAmount) / totalAmount) * 100}%`
+                  width: `${totalAmount > 0 ? (unclaimedAmount / totalAmount) * 100 : 0}%`,
+                  left: `${totalAmount > 0 ? ((paidAmount + pendingAmount) / totalAmount) * 100 : 0}%`
                 }}
               ></div>
             </div>
             <div className="progress-percentage">
-              {Math.round((claimedAmount / totalAmount) * 100)}% claimed
+              {totalAmount > 0 ? Math.round((claimedAmount / totalAmount) * 100) : 0}% claimed
             </div>
           </div>
         </div>

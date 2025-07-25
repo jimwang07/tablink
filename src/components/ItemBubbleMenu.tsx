@@ -8,13 +8,15 @@ interface ItemBubbleMenuProps {
   isVisible: boolean;
   position: { x: number; y: number };
   onClose: () => void;
+  viewType?: 'bill-fronter' | 'item-claimer';
 }
 
 const ItemBubbleMenu: React.FC<ItemBubbleMenuProps> = ({ 
   item, 
   isVisible, 
   position, 
-  onClose 
+  onClose,
+  viewType = 'item-claimer'
 }) => {
   const { claimerName, setName, isLoggedIn } = useClaimerSession();
   const { claims, loading, makeClaim, deleteClaim } = useItemClaims(item?.id || '');
@@ -82,11 +84,11 @@ const ItemBubbleMenu: React.FC<ItemBubbleMenuProps> = ({
             ) : claims.length > 0 ? (
               <div className="claimers-list">
                 {claims.map((claimer, index) => (
-                  <div key={index} className={`claimer-item ${claimer.payment_status === 'paid' ? 'paid' : 'unpaid'}`}>
+                  <div key={index} className={`claimer-item ${claimer.payment_status === 'paid' ? 'settled' : 'claimed'}`}>
                     <div className="claimer-info-left">
                       <span className="claimer-name">{claimer.claimer}</span>
                       <span className="payment-status">
-                        {claimer.payment_status === 'paid' ? '✓ Paid' : 'Not paid'}
+                        {claimer.payment_status === 'paid' ? '✓ Settled' : 'Claimed'}
                       </span>
                     </div>
                     <span className="claimer-details">
@@ -132,25 +134,33 @@ const ItemBubbleMenu: React.FC<ItemBubbleMenuProps> = ({
           )}
 
           {isLoggedIn && (
-            <div style={{ marginTop: 16 }}>
-              <label>
-                Portion:
-                <input
-                  type="number"
-                  min={1}
-                  max={item.quantity}
-                  value={portionInput}
-                  onChange={e => setPortionInput(Number(e.target.value))}
-                  style={{ width: 60, marginLeft: 8 }}
-                />
-              </label>
+            <div className="claim-form">
+              <div className="form-group">
+                <label className="form-label">
+                  Portion (max {item.quantity})
+                </label>
+                <div className="portion-input-container">
+                  <input
+                    type="number"
+                    min={1}
+                    max={item.quantity}
+                    value={portionInput}
+                    onChange={e => setPortionInput(Number(e.target.value))}
+                    className="portion-input"
+                    placeholder="1"
+                  />
+                  <span className="portion-unit">of {item.quantity}</span>
+                </div>
+              </div>
               <button
                 onClick={handleClaim}
-                className="action-button primary"
-                style={{ marginLeft: 8 }}
+                className="action-button primary claim-button"
                 disabled={claiming}
               >
-                {claiming ? 'Claiming...' : 'Claim Item'}
+                {claiming 
+                  ? (viewType === 'bill-fronter' ? 'Assigning...' : 'Claiming...') 
+                  : (viewType === 'bill-fronter' ? 'Assign Item' : 'Claim Item')
+                }
               </button>
             </div>
           )}
