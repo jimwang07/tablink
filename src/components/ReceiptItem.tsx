@@ -17,16 +17,16 @@ const ReceiptItem: React.FC<ReceiptItemProps> = ({ item, claimers, onItemClick }
   let status = 'available';
   if (claimers.length > 0) {
     if (claimers.every(c => c.payment_status === 'paid')) {
-      status = 'paid';
+      status = 'settled';
     } else {
-      status = 'pending';
+      status = 'claimed';
     }
   }
 
   const statusInfo = {
     available: { text: 'Available', class: 'available-badge' },
-    pending: { text: 'Pending', class: 'pending-badge' },
-    paid: { text: '✓ Paid', class: 'paid-badge' }
+    claimed: { text: 'Claimed', class: 'claimed-badge' },
+    settled: { text: 'Settled', class: 'settled-badge' }
   }[status] || { text: 'Available', class: 'available-badge' };
 
   return (

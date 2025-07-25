@@ -25,7 +25,7 @@ const Navbar: React.FC = () => {
         <div className="navbar-links">
           <Link href="/create-receipt" className="nav-link upload-nav-button">
             <span>📷</span>
-            Upload
+            Scan
           </Link>
         </div>
       </div>
