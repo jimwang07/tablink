@@ -7,4 +7,14 @@ module.exports = defineConfig([
   {
     ignores: ['dist/*'],
   },
+  {
+    rules: {
+      'import/no-unresolved': [
+        'error',
+        {
+          ignore: ['expo-auth-session', 'react-native-url-polyfill/auto', '@supabase/supabase-js'],
+        },
+      ],
+    },
+  },
 ]);
