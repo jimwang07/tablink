@@ -10,28 +10,32 @@ import {
   View,
   Image,
 } from 'react-native';
-import { CameraView, useCameraPermissions, type PhotoFile } from 'expo-camera';
+import { CameraView, useCameraPermissions} from 'expo-camera';
 import { useIsFocused } from '@react-navigation/native';
 import * as ImagePicker from 'expo-image-picker';
 import { Ionicons } from '@expo/vector-icons';
+import { useRouter } from 'expo-router';
 
 import { colors } from '@/src/theme';
 import { uploadReceiptImage } from '@/src/lib/imageUpload';
 import { useAuth } from '@/src/hooks/useAuth';
 import { usePendingReceipt } from '@/src/hooks/usePendingReceipt';
 import { invokeParseReceipt } from '@/src/lib/api/parseReceipt';
+import type { ParsedReceipt } from '@/src/types/receipt';
 
 const FOOTER_OVERLAY_SPACE = 220;
 
 type ScanState = 'idle' | 'preview' | 'uploading' | 'processing' | 'error';
+type PhotoLight = { uri: string; width?: number; height?: number };
 
 export default function ScanReceiptScreen() {
   const isFocused = useIsFocused();
   const cameraRef = useRef<CameraView | null>(null);
+  const router = useRouter();
   const [cameraPermission, requestCameraPermission] = useCameraPermissions();
   const [mediaPermission, requestMediaPermission] = ImagePicker.useMediaLibraryPermissions();
   const [isCapturing, setIsCapturing] = useState(false);
-  const [lastPhoto, setLastPhoto] = useState<PhotoFile | null>(null);
+  const [lastPhoto, setLastPhoto] = useState<PhotoLight | null>(null);
   const [importPreview, setImportPreview] = useState<string | null>(null);
   const [footerHeight, setFooterHeight] = useState(FOOTER_OVERLAY_SPACE);
   const [flowState, setFlowState] = useState<ScanState>('idle');
@@ -82,7 +86,7 @@ export default function ScanReceiptScreen() {
       const asset = result.assets[0];
       setImportPreview(asset.uri);
       setLastPhoto(null);
-      Alert.alert('Receipt imported', 'The image has been selected. Parsing will happen in the next step.');
+      setFlowState('preview');
     }
   }, [mediaPermission, requestMediaPermission]);
 
@@ -97,7 +101,7 @@ export default function ScanReceiptScreen() {
         quality: 0.7,
         skipProcessing: Platform.OS === 'android',
       });
-      setLastPhoto(photo);
+      setLastPhoto({ uri: photo.uri, width: photo.width, height: photo.height });
       setImportPreview(null);
       Alert.alert('Receipt captured', 'We will parse the image right after you confirm details.');
       setFlowState('preview');
@@ -114,28 +118,59 @@ export default function ScanReceiptScreen() {
       try {
         setFlowState('uploading');
         setErrorMessage(null);
-
+  
+        // 1. Upload downsized-only image (this is now the canonical receipt image)
         const uploadResult = await uploadReceiptImage(localUri, userId);
-
+        // uploadResult = { storagePath, publicUrl, localPreviewUri }
+  
+        if (!uploadResult?.storagePath) {
+          setFlowState('error');
+          setErrorMessage('Failed to upload receipt.');
+          return;
+        }
+  
+        // 2. Move to "processing"
         setFlowState('processing');
-        const parsed = await invokeParseReceipt(uploadResult.publicUrl, userId);
-
+  
+        // 3. Call parse edge fn with that storagePath
+        let receipt: ParsedReceipt | null = null;
+        try {
+          receipt = await invokeParseReceipt(uploadResult.storagePath, userId);
+        } catch (err: any) {
+          setErrorMessage(
+            err?.message || 'Failed to parse receipt. Please try again.'
+          );
+          setFlowState('error');
+          return;
+        }
+  
+        if (!receipt) {
+          setErrorMessage('Failed to parse receipt. Please try again.');
+          setFlowState('error');
+          return;
+        }
+  
+        // 4. Put it in PendingReceipt so /receipt/review can render
+        // NOTE: We'll store localPreviewUri so the review screen can show the image instantly.
         setPendingReceipt({
-          localUri,
-          storagePath: uploadResult.storagePath,
-          publicUrl: uploadResult.publicUrl,
-          parsed,
+          localUri: uploadResult.localPreviewUri || localUri,
+          storagePath: uploadResult.storagePath ?? null,
+          publicUrl: uploadResult.publicUrl ?? null,
+          parsed: receipt,
         });
-
-        // TODO: navigate to draft editor route once implemented
-      } catch (error) {
-        console.error('Scan flow error:', error);
-        setErrorMessage(error instanceof Error ? error.message : 'Failed to process receipt');
+  
+        // 5. Reset camera flow + navigate
+        setFlowState('idle');
+        setLastPhoto(null);
+        setImportPreview(null);
+        router.replace('/receipt/review');
+      } catch (error: any) {
+        setErrorMessage(error?.message || 'Failed to process receipt');
         setFlowState('error');
       }
     },
-    [setPendingReceipt]
-  );
+    [router, setPendingReceipt]
+  );      
 
   const handleFooterLayout = useCallback(
     ({ nativeEvent }: { nativeEvent: { layout: { height: number } } }) => {
@@ -178,8 +213,7 @@ export default function ScanReceiptScreen() {
             ref={cameraRef}
             style={styles.camera}
             facing="back"
-            isActive={isFocused && flowState === 'idle'}
-            enableHighQualityPhotos
+            active={isFocused && flowState === 'idle'}
           />
         )}
 

@@ -1,33 +1,56 @@
 import * as FileSystem from 'expo-file-system';
-
+import * as ImageManipulator from 'expo-image-manipulator';
 import { getSupabaseClient } from './supabaseClient';
 
+// what we hand back to the caller
 export type UploadReceiptResult = {
-  storagePath: string;
-  publicUrl: string;
+  storagePath: string;           // e.g. "user_123/1730000000000.jpg"
+  publicUrl: string | null;      // likely null now because bucket is private
+  localPreviewUri: string;       // downsized local file we just created (use this for UI if you want)
 };
+
+const BUCKET = 'receipts'; // single bucket now
+const MAX_WIDTH = 1200;    // aggressive downsize target
+const JPEG_QUALITY = 0.7;  // ~0.6-0.7 is usually fine for receipts
 
 export async function uploadReceiptImage(localUri: string, userId: string): Promise<UploadReceiptResult> {
   const client = getSupabaseClient();
 
-  const extension = guessExtension(localUri);
-  const filename = `${Date.now()}.${extension}`;
-  const storagePath = `${userId}/${filename}`;
-
+  // Make sure the original picture exists
   const fileInfo = await FileSystem.getInfoAsync(localUri);
   if (!fileInfo.exists) {
     throw new Error('Receipt image not found on device');
   }
 
-  const fileBuffer = await FileSystem.readAsStringAsync(localUri, {
+  // 1. Always downsize and recompress to a stable jpeg so uploads are predictable & small
+  const manipulated = await ImageManipulator.manipulateAsync(
+    localUri,
+    [{ resize: { width: MAX_WIDTH } }],
+    {
+      compress: JPEG_QUALITY,
+      format: ImageManipulator.SaveFormat.JPEG,
+    }
+  );
+
+  // manipulated.uri is our downsized preview that we are now treating as THE receipt
+  const downsizedUri = manipulated.uri;
+
+  // 2. Read that downsized file as base64 -> Uint8Array for Supabase upload
+  const base64Data = await FileSystem.readAsStringAsync(downsizedUri, {
     encoding: FileSystem.EncodingType.Base64,
   });
-  const fileBytes = Uint8Array.from(atob(fileBuffer), (c) => c.charCodeAt(0));
+  const fileBytes = base64ToUint8Array(base64Data);
 
+  // 3. Create a predictable storage key
+  const now = Date.now();
+  const filename = `${now}.jpg`; // always jpg now
+  const storagePath = `${userId}/${filename}`;
+
+  // 4. Upload to the single private bucket
   const { error: uploadError } = await client.storage
-    .from('receipts')
+    .from(BUCKET)
     .upload(storagePath, fileBytes, {
-      contentType: contentTypeForExtension(extension),
+      contentType: 'image/jpeg',
       upsert: false,
     });
 
@@ -35,39 +58,31 @@ export async function uploadReceiptImage(localUri: string, userId: string): Prom
     throw new Error(uploadError.message);
   }
 
-  const { data } = client.storage
-    .from('receipts')
-    .getPublicUrl(storagePath);
-
-  if (!data?.publicUrl) {
-    throw new Error('Failed to generate image URL');
+  // 5. Optional: try to get a public URL (will be null-ish if bucket is private)
+  let publicUrl: string | null = null;
+  try {
+    const { data } = client.storage.from(BUCKET).getPublicUrl(storagePath);
+    publicUrl = data?.publicUrl ?? null;
+  } catch {
+    publicUrl = null;
   }
 
   return {
     storagePath,
-    publicUrl: data.publicUrl,
+    publicUrl,
+    localPreviewUri: downsizedUri,
   };
 }
 
-function guessExtension(uri: string): string {
-  const match = uri.match(/\.([a-zA-Z0-9]+)(?:\?|$)/);
-  if (match?.[1]) {
-    return match[1].toLowerCase();
+// helper
+function base64ToUint8Array(base64: string): Uint8Array {
+  // React Native / Expo usually polyfills atob. If you hit "atob not defined",
+  // import { decode as atob } from 'base-64' and use that instead.
+  const binaryString = atob(base64);
+  const len = binaryString.length;
+  const bytes = new Uint8Array(len);
+  for (let i = 0; i < len; i++) {
+    bytes[i] = binaryString.charCodeAt(i);
   }
-  return 'jpg';
-}
-
-function contentTypeForExtension(ext: string): string {
-  switch (ext) {
-    case 'png':
-      return 'image/png';
-    case 'heic':
-      return 'image/heic';
-    case 'webp':
-      return 'image/webp';
-    case 'jpeg':
-    case 'jpg':
-    default:
-      return 'image/jpeg';
-  }
+  return bytes;
 }
