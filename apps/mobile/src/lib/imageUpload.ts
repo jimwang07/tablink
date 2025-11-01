@@ -23,6 +23,7 @@ export async function uploadReceiptImage(localUri: string, userId: string): Prom
   }
 
   // 1. Always downsize and recompress to a stable jpeg so uploads are predictable & small
+  const resizeStart = Date.now();
   const manipulated = await ImageManipulator.manipulateAsync(
     localUri,
     [{ resize: { width: MAX_WIDTH } }],
@@ -31,6 +32,8 @@ export async function uploadReceiptImage(localUri: string, userId: string): Prom
       format: ImageManipulator.SaveFormat.JPEG,
     }
   );
+  const resizeDuration = Date.now() - resizeStart;
+  console.log(`[perf][uploadReceiptImage] resize+compress ${resizeDuration}ms`);
 
   // manipulated.uri is our downsized preview that we are now treating as THE receipt
   const downsizedUri = manipulated.uri;
@@ -47,12 +50,17 @@ export async function uploadReceiptImage(localUri: string, userId: string): Prom
   const storagePath = `${userId}/${filename}`;
 
   // 4. Upload to the single private bucket
+  const uploadStart = Date.now();
   const { error: uploadError } = await client.storage
     .from(BUCKET)
     .upload(storagePath, fileBytes, {
       contentType: 'image/jpeg',
       upsert: false,
     });
+  const uploadDuration = Date.now() - uploadStart;
+  console.log(
+    `[perf][uploadReceiptImage] upload ${uploadDuration}ms (bytes=${fileBytes.length})`
+  );
 
   if (uploadError) {
     throw new Error(uploadError.message);

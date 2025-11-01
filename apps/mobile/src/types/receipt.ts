@@ -29,7 +29,8 @@ export type ReceiptTotals = {
 
 export type PendingReceipt = {
   localUri: string;
-  storagePath: string;
-  publicUrl: string;
+  storagePath: string | null;
+  publicUrl: string | null;
   parsed: ParsedReceipt;
 };
+

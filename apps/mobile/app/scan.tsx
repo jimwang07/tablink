@@ -40,9 +40,21 @@ export default function ScanReceiptScreen() {
   const [footerHeight, setFooterHeight] = useState(FOOTER_OVERLAY_SPACE);
   const [flowState, setFlowState] = useState<ScanState>('idle');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const continueStartRef = useRef<number | null>(null);
 
   const { session } = useAuth();
   const { setPendingReceipt } = usePendingReceipt();
+
+  const logFlowTiming = useCallback(
+    (event: string) => {
+      if (continueStartRef.current != null) {
+        const elapsed = Date.now() - continueStartRef.current;
+        console.log(`[perf][scan] ${event} after ${elapsed}ms`);
+        continueStartRef.current = null;
+      }
+    },
+    [continueStartRef]
+  );
 
   const hasCameraPermission = useMemo(() => cameraPermission?.granted === true, [cameraPermission]);
   const hasPreview = Boolean(lastPhoto || importPreview);
@@ -124,6 +136,7 @@ export default function ScanReceiptScreen() {
         // uploadResult = { storagePath, publicUrl, localPreviewUri }
   
         if (!uploadResult?.storagePath) {
+          logFlowTiming('upload failed');
           setFlowState('error');
           setErrorMessage('Failed to upload receipt.');
           return;
@@ -137,14 +150,16 @@ export default function ScanReceiptScreen() {
         try {
           receipt = await invokeParseReceipt(uploadResult.storagePath, userId);
         } catch (err: any) {
+          logFlowTiming('parse receipt failed');
           setErrorMessage(
             err?.message || 'Failed to parse receipt. Please try again.'
           );
           setFlowState('error');
           return;
         }
-  
+
         if (!receipt) {
+          logFlowTiming('parse receipt returned empty');
           setErrorMessage('Failed to parse receipt. Please try again.');
           setFlowState('error');
           return;
@@ -158,18 +173,20 @@ export default function ScanReceiptScreen() {
           publicUrl: uploadResult.publicUrl ?? null,
           parsed: receipt,
         });
-  
+
         // 5. Reset camera flow + navigate
         setFlowState('idle');
         setLastPhoto(null);
         setImportPreview(null);
+        logFlowTiming('navigating to review');
         router.replace('/receipt/review');
       } catch (error: any) {
+        logFlowTiming('flow error');
         setErrorMessage(error?.message || 'Failed to process receipt');
         setFlowState('error');
       }
     },
-    [router, setPendingReceipt]
+    [logFlowTiming, router, setPendingReceipt]
   );      
 
   const handleFooterLayout = useCallback(
@@ -269,6 +286,8 @@ export default function ScanReceiptScreen() {
                   return;
                 }
 
+                continueStartRef.current = Date.now();
+                console.log('[perf][scan] continue tapped');
                 beginUploadAndParse(sourceUri, session.user.id);
               }}
             >

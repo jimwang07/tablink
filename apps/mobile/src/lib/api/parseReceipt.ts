@@ -14,13 +14,16 @@ export async function invokeParseReceipt(
 ): Promise<ParsedReceipt> {
   const client = getSupabaseClient();
 
-  const { data, error } = await client.functions.invoke<InvokeResp>(
-    'parse-receipt',
-    {
+  const invokeStart = Date.now();
+  const { data, error } = await client.functions
+    .invoke<InvokeResp>('parse-receipt-groq', {
       body: { imagePath, userId },
       signal: opts?.signal,
-    }
-  );
+    })
+    .finally(() => {
+      const invokeDuration = Date.now() - invokeStart;
+      console.log(`[perf][invokeParseReceipt] edge function ${invokeDuration}ms`);
+    });
 
   if (error) {
     throw new Error(error.message);
