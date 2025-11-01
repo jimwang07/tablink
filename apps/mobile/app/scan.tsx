@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useMemo, useRef, useState, useEffect } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -9,6 +9,8 @@ import {
   TouchableOpacity,
   View,
   Image,
+  Animated,
+  Easing,
 } from 'react-native';
 import { CameraView, useCameraPermissions} from 'expo-camera';
 import { useIsFocused } from '@react-navigation/native';
@@ -24,9 +26,11 @@ import { invokeParseReceipt } from '@/src/lib/api/parseReceipt';
 import type { ParsedReceipt } from '@/src/types/receipt';
 
 const FOOTER_OVERLAY_SPACE = 220;
+const MIN_STAGE_DURATION_MS = 600;
 
-type ScanState = 'idle' | 'preview' | 'uploading' | 'processing' | 'error';
+type ScanState = 'idle' | 'preview' | 'processing' | 'error';
 type PhotoLight = { uri: string; width?: number; height?: number };
+type ProcessingStage = 'upload' | 'extract' | 'finalize';
 
 export default function ScanReceiptScreen() {
   const isFocused = useIsFocused();
@@ -41,6 +45,8 @@ export default function ScanReceiptScreen() {
   const [flowState, setFlowState] = useState<ScanState>('idle');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const continueStartRef = useRef<number | null>(null);
+  const stageStartedAtRef = useRef<number>(0);
+  const [processingStage, setProcessingStage] = useState<ProcessingStage>('upload');
 
   const { session } = useAuth();
   const { setPendingReceipt } = usePendingReceipt();
@@ -125,45 +131,77 @@ export default function ScanReceiptScreen() {
     }
   }, [isCapturing]);
 
+  const ensureStageDuration = useCallback(async () => {
+    const elapsed = Date.now() - stageStartedAtRef.current;
+    const remaining = MIN_STAGE_DURATION_MS - elapsed;
+    if (remaining > 0) {
+      await new Promise<void>((resolve) => setTimeout(resolve, remaining));
+    }
+  }, []);
+
   const beginUploadAndParse = useCallback(
     async (localUri: string, userId: string) => {
       try {
-        setFlowState('uploading');
+        setFlowState('processing');
         setErrorMessage(null);
+        setProcessingStage('upload');
+        stageStartedAtRef.current = Date.now();
   
         // 1. Upload downsized-only image (this is now the canonical receipt image)
-        const uploadResult = await uploadReceiptImage(localUri, userId);
+        let uploadResult;
+        try {
+          uploadResult = await uploadReceiptImage(localUri, userId);
+        } catch (uploadErr: any) {
+          await ensureStageDuration();
+          logFlowTiming('upload failed');
+          setErrorMessage(uploadErr?.message || 'Failed to upload receipt.');
+          setFlowState('error');
+          setProcessingStage('upload');
+          return;
+        }
+        await ensureStageDuration();
         // uploadResult = { storagePath, publicUrl, localPreviewUri }
   
         if (!uploadResult?.storagePath) {
           logFlowTiming('upload failed');
-          setFlowState('error');
           setErrorMessage('Failed to upload receipt.');
+          setFlowState('error');
+          setProcessingStage('upload');
           return;
         }
   
-        // 2. Move to "processing"
-        setFlowState('processing');
+        // 2. Move to parsing stage
+        setProcessingStage('extract');
+        stageStartedAtRef.current = Date.now();
   
         // 3. Call parse edge fn with that storagePath
         let receipt: ParsedReceipt | null = null;
         try {
           receipt = await invokeParseReceipt(uploadResult.storagePath, userId);
         } catch (err: any) {
+          await ensureStageDuration();
           logFlowTiming('parse receipt failed');
           setErrorMessage(
             err?.message || 'Failed to parse receipt. Please try again.'
           );
           setFlowState('error');
+          setProcessingStage('upload');
           return;
         }
+        await ensureStageDuration();
 
         if (!receipt) {
           logFlowTiming('parse receipt returned empty');
           setErrorMessage('Failed to parse receipt. Please try again.');
           setFlowState('error');
+          setProcessingStage('upload');
           return;
         }
+
+        // 3.5 Finalize stage
+        setProcessingStage('finalize');
+        stageStartedAtRef.current = Date.now();
+        await new Promise((resolve) => setTimeout(resolve, 450));
   
         // 4. Put it in PendingReceipt so /receipt/review can render
         // NOTE: We'll store localPreviewUri so the review screen can show the image instantly.
@@ -178,16 +216,18 @@ export default function ScanReceiptScreen() {
         setFlowState('idle');
         setLastPhoto(null);
         setImportPreview(null);
+        setProcessingStage('upload');
         logFlowTiming('navigating to review');
         router.replace('/receipt/review');
       } catch (error: any) {
         logFlowTiming('flow error');
         setErrorMessage(error?.message || 'Failed to process receipt');
         setFlowState('error');
+        setProcessingStage('upload');
       }
     },
-    [logFlowTiming, router, setPendingReceipt]
-  );      
+    [ensureStageDuration, logFlowTiming, router, setPendingReceipt]
+  );
 
   const handleFooterLayout = useCallback(
     ({ nativeEvent }: { nativeEvent: { layout: { height: number } } }) => {
@@ -294,16 +334,8 @@ export default function ScanReceiptScreen() {
               <Text style={styles.continueButtonText}>Continue</Text>
             </TouchableOpacity>
           </View>
-        ) : flowState === 'uploading' ? (
-          <View style={styles.statusContainer}>
-            <ActivityIndicator size="large" color={colors.primary} />
-            <Text style={styles.statusText}>Uploading receipt…</Text>
-          </View>
         ) : flowState === 'processing' ? (
-          <View style={styles.statusContainer}>
-            <ActivityIndicator size="large" color={colors.primary} />
-            <Text style={styles.statusText}>Parsing receipt…</Text>
-          </View>
+          <ProcessingStatus stage={processingStage} />
         ) : flowState === 'error' && errorMessage ? (
           <View style={styles.statusContainer}>
             <Text style={styles.errorTitle}>Something went wrong</Text>
@@ -611,4 +643,293 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '700',
   },
+  processingWrapper: {
+    width: '100%',
+    paddingHorizontal: 12,
+  },
+  processingCard: {
+    backgroundColor: colors.surface,
+    borderRadius: 18,
+    padding: 20,
+    borderWidth: 1,
+    borderColor: colors.surfaceBorder,
+    gap: 20,
+  },
+  processingHero: {
+    alignItems: 'center',
+    gap: 12,
+  },
+  processingHeroCircle: {
+    width: 92,
+    height: 92,
+    borderRadius: 46,
+    backgroundColor: 'rgba(45, 211, 111, 0.12)',
+    borderWidth: 1,
+    borderColor: 'rgba(45, 211, 111, 0.3)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    overflow: 'hidden',
+  },
+  processingHeroScan: {
+    position: 'absolute',
+    width: '160%',
+    height: 2,
+    top: '48%',
+    backgroundColor: 'rgba(45, 211, 111, 0.65)',
+  },
+  processingTitle: {
+    color: colors.text,
+    fontSize: 18,
+    fontWeight: '600',
+  },
+  processingSubtitle: {
+    color: colors.textSecondary,
+    fontSize: 14,
+    textAlign: 'center',
+  },
+  processingProgressTrack: {
+    height: 4,
+    borderRadius: 999,
+    backgroundColor: 'rgba(45, 211, 111, 0.12)',
+    overflow: 'hidden',
+  },
+  processingProgressFill: {
+    height: '100%',
+    borderRadius: 999,
+    backgroundColor: colors.primary,
+  },
+  processingStepsList: {
+    gap: 12,
+  },
+  processingStepRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(45, 211, 111, 0.08)',
+    backgroundColor: 'rgba(17, 20, 24, 0.85)',
+  },
+  processingStepRowActive: {
+    borderColor: 'rgba(45, 211, 111, 0.4)',
+    backgroundColor: 'rgba(45, 211, 111, 0.18)',
+  },
+  processingStepRowDone: {
+    borderColor: 'rgba(45, 211, 111, 0.3)',
+  },
+  processingStepIndicator: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    borderWidth: 2,
+    borderColor: 'rgba(45, 211, 111, 0.25)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 12,
+  },
+  processingStepIndicatorActive: {
+    borderColor: colors.primary,
+    backgroundColor: 'rgba(45, 211, 111, 0.18)',
+  },
+  processingStepIndicatorDone: {
+    borderColor: colors.primary,
+    backgroundColor: colors.primary,
+  },
+  processingStepDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: colors.primary,
+  },
+  processingStepIndexText: {
+    color: colors.textSecondary,
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  processingStepCopy: {
+    flex: 1,
+    gap: 4,
+  },
+  processingStepTitle: {
+    color: colors.text,
+    fontSize: 15,
+    fontWeight: '600',
+  },
+  processingStepSubtitle: {
+    color: colors.textSecondary,
+    fontSize: 13,
+    lineHeight: 18,
+  },
+  processingFooterNote: {
+    marginTop: 12,
+    textAlign: 'center',
+    color: colors.textSecondary,
+    fontSize: 12,
+  },
 });
+
+const PROCESSING_STEPS: {
+  key: ProcessingStage;
+  title: string;
+  subtitle: string;
+}[] = [
+  {
+    key: 'upload',
+    title: 'Securing your photo',
+    subtitle: 'Polishing the image so tab math stays sharp.',
+  },
+  {
+    key: 'extract',
+    title: 'Extracting items with AI',
+    subtitle: 'Reading line items, totals, and every nuance.',
+  },
+  {
+    key: 'finalize',
+    title: 'Balancing the tab',
+    subtitle: 'Matching tax & tip for a perfect split.',
+  },
+];
+
+const STAGE_COPY: Record<ProcessingStage, { headline: string; helper: string }> = {
+  upload: {
+    headline: 'Uploading your receipt',
+    helper: 'Hang tight—we’re securing a crystal clear copy.',
+  },
+  extract: {
+    headline: 'Extracting items',
+    helper: 'Tablink is reading every line for quick claiming.',
+  },
+  finalize: {
+    headline: 'Finishing touches',
+    helper: 'Balancing tax and tip so everyone pays their share.',
+  },
+};
+
+function ProcessingStatus({ stage }: { stage: ProcessingStage }) {
+  const pulseAnim = useRef(new Animated.Value(1)).current;
+  const shimmerAnim = useRef(new Animated.Value(0)).current;
+  const progressAnim = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    pulseAnim.setValue(1);
+    const pulseLoop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulseAnim, {
+          toValue: 1.06,
+          duration: 900,
+          easing: Easing.inOut(Easing.ease),
+          useNativeDriver: true,
+        }),
+        Animated.timing(pulseAnim, {
+          toValue: 1,
+          duration: 900,
+          easing: Easing.inOut(Easing.ease),
+          useNativeDriver: true,
+        }),
+      ])
+    );
+    pulseLoop.start();
+    return () => {
+      pulseLoop.stop();
+    };
+  }, [pulseAnim]);
+
+  useEffect(() => {
+    shimmerAnim.setValue(0);
+    const shimmerLoop = Animated.loop(
+      Animated.timing(shimmerAnim, {
+        toValue: 1,
+        duration: 1500,
+        easing: Easing.linear,
+        useNativeDriver: true,
+      })
+    );
+    shimmerLoop.start();
+    return () => {
+      shimmerLoop.stop();
+    };
+  }, [shimmerAnim]);
+
+  useEffect(() => {
+    const currentIndex = PROCESSING_STEPS.findIndex((step) => step.key === stage);
+    const denominator = Math.max(PROCESSING_STEPS.length - 1, 1);
+    const target = currentIndex / denominator;
+
+    Animated.timing(progressAnim, {
+      toValue: target,
+      duration: 420,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: false,
+    }).start();
+  }, [stage, progressAnim]);
+
+  const currentIndex = PROCESSING_STEPS.findIndex((step) => step.key === stage);
+  const translateX = shimmerAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [-160, 160],
+  });
+  const progressWidth = progressAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: ['0%', '100%'],
+  });
+
+  return (
+    <View style={styles.processingWrapper}>
+      <View style={styles.processingCard}>
+        <View style={styles.processingHero}>
+          <Animated.View style={[styles.processingHeroCircle, { transform: [{ scale: pulseAnim }] }]}>
+            <Ionicons name="receipt-outline" size={36} color={colors.primary} />
+            <Animated.View
+              style={[
+                styles.processingHeroScan,
+                { transform: [{ translateX }] },
+              ]}
+            />
+          </Animated.View>
+          <Text style={styles.processingTitle}>{STAGE_COPY[stage].headline}</Text>
+          <Text style={styles.processingSubtitle}>{STAGE_COPY[stage].helper}</Text>
+        </View>
+        <View style={styles.processingProgressTrack}>
+          <Animated.View style={[styles.processingProgressFill, { width: progressWidth }]} />
+        </View>
+        <View style={styles.processingStepsList}>
+          {PROCESSING_STEPS.map((step, index) => {
+            const status = index < currentIndex ? 'done' : index === currentIndex ? 'active' : 'pending';
+            return (
+              <View
+                key={step.key}
+                style={[
+                  styles.processingStepRow,
+                  status === 'active' && styles.processingStepRowActive,
+                  status === 'done' && styles.processingStepRowDone,
+                ]}
+              >
+                <View
+                  style={[
+                    styles.processingStepIndicator,
+                    status === 'active' && styles.processingStepIndicatorActive,
+                    status === 'done' && styles.processingStepIndicatorDone,
+                  ]}
+                >
+                  {status === 'done' ? (
+                    <Ionicons name="checkmark" size={16} color={colors.background} />
+                  ) : status === 'active' ? (
+                    <View style={styles.processingStepDot} />
+                  ) : (
+                    <Text style={styles.processingStepIndexText}>{index + 1}</Text>
+                  )}
+                </View>
+                <View style={styles.processingStepCopy}>
+                  <Text style={styles.processingStepTitle}>{step.title}</Text>
+                  <Text style={styles.processingStepSubtitle}>{step.subtitle}</Text>
+                </View>
+              </View>
+            );
+          })}
+        </View>
+      </View>
+      <Text style={styles.processingFooterNote}>Tablink keeps everything private while we prep your tab.</Text>
+    </View>
+  );
+}
