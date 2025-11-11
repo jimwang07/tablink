@@ -3,6 +3,7 @@ import { ActivityIndicator, StyleSheet, View } from 'react-native';
 import { Stack, useRootNavigationState, useRouter, useSegments } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import 'react-native-reanimated';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
 
 import { TablinkDarkTheme, colors } from '@/src/theme';
 import { AuthProvider } from '@/src/providers/AuthProvider';
@@ -88,18 +89,23 @@ function AuthAwareStack() {
 
 export default function RootLayout() {
   return (
-    <ThemeProvider value={TablinkDarkTheme}>
-      <StatusBar style="light" />
-      <AuthProvider>
-        <PendingReceiptProvider>
-          <AuthAwareStack />
-        </PendingReceiptProvider>
-      </AuthProvider>
-    </ThemeProvider>
+    <GestureHandlerRootView style={styles.root}>
+      <ThemeProvider value={TablinkDarkTheme}>
+        <StatusBar style="light" />
+        <AuthProvider>
+          <PendingReceiptProvider>
+            <AuthAwareStack />
+          </PendingReceiptProvider>
+        </AuthProvider>
+      </ThemeProvider>
+    </GestureHandlerRootView>
   );
 }
 
 const styles = StyleSheet.create({
+  root: {
+    flex: 1,
+  },
   loadingContainer: {
     flex: 1,
     backgroundColor: colors.background,
