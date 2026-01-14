@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Image,
+  Keyboard,
   KeyboardAvoidingView,
   Platform,
   ScrollView,
@@ -10,10 +11,11 @@ import {
   TouchableOpacity,
   View,
   Modal,
-  Pressable,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Swipeable } from 'react-native-gesture-handler';
+import Animated, { FadeOut, LinearTransition } from 'react-native-reanimated';
+import { Ionicons } from '@expo/vector-icons';
 
 import { usePendingReceipt } from '@/src/hooks/usePendingReceipt';
 import { colors } from '@/src/theme';
@@ -132,7 +134,7 @@ export default function ReceiptReviewScreen() {
     buildEditableItems(parsed?.items ?? [])
   );
   const [isImageExpanded, setImageExpanded] = useState(false);
-  const [activeItemId, setActiveItemId] = useState<string | null>(null);
+  const isSwipingRef = useRef(false);
 
   const normalizedItems = useMemo(() => normalizeItems(editableItems), [editableItems]);
   const subtotal = useMemo(
@@ -142,11 +144,6 @@ export default function ReceiptReviewScreen() {
   const taxAmount = useMemo(() => parseCurrencyInput(taxInput), [taxInput]);
   const tipAmount = useMemo(() => parseCurrencyInput(tipInput), [tipInput]);
   const grandTotal = useMemo(() => subtotal + taxAmount + tipAmount, [subtotal, taxAmount, tipAmount]);
-
-  const handleRetake = useCallback(() => {
-    setPendingReceipt(null);
-    router.replace('/scan');
-  }, [router, setPendingReceipt]);
 
   const handleOpenImage = useCallback(() => {
     setImageExpanded(true);
@@ -177,7 +174,6 @@ export default function ReceiptReviewScreen() {
       quantity: '1',
     };
     setEditableItems((current) => [newItem, ...current]);
-    setActiveItemId(newItem.key);
   }, []);
 
   const buildUpdatedReceipt = useCallback(
@@ -220,6 +216,16 @@ export default function ReceiptReviewScreen() {
     setPendingReceipt({ ...pendingReceipt, parsed: nextParsed });
 
     // TODO: persist to Supabase before navigating
+    router.replace('/(host)/home');
+  }, [buildUpdatedReceipt, pendingReceipt, router, setPendingReceipt]);
+
+  const handleCreateTablink = useCallback(() => {
+    if (!pendingReceipt) return;
+
+    const nextParsed = buildUpdatedReceipt(pendingReceipt.parsed);
+    setPendingReceipt({ ...pendingReceipt, parsed: nextParsed });
+
+    // TODO: persist to Supabase, generate shareable link, show share modal
     router.replace('/(host)/home');
   }, [buildUpdatedReceipt, pendingReceipt, router, setPendingReceipt]);
 
@@ -281,79 +287,82 @@ export default function ReceiptReviewScreen() {
               <Text style={styles.cardHeaderButtonText}>+ Add item</Text>
             </TouchableOpacity>
           </View>
-          {editableItems.map((item) => {
-            const isActive = activeItemId === item.key;
-            return (
+          {editableItems.map((item) => (
+            <Animated.View
+              key={item.key}
+              style={styles.itemWrapper}
+              exiting={FadeOut.duration(200)}
+              layout={LinearTransition.duration(200)}
+            >
+              <View style={styles.swipeDeleteBehind} />
               <Swipeable
-                key={item.key}
                 overshootRight={false}
+                rightThreshold={60}
+                friction={2}
+                onBegan={() => {
+                  isSwipingRef.current = true;
+                  Keyboard.dismiss();
+                }}
+                onEnded={() => {
+                  setTimeout(() => {
+                    isSwipingRef.current = false;
+                  }, 100);
+                }}
+                onSwipeableOpen={(direction) => {
+                  if (direction === 'right') {
+                    removeItem(item.key);
+                  }
+                }}
                 renderRightActions={() => (
-                  <TouchableOpacity style={styles.swipeDelete} onPress={() => removeItem(item.key)}>
-                    <Text style={styles.swipeDeleteText}>Delete</Text>
-                  </TouchableOpacity>
+                  <View style={styles.swipeDeleteButton}>
+                    <Ionicons name="trash" size={22} color="#fff" />
+                  </View>
                 )}
               >
-                <View style={[styles.itemRow, isActive && styles.itemRowActive]}>
-                  <Pressable
-                    onPress={() => setActiveItemId(isActive ? null : item.key)}
-                    style={styles.itemSummaryRow}
-                  >
-                    <View style={styles.itemSummaryText}>
-                      <Text style={styles.itemSummaryName}>{item.name || 'Untitled item'}</Text>
-                      <Text style={styles.itemSummaryMeta}>
-                        × {formatQuantityLabel(parseQuantityInput(item.quantity))}
-                      </Text>
-                    </View>
-                    <Text style={styles.itemSummaryTotal}>
-                      {formatCurrency(
-                        parseCurrencyInput(item.price) * parseQuantityInput(item.quantity),
-                        currencyCode
-                      )}
-                    </Text>
-                  </Pressable>
-                  {isActive && (
-                    <View style={styles.itemEditPanel}>
-                      <TextInput
-                        value={item.name}
-                        onChangeText={(value) => updateItemField(item.key, 'name', value)}
-                        placeholder="Item name"
-                        placeholderTextColor={placeholderColor}
-                        style={[styles.textInput, styles.itemNameInput]}
-                      />
-                      <View style={styles.itemInputsRow}>
-                        <View style={styles.inputColumn}>
-                          <Text style={styles.inputLabel}>Price</Text>
-                          <TextInput
-                            value={item.price}
-                            onChangeText={(value) => updateItemField(item.key, 'price', value)}
-                            placeholder="0.00"
-                            placeholderTextColor={placeholderColor}
-                            keyboardType="decimal-pad"
-                            style={styles.textInput}
-                          />
-                        </View>
-                        <View style={styles.inputColumn}>
-                          <Text style={styles.inputLabel}>Quantity</Text>
-                          <TextInput
-                            value={item.quantity}
-                            onChangeText={(value) => updateItemField(item.key, 'quantity', value)}
-                            placeholder="1"
-                            placeholderTextColor={placeholderColor}
-                            keyboardType="decimal-pad"
-                            style={styles.textInput}
-                          />
-                        </View>
-                      </View>
-                    </View>
-                  )}
+                <View style={styles.itemRow}>
+                  <TextInput
+                    value={item.name}
+                    onChangeText={(value) => updateItemField(item.key, 'name', value)}
+                    placeholder="Item name"
+                    placeholderTextColor={placeholderColor}
+                    style={[styles.itemNameInput, { color: '#F5F7FA' }]}
+                    onFocus={() => {
+                      if (isSwipingRef.current) Keyboard.dismiss();
+                    }}
+                  />
+                  <View style={styles.itemRightFields}>
+                    <TextInput
+                      value={item.quantity}
+                      onChangeText={(value) => updateItemField(item.key, 'quantity', value)}
+                      placeholder="1"
+                      placeholderTextColor={placeholderColor}
+                      keyboardType="decimal-pad"
+                      style={styles.itemQtyInput}
+                      onFocus={() => {
+                        if (isSwipingRef.current) Keyboard.dismiss();
+                      }}
+                    />
+                    <Text style={styles.itemTimesSymbol}>×</Text>
+                    <TextInput
+                      value={item.price}
+                      onChangeText={(value) => updateItemField(item.key, 'price', value)}
+                      placeholder="0.00"
+                      placeholderTextColor={placeholderColor}
+                      keyboardType="decimal-pad"
+                      style={styles.itemPriceInput}
+                      onFocus={() => {
+                        if (isSwipingRef.current) Keyboard.dismiss();
+                      }}
+                    />
+                  </View>
                 </View>
               </Swipeable>
-            );
-          })}
+            </Animated.View>
+          ))}
           {!editableItems.length && (
             <Text style={styles.emptyItemsText}>No items yet. Add one to get started.</Text>
           )}
-          <Text style={styles.cardFooterNote}>Tap an item to edit. Swipe left to delete.</Text>
+          <Text style={styles.cardFooterNote}>Swipe left to delete an item.</Text>
         </View>
 
         <View style={styles.card}>
@@ -404,11 +413,11 @@ export default function ReceiptReviewScreen() {
         </View>
 
         <View style={styles.actions}>
-          <TouchableOpacity style={styles.secondaryButton} onPress={handleRetake}>
-            <Text style={styles.secondaryButtonText}>Retake Photo</Text>
+          <TouchableOpacity style={styles.secondaryButton} onPress={handleSaveDraft}>
+            <Text style={styles.secondaryButtonText}>Save Draft</Text>
           </TouchableOpacity>
-          <TouchableOpacity style={styles.primaryButton} onPress={handleSaveDraft}>
-            <Text style={styles.primaryButtonText}>Save Draft</Text>
+          <TouchableOpacity style={styles.primaryButton} onPress={handleCreateTablink}>
+            <Text style={styles.primaryButtonText}>Create Tablink</Text>
           </TouchableOpacity>
         </View>
       </ScrollView>
@@ -551,90 +560,75 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   itemRow: {
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.05)',
-    backgroundColor: 'rgba(8,10,12,0.5)',
-    marginBottom: 12,
-    overflow: 'hidden',
-  },
-  itemRowActive: {
-    borderColor: 'rgba(45,211,111,0.4)',
-    backgroundColor: 'rgba(8,10,12,0.75)',
-  },
-  itemInputsRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-end',
-    gap: 12,
-  },
-  inputColumn: {
-    flex: 1,
-    gap: 6,
-  },
-  totalColumn: {
-    alignItems: 'flex-end',
-  },
-  lineTotalValue: {
-    color: colors.text,
-    fontSize: 16,
-    fontWeight: '600',
-  },
-  removeText: {
-    color: colors.danger,
-    fontSize: 13,
-    fontWeight: '600',
-  },
-  itemSummaryRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingVertical: 8,
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+    gap: 8,
+    backgroundColor: colors.surface,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: colors.surfaceBorder,
   },
-  itemSummaryText: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
+  itemNameInput: {
     flex: 1,
-    paddingRight: 12,
-  },
-  itemSummaryName: {
     color: colors.text,
     fontSize: 15,
-    fontWeight: '600',
-    flexShrink: 1,
+    paddingVertical: 4,
+    paddingHorizontal: 0,
+    backgroundColor: 'transparent',
   },
-  itemSummaryMeta: {
+  itemRightFields: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  itemQtyInput: {
+    color: colors.text,
+    fontSize: 14,
+    width: 36,
+    textAlign: 'center',
+    paddingVertical: 4,
+    paddingHorizontal: 4,
+    backgroundColor: 'transparent',
+  },
+  itemTimesSymbol: {
     color: colors.textSecondary,
     fontSize: 13,
   },
-  itemSummaryTotal: {
+  itemPriceInput: {
     color: colors.text,
     fontSize: 15,
     fontWeight: '600',
+    width: 70,
+    textAlign: 'right',
+    paddingVertical: 4,
+    paddingHorizontal: 0,
+    backgroundColor: 'transparent',
   },
   cardFooterNote: {
     color: colors.textSecondary,
     fontSize: 12,
     lineHeight: 18,
   },
-  itemEditPanel: {
-    paddingHorizontal: 14,
-    paddingBottom: 14,
-    gap: 12,
+  itemWrapper: {
+    position: 'relative',
+    marginBottom: 8,
   },
-  swipeDelete: {
+  swipeDeleteBehind: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    bottom: 0,
+    width: 80,
+    backgroundColor: colors.danger,
+    borderRadius: 8,
+  },
+  swipeDeleteButton: {
+    width: 80,
+    height: '100%',
+    backgroundColor: colors.danger,
     justifyContent: 'center',
     alignItems: 'center',
-    paddingHorizontal: 20,
-    marginVertical: 6,
-    borderRadius: 14,
-    backgroundColor: 'rgba(255,92,92,0.15)',
-  },
-  swipeDeleteText: {
-    color: colors.danger,
-    fontWeight: '700',
   },
   inputLabel: {
     color: colors.textSecondary,

@@ -4,6 +4,7 @@ import {
   Alert,
   Platform,
   SafeAreaView,
+  ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -275,7 +276,7 @@ export default function ScanReceiptScreen() {
         )}
 
         {hasCameraPermission && flowState === 'idle' && (
-          <View pointerEvents="none" style={[styles.overlayContainer, { paddingBottom: footerHeight }]}>
+          <View pointerEvents="none" style={[styles.overlayContainer, { paddingBottom: footerHeight + 16 }]}>
             <View style={styles.overlayTopMask} />
             <View style={styles.overlayCenterWrapper}>
               <View style={styles.overlayCenter}>
@@ -285,21 +286,24 @@ export default function ScanReceiptScreen() {
                <View style={styles.cornerBottomRight} />
              </View>
            </View>
-            <View style={[styles.overlayBottomMask, { height: footerHeight }]} />
          </View>
        )}
       </View>
 
       <SafeAreaView
-        style={[styles.footer, isPreviewActive ? styles.footerConfirmation : styles.footerActions]}
+        style={[
+          styles.footer,
+          isPreviewActive || flowState === 'processing'
+            ? styles.footerFullScreen
+            : styles.footerActions,
+        ]}
         onLayout={handleFooterLayout}
       >
         {isPreviewActive ? (
           <View style={styles.confirmationContainer}>
-            <Text style={styles.previewLabel}>Latest capture</Text>
             <Image source={{ uri: lastPhoto?.uri ?? importPreview ?? '' }} style={styles.previewImage} />
             <Text style={styles.previewHint}>
-              Looks good? We’ll parse the receipt on the next screen when you continue.
+              Looks good? We'll parse the receipt on the next screen when you continue.
             </Text>
             <TouchableOpacity
               style={styles.retakeButton}
@@ -415,14 +419,14 @@ const styles = StyleSheet.create({
     flexDirection: 'column',
   },
   overlayTopMask: {
-    flexGrow: 1.2,
-    backgroundColor: 'rgba(8,10,12,0.55)',
+    flexGrow: 0.3,
   },
   overlayCenterWrapper: {
     alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: 32,
-    paddingVertical: 24,
+    paddingTop: 16,
+    paddingBottom: 8,
   },
   overlayCenter: {
     width: '100%',
@@ -435,7 +439,6 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(8,10,12,0.18)',
   },
   overlayBottomMask: {
-    backgroundColor: 'rgba(8,10,12,0.55)',
   },
   cornerTopLeft: {
     position: 'absolute',
@@ -485,17 +488,16 @@ const styles = StyleSheet.create({
   },
   footerActions: {
     paddingHorizontal: 20,
-    paddingTop: 18,
-    paddingBottom: Platform.OS === 'android' ? 28 : 24,
-    backgroundColor: 'rgba(8,10,12,0.92)',
+    paddingTop: 40,
+    paddingBottom: Platform.OS === 'android' ? 48 : 44,
+    backgroundColor: 'rgba(0,0,0,0.85)',
   },
   footerButtons: {
-    flexDirection: 'row',
-    alignSelf: 'center',
+    flexDirection: 'column',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    width: '100%',
-    maxWidth: 320,
+    gap: 16,
+    marginTop: 24,
+    marginBottom: 32,
   },
   captureButton: {
     width: 72,
@@ -525,18 +527,24 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '600',
   },
-  footerConfirmation: {
+  footerFullScreen: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
     paddingHorizontal: 20,
-    paddingTop: 28,
+    paddingTop: 24,
     paddingBottom: Platform.OS === 'android' ? 32 : 28,
     backgroundColor: colors.background,
-    borderTopWidth: 1,
-    borderColor: colors.surfaceBorder,
+    justifyContent: 'center',
   },
   confirmationContainer: {
+    flex: 1,
     width: '100%',
     alignItems: 'center',
-    gap: 16,
+    justifyContent: 'space-between',
+    paddingBottom: 16,
   },
   previewLabel: {
     color: colors.text,
@@ -549,12 +557,14 @@ const styles = StyleSheet.create({
     aspectRatio: 3 / 4,
     borderRadius: 12,
     backgroundColor: colors.surface,
+    marginTop: 16,
   },
   previewHint: {
     color: colors.textSecondary,
     fontSize: 13,
     textAlign: 'center',
     lineHeight: 18,
+    paddingHorizontal: 32,
   },
   retakeButton: {
     flexDirection: 'row',
@@ -574,10 +584,11 @@ const styles = StyleSheet.create({
   },
   continueButton: {
     marginTop: 12,
-    alignSelf: 'stretch',
+    marginBottom: 24,
     backgroundColor: colors.primary,
     paddingVertical: 14,
-    borderRadius: 12,
+    paddingHorizontal: 32,
+    borderRadius: 999,
     alignItems: 'center',
   },
   continueButtonText: {
