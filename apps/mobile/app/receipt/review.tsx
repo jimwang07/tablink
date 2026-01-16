@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  ActivityIndicator,
+  Alert,
   Image,
   Keyboard,
   KeyboardAvoidingView,
@@ -18,6 +20,8 @@ import Animated, { FadeOut, LinearTransition } from 'react-native-reanimated';
 import { Ionicons } from '@expo/vector-icons';
 
 import { usePendingReceipt } from '@/src/hooks/usePendingReceipt';
+import { useAuth } from '@/src/hooks/useAuth';
+import { saveReceipt } from '@/src/services/receiptService';
 import { colors } from '@/src/theme';
 import type { ParsedReceipt, ParsedReceiptItem } from '@/src/types/receipt';
 
@@ -115,6 +119,8 @@ function normalizeItems(items: EditableItem[]): NormalizedItem[] {
 export default function ReceiptReviewScreen() {
   const router = useRouter();
   const { pendingReceipt, setPendingReceipt } = usePendingReceipt();
+  const { session } = useAuth();
+  const [isSaving, setIsSaving] = useState(false);
 
   useEffect(() => {
     if (!pendingReceipt) {
@@ -209,15 +215,34 @@ export default function ReceiptReviewScreen() {
     [editableItems, merchantName, notes, taxInput, tipInput]
   );
 
-  const handleSaveDraft = useCallback(() => {
-    if (!pendingReceipt) return;
+  const handleSaveDraft = useCallback(async () => {
+    if (!pendingReceipt || !session?.user?.id) {
+      Alert.alert('Error', 'You must be signed in to save a receipt.');
+      return;
+    }
 
-    const nextParsed = buildUpdatedReceipt(pendingReceipt.parsed);
-    setPendingReceipt({ ...pendingReceipt, parsed: nextParsed });
+    setIsSaving(true);
 
-    // TODO: persist to Supabase before navigating
-    router.replace('/(host)/home');
-  }, [buildUpdatedReceipt, pendingReceipt, router, setPendingReceipt]);
+    try {
+      const nextParsed = buildUpdatedReceipt(pendingReceipt.parsed);
+      const updatedReceipt = { ...pendingReceipt, parsed: nextParsed };
+
+      const result = await saveReceipt(updatedReceipt, session.user.id);
+
+      if (!result.success) {
+        Alert.alert('Error', result.error);
+        return;
+      }
+
+      setPendingReceipt(null);
+      router.replace('/(host)/home');
+    } catch (error) {
+      console.error('[review] Failed to save draft:', error);
+      Alert.alert('Error', 'Failed to save receipt. Please try again.');
+    } finally {
+      setIsSaving(false);
+    }
+  }, [buildUpdatedReceipt, pendingReceipt, router, session, setPendingReceipt]);
 
   const handleCreateTablink = useCallback(() => {
     if (!pendingReceipt) return;
@@ -413,10 +438,22 @@ export default function ReceiptReviewScreen() {
         </View>
 
         <View style={styles.actions}>
-          <TouchableOpacity style={styles.secondaryButton} onPress={handleSaveDraft}>
-            <Text style={styles.secondaryButtonText}>Save Draft</Text>
+          <TouchableOpacity
+            style={[styles.secondaryButton, isSaving && styles.buttonDisabled]}
+            onPress={handleSaveDraft}
+            disabled={isSaving}
+          >
+            {isSaving ? (
+              <ActivityIndicator size="small" color={colors.text} />
+            ) : (
+              <Text style={styles.secondaryButtonText}>Save Draft</Text>
+            )}
           </TouchableOpacity>
-          <TouchableOpacity style={styles.primaryButton} onPress={handleCreateTablink}>
+          <TouchableOpacity
+            style={[styles.primaryButton, isSaving && styles.buttonDisabled]}
+            onPress={handleCreateTablink}
+            disabled={isSaving}
+          >
             <Text style={styles.primaryButtonText}>Create Tablink</Text>
           </TouchableOpacity>
         </View>
@@ -762,5 +799,8 @@ const styles = StyleSheet.create({
     color: colors.text,
     fontSize: 16,
     fontWeight: '600',
+  },
+  buttonDisabled: {
+    opacity: 0.6,
   },
 });
