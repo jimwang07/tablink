@@ -177,38 +177,24 @@ export async function updateReceipt(
 
 export async function updateReceiptItems(
   receiptId: string,
-  items: Array<{ id?: string; label: string; price_cents: number; quantity: number; position: number }>
+  items: Array<{ label: string; price_cents: number; quantity: number; position: number }>
 ): Promise<{ success: boolean; error?: string }> {
   const supabase = getSupabaseClient();
 
-  // Delete existing items and insert new ones (simpler than diffing)
-  const { error: deleteError } = await supabase
-    .from('receipt_items')
-    .delete()
-    .eq('receipt_id', receiptId);
-
-  if (deleteError) {
-    console.error('[receiptService] Failed to delete old items:', deleteError);
-    return { success: false, error: deleteError.message };
-  }
-
-  if (items.length > 0) {
-    const itemsToInsert = items.map((item, index) => ({
-      receipt_id: receiptId,
+  // Use RPC for atomic delete + insert to prevent data loss
+  const { error } = await supabase.rpc('replace_receipt_items', {
+    p_receipt_id: receiptId,
+    p_items: items.map((item, index) => ({
       label: item.label,
       price_cents: item.price_cents,
       quantity: item.quantity,
       position: index,
-    }));
+    })),
+  });
 
-    const { error: insertError } = await supabase
-      .from('receipt_items')
-      .insert(itemsToInsert);
-
-    if (insertError) {
-      console.error('[receiptService] Failed to insert items:', insertError);
-      return { success: false, error: insertError.message };
-    }
+  if (error) {
+    console.error('[receiptService] Failed to update items:', error);
+    return { success: false, error: error.message };
   }
 
   return { success: true };

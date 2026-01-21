@@ -53,9 +53,15 @@ function toCurrencyString(value: number) {
 
 function parseCurrencyInput(value: string) {
   if (!value) return 0;
+  // Remove non-numeric chars except first decimal point
   const cleaned = value.replace(/[^0-9.,-]/g, '').replace(',', '.');
-  const parsed = Number.parseFloat(cleaned);
-  return Number.isFinite(parsed) ? Number(parsed.toFixed(2)) : 0;
+  // Handle multiple decimal points by keeping only first
+  const parts = cleaned.split('.');
+  const normalized = parts.length > 1
+    ? `${parts[0]}.${parts.slice(1).join('')}`
+    : cleaned;
+  const parsed = Number.parseFloat(normalized);
+  return Number.isFinite(parsed) && parsed >= 0 ? Number(parsed.toFixed(2)) : 0;
 }
 
 function parseQuantityInput(value: string) {
@@ -114,7 +120,7 @@ export default function ReceiptDetailScreen() {
   const [taxInput, setTaxInput] = useState('0.00');
   const [tipInput, setTipInput] = useState('0.00');
   const [editableItems, setEditableItems] = useState<EditableItem[]>([]);
-  const [hasChanges, setHasChanges] = useState(false);
+  const initialLoadRef = useRef(true);
 
   // Load receipt
   useEffect(() => {
@@ -122,6 +128,7 @@ export default function ReceiptDetailScreen() {
 
     async function load() {
       setIsLoading(true);
+      initialLoadRef.current = true;
       const result = await fetchReceipt(id);
       if (result.success) {
         const r = result.receipt;
@@ -130,6 +137,10 @@ export default function ReceiptDetailScreen() {
         setTaxInput(toCurrencyString(centsToDollars(r.tax_cents)));
         setTipInput(toCurrencyString(centsToDollars(r.tip_cents)));
         setEditableItems(buildEditableItems(r.items));
+        // Allow a tick for state to settle before enabling change tracking
+        setTimeout(() => {
+          initialLoadRef.current = false;
+        }, 0);
       } else {
         setError(result.error);
       }
@@ -138,11 +149,6 @@ export default function ReceiptDetailScreen() {
 
     load();
   }, [id]);
-
-  // Track changes
-  useEffect(() => {
-    setHasChanges(true);
-  }, [merchantName, taxInput, tipInput, editableItems]);
 
   // Computed values
   const subtotal = useMemo(() => {
