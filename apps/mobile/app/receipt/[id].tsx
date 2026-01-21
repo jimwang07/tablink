@@ -1,9 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  Image,
   Keyboard,
   KeyboardAvoidingView,
+  Modal,
   Platform,
   ScrollView,
   StyleSheet,
@@ -12,6 +14,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import { getSupabaseClient } from '@/src/lib/supabaseClient';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Swipeable } from 'react-native-gesture-handler';
 import Animated, { FadeOut, LinearTransition } from 'react-native-reanimated';
@@ -53,15 +56,9 @@ function toCurrencyString(value: number) {
 
 function parseCurrencyInput(value: string) {
   if (!value) return 0;
-  // Remove non-numeric chars except first decimal point
   const cleaned = value.replace(/[^0-9.,-]/g, '').replace(',', '.');
-  // Handle multiple decimal points by keeping only first
-  const parts = cleaned.split('.');
-  const normalized = parts.length > 1
-    ? `${parts[0]}.${parts.slice(1).join('')}`
-    : cleaned;
-  const parsed = Number.parseFloat(normalized);
-  return Number.isFinite(parsed) && parsed >= 0 ? Number(parsed.toFixed(2)) : 0;
+  const parsed = Number.parseFloat(cleaned);
+  return Number.isFinite(parsed) ? Number(parsed.toFixed(2)) : 0;
 }
 
 function parseQuantityInput(value: string) {
@@ -107,20 +104,21 @@ function buildEditableItems(items: ReceiptItem[]): EditableItem[] {
 export default function ReceiptDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
-  const isSwipingRef = useRef(false);
 
   const [receipt, setReceipt] = useState<ReceiptWithItems | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [imageUrl, setImageUrl] = useState<string | null>(null);
+  const [isImageExpanded, setIsImageExpanded] = useState(false);
 
   // Editable state
   const [merchantName, setMerchantName] = useState('');
   const [taxInput, setTaxInput] = useState('0.00');
   const [tipInput, setTipInput] = useState('0.00');
   const [editableItems, setEditableItems] = useState<EditableItem[]>([]);
-  const initialLoadRef = useRef(true);
+  const [hasChanges, setHasChanges] = useState(false);
 
   // Load receipt
   useEffect(() => {
@@ -128,7 +126,6 @@ export default function ReceiptDetailScreen() {
 
     async function load() {
       setIsLoading(true);
-      initialLoadRef.current = true;
       const result = await fetchReceipt(id);
       if (result.success) {
         const r = result.receipt;
@@ -137,10 +134,19 @@ export default function ReceiptDetailScreen() {
         setTaxInput(toCurrencyString(centsToDollars(r.tax_cents)));
         setTipInput(toCurrencyString(centsToDollars(r.tip_cents)));
         setEditableItems(buildEditableItems(r.items));
-        // Allow a tick for state to settle before enabling change tracking
-        setTimeout(() => {
-          initialLoadRef.current = false;
-        }, 0);
+
+        // Get image URL if available (use signed URL for private bucket)
+        if (r.image_path) {
+          const supabase = getSupabaseClient();
+          const { data, error } = await supabase.storage
+            .from('receipts')
+            .createSignedUrl(r.image_path, 3600); // 1 hour expiry
+          if (error) {
+            console.error('[ReceiptDetail] Failed to get signed URL:', error);
+          } else if (data?.signedUrl) {
+            setImageUrl(data.signedUrl);
+          }
+        }
       } else {
         setError(result.error);
       }
@@ -149,6 +155,11 @@ export default function ReceiptDetailScreen() {
 
     load();
   }, [id]);
+
+  // Track changes
+  useEffect(() => {
+    setHasChanges(true);
+  }, [merchantName, taxInput, tipInput, editableItems]);
 
   // Computed values
   const subtotal = useMemo(() => {
@@ -306,6 +317,26 @@ export default function ReceiptDetailScreen() {
           </View>
         </View>
 
+        {/* Receipt Image */}
+        {receipt.image_path && (
+          <View style={styles.imageCard}>
+            {imageUrl ? (
+              <Image source={{ uri: imageUrl }} style={styles.receiptImage} resizeMode="cover" />
+            ) : (
+              <View style={[styles.receiptImage, styles.imagePlaceholder]}>
+                <ActivityIndicator size="small" color={colors.textSecondary} />
+              </View>
+            )}
+            <TouchableOpacity
+              style={styles.expandButton}
+              onPress={() => setIsImageExpanded(true)}
+              disabled={!imageUrl}
+            >
+              <Text style={styles.expandButtonText}>View full receipt</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+
         {/* Merchant */}
         <View style={styles.card}>
           <Text style={styles.inputLabel}>Merchant Name</Text>
@@ -338,14 +369,8 @@ export default function ReceiptDetailScreen() {
                 overshootRight={false}
                 rightThreshold={60}
                 friction={2}
-                onBegan={() => {
-                  isSwipingRef.current = true;
+                onSwipeableWillOpen={() => {
                   Keyboard.dismiss();
-                }}
-                onEnded={() => {
-                  setTimeout(() => {
-                    isSwipingRef.current = false;
-                  }, 100);
                 }}
                 onSwipeableOpen={(direction) => {
                   if (direction === 'right') {
@@ -365,9 +390,6 @@ export default function ReceiptDetailScreen() {
                     placeholder="Item name"
                     placeholderTextColor={placeholderColor}
                     style={[styles.itemNameInput, { color: '#F5F7FA' }]}
-                    onFocus={() => {
-                      if (isSwipingRef.current) Keyboard.dismiss();
-                    }}
                   />
                   <View style={styles.itemRightFields}>
                     <TextInput
@@ -377,9 +399,6 @@ export default function ReceiptDetailScreen() {
                       placeholderTextColor={placeholderColor}
                       keyboardType="decimal-pad"
                       style={styles.itemQtyInput}
-                      onFocus={() => {
-                        if (isSwipingRef.current) Keyboard.dismiss();
-                      }}
                     />
                     <Text style={styles.itemTimesSymbol}>×</Text>
                     <TextInput
@@ -389,9 +408,6 @@ export default function ReceiptDetailScreen() {
                       placeholderTextColor={placeholderColor}
                       keyboardType="decimal-pad"
                       style={styles.itemPriceInput}
-                      onFocus={() => {
-                        if (isSwipingRef.current) Keyboard.dismiss();
-                      }}
                     />
                   </View>
                 </View>
@@ -462,6 +478,29 @@ export default function ReceiptDetailScreen() {
           </TouchableOpacity>
         </View>
       </ScrollView>
+
+      {/* Full Image Modal */}
+      <Modal
+        visible={isImageExpanded}
+        animationType="fade"
+        transparent
+        onRequestClose={() => setIsImageExpanded(false)}
+      >
+        <View style={styles.modalBackdrop}>
+          <View style={styles.modalContent}>
+            {imageUrl && (
+              <Image
+                source={{ uri: imageUrl }}
+                resizeMode="contain"
+                style={styles.modalImage}
+              />
+            )}
+            <TouchableOpacity style={styles.modalCloseButton} onPress={() => setIsImageExpanded(false)}>
+              <Text style={styles.modalCloseText}>Close</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </KeyboardAvoidingView>
   );
 }
@@ -534,6 +573,71 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '600',
     textTransform: 'capitalize',
+  },
+  imageCard: {
+    backgroundColor: colors.surface,
+    borderRadius: 16,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: colors.surfaceBorder,
+  },
+  receiptImage: {
+    width: '100%',
+    height: 200,
+    backgroundColor: colors.surfaceBorder,
+  },
+  imagePlaceholder: {
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  expandButton: {
+    position: 'absolute',
+    bottom: 12,
+    alignSelf: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 999,
+    backgroundColor: 'rgba(8, 10, 12, 0.9)',
+    borderWidth: 1,
+    borderColor: 'rgba(45, 211, 111, 0.6)',
+  },
+  expandButtonText: {
+    color: colors.primary,
+    fontSize: 13,
+    fontWeight: '600',
+    letterSpacing: 0.3,
+  },
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.85)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  modalContent: {
+    width: '100%',
+    maxWidth: 420,
+    gap: 16,
+  },
+  modalImage: {
+    width: '100%',
+    aspectRatio: 3 / 4,
+    borderRadius: 18,
+    backgroundColor: colors.surfaceBorder,
+  },
+  modalCloseButton: {
+    alignSelf: 'center',
+    paddingHorizontal: 24,
+    paddingVertical: 12,
+    borderRadius: 999,
+    backgroundColor: 'rgba(17,20,24,0.9)',
+    borderWidth: 1,
+    borderColor: colors.surfaceBorder,
+  },
+  modalCloseText: {
+    color: colors.text,
+    fontSize: 15,
+    fontWeight: '600',
   },
   card: {
     backgroundColor: colors.surface,

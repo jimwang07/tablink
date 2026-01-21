@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
   Image,
   Keyboard,
   KeyboardAvoidingView,
+  Modal,
   Platform,
   ScrollView,
   StyleSheet,
@@ -12,7 +13,6 @@ import {
   TextInput,
   TouchableOpacity,
   View,
-  Modal,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Swipeable } from 'react-native-gesture-handler';
@@ -23,7 +23,7 @@ import { usePendingReceipt } from '@/src/hooks/usePendingReceipt';
 import { useAuth } from '@/src/hooks/useAuth';
 import { saveReceipt } from '@/src/services/receiptService';
 import { colors } from '@/src/theme';
-import type { ParsedReceipt, ParsedReceiptItem } from '@/src/types/receipt';
+import type { ParsedReceiptItem } from '@/src/types/receipt';
 
 type EditableItem = {
   key: string;
@@ -31,15 +31,6 @@ type EditableItem = {
   price: string;
   quantity: string;
 };
-
-type NormalizedItem = {
-  key: string;
-  name: string;
-  price: number;
-  quantity: number;
-};
-
-const MIN_ITEM_QUANTITY = 0.01;
 
 function createItemKey() {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
@@ -62,43 +53,33 @@ function parseQuantityInput(value: string) {
   const cleaned = value.replace(/[^0-9.,]/g, '').replace(',', '.');
   const parsed = Number.parseFloat(cleaned);
   if (!Number.isFinite(parsed)) return 1;
-  return Math.max(MIN_ITEM_QUANTITY, Number(parsed.toFixed(2)));
+  return Math.max(0.01, Number(parsed.toFixed(2)));
 }
 
-function formatCurrency(amount: number, currencyCode: string) {
-  if (Number.isNaN(amount)) {
-    return '—';
-  }
-
-  try {
-    return new Intl.NumberFormat('en-US', {
-      style: 'currency',
-      currency: currencyCode || 'USD',
-      minimumFractionDigits: 2,
-    }).format(amount);
-  } catch {
-    return `${currencyCode || 'USD'} ${amount.toFixed(2)}`;
-  }
+function formatCurrency(amount: number) {
+  if (Number.isNaN(amount)) return '—';
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: 'USD',
+    minimumFractionDigits: 2,
+  }).format(amount);
 }
 
-function formatQuantityLabel(quantity: number) {
-  if (!Number.isFinite(quantity)) return '0';
-  const fixed = quantity.toFixed(2);
-  return fixed.replace(/\.?0+$/, '') || '0';
+function formatDate(dateString: string | null): string {
+  if (!dateString) return 'No date';
+  const date = new Date(dateString);
+  return date.toLocaleDateString('en-US', {
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+  });
 }
 
-function buildEditableItems(items: ParsedReceiptItem[]) {
+function buildEditableItems(items: ParsedReceiptItem[]): EditableItem[] {
   if (!items.length) {
-    return [
-      {
-        key: createItemKey(),
-        name: '',
-        price: '',
-        quantity: '1',
-      },
-    ];
+    return [{ key: createItemKey(), name: '', price: '', quantity: '1' }];
   }
-
   return items.map((item) => ({
     key: createItemKey(),
     name: item.name,
@@ -107,20 +88,12 @@ function buildEditableItems(items: ParsedReceiptItem[]) {
   }));
 }
 
-function normalizeItems(items: EditableItem[]): NormalizedItem[] {
-  return items.map((item) => ({
-    key: item.key,
-    name: item.name.trim() || 'Untitled item',
-    price: parseCurrencyInput(item.price),
-    quantity: parseQuantityInput(item.quantity),
-  }));
-}
-
 export default function ReceiptReviewScreen() {
   const router = useRouter();
   const { pendingReceipt, setPendingReceipt } = usePendingReceipt();
   const { session } = useAuth();
   const [isSaving, setIsSaving] = useState(false);
+  const [isImageExpanded, setIsImageExpanded] = useState(false);
 
   useEffect(() => {
     if (!pendingReceipt) {
@@ -129,35 +102,28 @@ export default function ReceiptReviewScreen() {
   }, [pendingReceipt, router]);
 
   const parsed = pendingReceipt?.parsed;
-  const previewImageUri = pendingReceipt ? pendingReceipt.localUri || pendingReceipt.publicUrl || '' : '';
-  const currencyCode = parsed?.currency || 'USD';
+  const imageUri = pendingReceipt?.localUri || pendingReceipt?.publicUrl || '';
 
+  // Editable state
   const [merchantName, setMerchantName] = useState(parsed?.merchantName ?? '');
-  const [notes, setNotes] = useState(parsed?.notes ?? '');
   const [taxInput, setTaxInput] = useState(toCurrencyString(parsed?.totals.tax ?? 0));
   const [tipInput, setTipInput] = useState(toCurrencyString(parsed?.totals.tip ?? 0));
   const [editableItems, setEditableItems] = useState<EditableItem[]>(() =>
     buildEditableItems(parsed?.items ?? [])
   );
-  const [isImageExpanded, setImageExpanded] = useState(false);
-  const isSwipingRef = useRef(false);
 
-  const normalizedItems = useMemo(() => normalizeItems(editableItems), [editableItems]);
-  const subtotal = useMemo(
-    () => normalizedItems.reduce((total, current) => total + current.price * current.quantity, 0),
-    [normalizedItems]
-  );
+  // Computed values
+  const subtotal = useMemo(() => {
+    return editableItems.reduce((total, item) => {
+      const price = parseCurrencyInput(item.price);
+      const qty = parseQuantityInput(item.quantity);
+      return total + price * qty;
+    }, 0);
+  }, [editableItems]);
+
   const taxAmount = useMemo(() => parseCurrencyInput(taxInput), [taxInput]);
   const tipAmount = useMemo(() => parseCurrencyInput(tipInput), [tipInput]);
   const grandTotal = useMemo(() => subtotal + taxAmount + tipAmount, [subtotal, taxAmount, tipAmount]);
-
-  const handleOpenImage = useCallback(() => {
-    setImageExpanded(true);
-  }, []);
-
-  const handleCloseImage = useCallback(() => {
-    setImageExpanded(false);
-  }, []);
 
   const updateItemField = useCallback((key: string, field: keyof EditableItem, value: string) => {
     setEditableItems((current) =>
@@ -172,48 +138,36 @@ export default function ReceiptReviewScreen() {
     });
   }, []);
 
-  const addCustomItem = useCallback(() => {
-    const newItem = {
-      key: createItemKey(),
-      name: '',
-      price: '',
-      quantity: '1',
-    };
-    setEditableItems((current) => [newItem, ...current]);
+  const addItem = useCallback(() => {
+    setEditableItems((current) => [
+      { key: createItemKey(), name: '', price: '', quantity: '1' },
+      ...current,
+    ]);
   }, []);
 
-  const buildUpdatedReceipt = useCallback(
-    (base: ParsedReceipt): ParsedReceipt => {
-      const sanitizedItems = normalizeItems(editableItems).map<ParsedReceiptItem>((item) => ({
-        name: item.name,
-        price: Number(item.price.toFixed(2)),
-        quantity: Number(item.quantity.toFixed(2)),
-      }));
+  const buildUpdatedParsed = useCallback(() => {
+    if (!parsed) return null;
 
-      const sanitizedSubtotal = sanitizedItems.reduce(
-        (total, current) => total + current.price * current.quantity,
-        0
-      );
-      const sanitizedTax = parseCurrencyInput(taxInput);
-      const sanitizedTip = parseCurrencyInput(tipInput);
-      const sanitizedTotal = sanitizedSubtotal + sanitizedTax + sanitizedTip;
+    const items = editableItems.map((item) => ({
+      name: item.name.trim() || 'Untitled item',
+      price: parseCurrencyInput(item.price),
+      quantity: parseQuantityInput(item.quantity),
+    }));
 
-      return {
-        ...base,
-        merchantName: merchantName.trim() || null,
-        notes: notes.trim() || null,
-        items: sanitizedItems,
-        totals: {
-          subtotal: Number(sanitizedSubtotal.toFixed(2)),
-          tax: Number(sanitizedTax.toFixed(2)),
-          tip: Number(sanitizedTip.toFixed(2)),
-          total: Number(sanitizedTotal.toFixed(2)),
-          itemsTotal: Number(sanitizedSubtotal.toFixed(2)),
-        },
-      };
-    },
-    [editableItems, merchantName, notes, taxInput, tipInput]
-  );
+    return {
+      ...parsed,
+      merchantName: merchantName.trim() || null,
+      items,
+      totals: {
+        ...parsed.totals,
+        subtotal,
+        tax: taxAmount,
+        tip: tipAmount,
+        total: grandTotal,
+        itemsTotal: subtotal,
+      },
+    };
+  }, [parsed, editableItems, merchantName, subtotal, taxAmount, tipAmount, grandTotal]);
 
   const handleSaveDraft = useCallback(async () => {
     if (!pendingReceipt || !session?.user?.id) {
@@ -222,11 +176,11 @@ export default function ReceiptReviewScreen() {
     }
 
     setIsSaving(true);
-
     try {
-      const nextParsed = buildUpdatedReceipt(pendingReceipt.parsed);
-      const updatedReceipt = { ...pendingReceipt, parsed: nextParsed };
+      const updatedParsed = buildUpdatedParsed();
+      if (!updatedParsed) return;
 
+      const updatedReceipt = { ...pendingReceipt, parsed: updatedParsed };
       const result = await saveReceipt(updatedReceipt, session.user.id);
 
       if (!result.success) {
@@ -242,17 +196,25 @@ export default function ReceiptReviewScreen() {
     } finally {
       setIsSaving(false);
     }
-  }, [buildUpdatedReceipt, pendingReceipt, router, session, setPendingReceipt]);
+  }, [buildUpdatedParsed, pendingReceipt, router, session, setPendingReceipt]);
 
-  const handleCreateTablink = useCallback(() => {
-    if (!pendingReceipt) return;
-
-    const nextParsed = buildUpdatedReceipt(pendingReceipt.parsed);
-    setPendingReceipt({ ...pendingReceipt, parsed: nextParsed });
-
-    // TODO: persist to Supabase, generate shareable link, show share modal
-    router.replace('/(host)/home');
-  }, [buildUpdatedReceipt, pendingReceipt, router, setPendingReceipt]);
+  const handleDiscard = useCallback(() => {
+    Alert.alert(
+      'Discard Receipt',
+      'Are you sure you want to discard this receipt?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Discard',
+          style: 'destructive',
+          onPress: () => {
+            setPendingReceipt(null);
+            router.replace('/(host)/home');
+          },
+        },
+      ]
+    );
+  }, [router, setPendingReceipt]);
 
   const placeholderColor = 'rgba(195,200,212,0.5)';
 
@@ -270,46 +232,50 @@ export default function ReceiptReviewScreen() {
         keyboardShouldPersistTaps="handled"
         contentInsetAdjustmentBehavior="automatic"
       >
+        {/* Header */}
         <View style={styles.header}>
-          <Text style={styles.title}>Tidy up your receipt</Text>
-          <Text style={styles.subtitle}>
-            Edit anything you need before you share. We’ll save these updates as your draft.
-          </Text>
+          <TouchableOpacity onPress={handleDiscard} style={styles.backArrow}>
+            <Ionicons name="close" size={24} color={colors.text} />
+          </TouchableOpacity>
+          <View style={styles.headerContent}>
+            <Text style={styles.title} numberOfLines={1}>
+              {merchantName || 'New Receipt'}
+            </Text>
+            <Text style={styles.subtitle}>{formatDate(parsed.purchaseDate)}</Text>
+          </View>
+          <View style={styles.statusBadge}>
+            <Text style={styles.statusText}>New</Text>
+          </View>
         </View>
 
-        <View style={styles.previewCard}>
-          <View style={styles.previewImageWrapper}>
-            <Image source={{ uri: previewImageUri }} resizeMode="cover" style={styles.previewImage} />
-            <TouchableOpacity style={styles.expandButton} onPress={handleOpenImage}>
+        {/* Receipt Image */}
+        {imageUri ? (
+          <View style={styles.imageCard}>
+            <Image source={{ uri: imageUri }} style={styles.receiptImage} resizeMode="cover" />
+            <TouchableOpacity style={styles.expandButton} onPress={() => setIsImageExpanded(true)}>
               <Text style={styles.expandButtonText}>View full receipt</Text>
             </TouchableOpacity>
           </View>
-          <View style={styles.previewBody}>
-            <Text style={styles.inputLabel}>Merchant</Text>
-            <TextInput
-              value={merchantName}
-              onChangeText={setMerchantName}
-              placeholder="Add merchant name"
-              placeholderTextColor={placeholderColor}
-              style={styles.textInput}
-            />
-            <View style={styles.previewTotals}>
-              <View>
-                <Text style={styles.inputLabel}>Draft total</Text>
-                <Text style={styles.previewTotalValue}>{formatCurrency(grandTotal, currencyCode)}</Text>
-              </View>
-              <View style={styles.previewCurrencyPill}>
-                <Text style={styles.previewCurrencyText}>{currencyCode}</Text>
-              </View>
-            </View>
-          </View>
+        ) : null}
+
+        {/* Merchant */}
+        <View style={styles.card}>
+          <Text style={styles.inputLabel}>Merchant Name</Text>
+          <TextInput
+            value={merchantName}
+            onChangeText={setMerchantName}
+            placeholder="Add merchant name"
+            placeholderTextColor={placeholderColor}
+            style={styles.textInput}
+          />
         </View>
 
+        {/* Items */}
         <View style={styles.card}>
           <View style={styles.cardHeader}>
             <Text style={styles.cardTitle}>Items</Text>
-            <TouchableOpacity style={styles.cardHeaderButton} onPress={addCustomItem}>
-              <Text style={styles.cardHeaderButtonText}>+ Add item</Text>
+            <TouchableOpacity style={styles.addButton} onPress={addItem}>
+              <Text style={styles.addButtonText}>+ Add item</Text>
             </TouchableOpacity>
           </View>
           {editableItems.map((item) => (
@@ -324,14 +290,8 @@ export default function ReceiptReviewScreen() {
                 overshootRight={false}
                 rightThreshold={60}
                 friction={2}
-                onBegan={() => {
-                  isSwipingRef.current = true;
+                onSwipeableWillOpen={() => {
                   Keyboard.dismiss();
-                }}
-                onEnded={() => {
-                  setTimeout(() => {
-                    isSwipingRef.current = false;
-                  }, 100);
                 }}
                 onSwipeableOpen={(direction) => {
                   if (direction === 'right') {
@@ -351,9 +311,6 @@ export default function ReceiptReviewScreen() {
                     placeholder="Item name"
                     placeholderTextColor={placeholderColor}
                     style={[styles.itemNameInput, { color: '#F5F7FA' }]}
-                    onFocus={() => {
-                      if (isSwipingRef.current) Keyboard.dismiss();
-                    }}
                   />
                   <View style={styles.itemRightFields}>
                     <TextInput
@@ -363,9 +320,6 @@ export default function ReceiptReviewScreen() {
                       placeholderTextColor={placeholderColor}
                       keyboardType="decimal-pad"
                       style={styles.itemQtyInput}
-                      onFocus={() => {
-                        if (isSwipingRef.current) Keyboard.dismiss();
-                      }}
                     />
                     <Text style={styles.itemTimesSymbol}>×</Text>
                     <TextInput
@@ -375,26 +329,21 @@ export default function ReceiptReviewScreen() {
                       placeholderTextColor={placeholderColor}
                       keyboardType="decimal-pad"
                       style={styles.itemPriceInput}
-                      onFocus={() => {
-                        if (isSwipingRef.current) Keyboard.dismiss();
-                      }}
                     />
                   </View>
                 </View>
               </Swipeable>
             </Animated.View>
           ))}
-          {!editableItems.length && (
-            <Text style={styles.emptyItemsText}>No items yet. Add one to get started.</Text>
-          )}
-          <Text style={styles.cardFooterNote}>Swipe left to delete an item.</Text>
+          <Text style={styles.hint}>Swipe left to delete an item.</Text>
         </View>
 
+        {/* Totals */}
         <View style={styles.card}>
           <Text style={styles.cardTitle}>Totals</Text>
           <View style={styles.summaryRow}>
             <Text style={styles.summaryLabel}>Items subtotal</Text>
-            <Text style={styles.summaryValue}>{formatCurrency(subtotal, currencyCode)}</Text>
+            <Text style={styles.summaryValue}>{formatCurrency(subtotal)}</Text>
           </View>
           <View style={styles.summaryRow}>
             <Text style={styles.summaryLabel}>Tax</Text>
@@ -418,60 +367,45 @@ export default function ReceiptReviewScreen() {
               style={[styles.textInput, styles.summaryInput]}
             />
           </View>
-          <View style={[styles.summaryRow, styles.summaryTotalRow]}>
-            <Text style={styles.summaryTotalLabel}>Draft total</Text>
-            <Text style={styles.summaryTotalValue}>{formatCurrency(grandTotal, currencyCode)}</Text>
+          <View style={[styles.summaryRow, styles.totalRow]}>
+            <Text style={styles.totalLabel}>Total</Text>
+            <Text style={styles.totalValue}>{formatCurrency(grandTotal)}</Text>
           </View>
         </View>
 
-        <View style={styles.card}>
-          <Text style={styles.cardTitle}>Notes</Text>
-          <TextInput
-            value={notes}
-            onChangeText={setNotes}
-            placeholder="Add any reminders or special instructions"
-            placeholderTextColor={placeholderColor}
-            multiline
-            textAlignVertical="top"
-            style={[styles.textInput, styles.notesInput]}
-          />
-        </View>
-
+        {/* Actions */}
         <View style={styles.actions}>
           <TouchableOpacity
-            style={[styles.secondaryButton, isSaving && styles.buttonDisabled]}
+            style={[styles.saveButton, isSaving && styles.buttonDisabled]}
             onPress={handleSaveDraft}
             disabled={isSaving}
           >
             {isSaving ? (
-              <ActivityIndicator size="small" color={colors.text} />
+              <ActivityIndicator size="small" color="#fff" />
             ) : (
-              <Text style={styles.secondaryButtonText}>Save Draft</Text>
+              <Text style={styles.saveButtonText}>Save Draft</Text>
             )}
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.primaryButton, isSaving && styles.buttonDisabled]}
-            onPress={handleCreateTablink}
-            disabled={isSaving}
-          >
-            <Text style={styles.primaryButtonText}>Create Tablink</Text>
           </TouchableOpacity>
         </View>
       </ScrollView>
+
+      {/* Full Image Modal */}
       <Modal
         visible={isImageExpanded}
         animationType="fade"
         transparent
-        onRequestClose={handleCloseImage}
+        onRequestClose={() => setIsImageExpanded(false)}
       >
         <View style={styles.modalBackdrop}>
           <View style={styles.modalContent}>
-            <Image
-              source={{ uri: previewImageUri }}
-              resizeMode="contain"
-              style={styles.modalImage}
-            />
-            <TouchableOpacity style={styles.modalCloseButton} onPress={handleCloseImage}>
+            {imageUri ? (
+              <Image
+                source={{ uri: imageUri }}
+                resizeMode="contain"
+                style={styles.modalImage}
+              />
+            ) : null}
+            <TouchableOpacity style={styles.modalCloseButton} onPress={() => setIsImageExpanded(false)}>
               <Text style={styles.modalCloseText}>Close</Text>
             </TouchableOpacity>
           </View>
@@ -488,34 +422,51 @@ const styles = StyleSheet.create({
   },
   content: {
     padding: 20,
+    paddingTop: 20,
     gap: 16,
     paddingBottom: 40,
   },
   header: {
-    gap: 10,
-    marginBottom: 4,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    marginBottom: 8,
+  },
+  backArrow: {
+    padding: 4,
+  },
+  headerContent: {
+    flex: 1,
   },
   title: {
     color: colors.text,
-    fontSize: 24,
+    fontSize: 22,
     fontWeight: '700',
   },
   subtitle: {
     color: colors.textSecondary,
-    fontSize: 15,
-    lineHeight: 21,
+    fontSize: 14,
+    marginTop: 2,
   },
-  previewCard: {
+  statusBadge: {
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 6,
+    backgroundColor: 'rgba(45, 211, 111, 0.2)',
+  },
+  statusText: {
+    color: colors.primary,
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  imageCard: {
     backgroundColor: colors.surface,
-    borderRadius: 18,
+    borderRadius: 16,
     overflow: 'hidden',
     borderWidth: 1,
     borderColor: colors.surfaceBorder,
   },
-  previewImageWrapper: {
-    position: 'relative',
-  },
-  previewImage: {
+  receiptImage: {
     width: '100%',
     height: 200,
     backgroundColor: colors.surfaceBorder,
@@ -536,206 +487,6 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '600',
     letterSpacing: 0.3,
-  },
-  previewBody: {
-    padding: 16,
-    gap: 12,
-  },
-  previewTotals: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  previewTotalValue: {
-    color: colors.text,
-    fontSize: 20,
-    fontWeight: '700',
-  },
-  previewCurrencyPill: {
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 999,
-    backgroundColor: 'rgba(45, 211, 111, 0.16)',
-    borderWidth: 1,
-    borderColor: 'rgba(45, 211, 111, 0.45)',
-  },
-  previewCurrencyText: {
-    color: colors.primary,
-    fontSize: 13,
-    fontWeight: '600',
-    letterSpacing: 0.5,
-  },
-  card: {
-    backgroundColor: colors.surface,
-    borderRadius: 18,
-    borderWidth: 1,
-    borderColor: colors.surfaceBorder,
-    padding: 16,
-    gap: 14,
-  },
-  cardHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  cardTitle: {
-    color: colors.text,
-    fontSize: 16,
-    fontWeight: '600',
-  },
-  cardHeaderButton: {
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: colors.surfaceBorder,
-    backgroundColor: 'rgba(17,20,24,0.9)',
-  },
-  cardHeaderButtonText: {
-    color: colors.primary,
-    fontSize: 14,
-    fontWeight: '600',
-  },
-  itemRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 12,
-    paddingHorizontal: 12,
-    gap: 8,
-    backgroundColor: colors.surface,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: colors.surfaceBorder,
-  },
-  itemNameInput: {
-    flex: 1,
-    color: colors.text,
-    fontSize: 15,
-    paddingVertical: 4,
-    paddingHorizontal: 0,
-    backgroundColor: 'transparent',
-  },
-  itemRightFields: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-  },
-  itemQtyInput: {
-    color: colors.text,
-    fontSize: 14,
-    width: 36,
-    textAlign: 'center',
-    paddingVertical: 4,
-    paddingHorizontal: 4,
-    backgroundColor: 'transparent',
-  },
-  itemTimesSymbol: {
-    color: colors.textSecondary,
-    fontSize: 13,
-  },
-  itemPriceInput: {
-    color: colors.text,
-    fontSize: 15,
-    fontWeight: '600',
-    width: 70,
-    textAlign: 'right',
-    paddingVertical: 4,
-    paddingHorizontal: 0,
-    backgroundColor: 'transparent',
-  },
-  cardFooterNote: {
-    color: colors.textSecondary,
-    fontSize: 12,
-    lineHeight: 18,
-  },
-  itemWrapper: {
-    position: 'relative',
-    marginBottom: 8,
-  },
-  swipeDeleteBehind: {
-    position: 'absolute',
-    top: 0,
-    right: 0,
-    bottom: 0,
-    width: 80,
-    backgroundColor: colors.danger,
-    borderRadius: 8,
-  },
-  swipeDeleteButton: {
-    width: 80,
-    height: '100%',
-    backgroundColor: colors.danger,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  inputLabel: {
-    color: colors.textSecondary,
-    fontSize: 12,
-    textTransform: 'uppercase',
-    letterSpacing: 0.8,
-  },
-  textInput: {
-    backgroundColor: 'rgba(17,20,24,0.75)',
-    borderRadius: 12,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    borderWidth: 1,
-    borderColor: colors.surfaceBorder,
-    color: colors.text,
-    fontSize: 15,
-  },
-  itemNameInput: {
-    flex: 1,
-  },
-  summaryRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 12,
-  },
-  summaryLabel: {
-    color: colors.textSecondary,
-    fontSize: 15,
-  },
-  summaryValue: {
-    color: colors.text,
-    fontSize: 15,
-    fontWeight: '600',
-  },
-  summaryInput: {
-    width: 120,
-    textAlign: 'right',
-    paddingRight: 12,
-  },
-  summaryTotalRow: {
-    marginTop: 8,
-    paddingTop: 10,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: colors.surfaceBorder,
-  },
-  summaryTotalLabel: {
-    color: colors.text,
-    fontSize: 16,
-    fontWeight: '600',
-  },
-  summaryTotalValue: {
-    color: colors.text,
-    fontSize: 18,
-    fontWeight: '700',
-  },
-  notesValue: {
-    color: colors.text,
-    fontSize: 15,
-    lineHeight: 22,
-  },
-  notesPlaceholder: {
-    color: colors.textSecondary,
-    fontSize: 15,
-    lineHeight: 22,
-    fontStyle: 'italic',
-  },
-  notesInput: {
-    minHeight: 100,
-    paddingTop: 14,
   },
   modalBackdrop: {
     flex: 1,
@@ -769,34 +520,171 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: '600',
   },
-  actions: {
-    flexDirection: 'row',
+  card: {
+    backgroundColor: colors.surface,
+    borderRadius: 16,
+    padding: 16,
     gap: 12,
-    marginTop: 8,
+    borderWidth: 1,
+    borderColor: colors.surfaceBorder,
   },
-  primaryButton: {
+  cardHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  cardTitle: {
+    color: colors.text,
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  addButton: {
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: colors.surfaceBorder,
+    backgroundColor: 'rgba(17,20,24,0.9)',
+  },
+  addButtonText: {
+    color: colors.primary,
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  inputLabel: {
+    color: colors.textSecondary,
+    fontSize: 12,
+    textTransform: 'uppercase',
+    letterSpacing: 0.8,
+  },
+  textInput: {
+    backgroundColor: 'rgba(17,20,24,0.75)',
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderWidth: 1,
+    borderColor: colors.surfaceBorder,
+    color: colors.text,
+    fontSize: 15,
+  },
+  itemWrapper: {
+    position: 'relative',
+    marginBottom: 8,
+  },
+  swipeDeleteBehind: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    bottom: 0,
+    width: 80,
+    backgroundColor: colors.danger,
+    borderRadius: 8,
+  },
+  swipeDeleteButton: {
+    width: 80,
+    height: '100%',
+    backgroundColor: colors.danger,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  itemRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+    gap: 8,
+    backgroundColor: colors.surface,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: colors.surfaceBorder,
+  },
+  itemNameInput: {
     flex: 1,
+    fontSize: 15,
+    paddingVertical: 4,
+    paddingHorizontal: 0,
+    backgroundColor: 'transparent',
+  },
+  itemRightFields: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  itemQtyInput: {
+    color: colors.text,
+    fontSize: 14,
+    width: 36,
+    textAlign: 'center',
+    paddingVertical: 4,
+    paddingHorizontal: 4,
+    backgroundColor: 'transparent',
+  },
+  itemTimesSymbol: {
+    color: colors.textSecondary,
+    fontSize: 13,
+  },
+  itemPriceInput: {
+    color: colors.text,
+    fontSize: 15,
+    fontWeight: '600',
+    width: 70,
+    textAlign: 'right',
+    paddingVertical: 4,
+    paddingHorizontal: 0,
+    backgroundColor: 'transparent',
+  },
+  hint: {
+    color: colors.textSecondary,
+    fontSize: 12,
+    marginTop: 4,
+  },
+  summaryRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  summaryLabel: {
+    color: colors.textSecondary,
+    fontSize: 15,
+  },
+  summaryValue: {
+    color: colors.text,
+    fontSize: 15,
+    fontWeight: '600',
+  },
+  summaryInput: {
+    width: 120,
+    textAlign: 'right',
+    paddingRight: 12,
+  },
+  totalRow: {
+    marginTop: 8,
+    paddingTop: 12,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: colors.surfaceBorder,
+  },
+  totalLabel: {
+    color: colors.text,
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  totalValue: {
+    color: colors.text,
+    fontSize: 18,
+    fontWeight: '700',
+  },
+  actions: {
+    marginTop: 8,
+    gap: 12,
+  },
+  saveButton: {
     backgroundColor: colors.primary,
     borderRadius: 999,
     paddingVertical: 14,
     alignItems: 'center',
   },
-  primaryButtonText: {
+  saveButtonText: {
     color: colors.background,
-    fontSize: 16,
-    fontWeight: '600',
-  },
-  secondaryButton: {
-    flex: 1,
-    borderRadius: 999,
-    paddingVertical: 14,
-    borderWidth: 1,
-    borderColor: colors.surfaceBorder,
-    alignItems: 'center',
-    backgroundColor: colors.surface,
-  },
-  secondaryButtonText: {
-    color: colors.text,
     fontSize: 16,
     fontWeight: '600',
   },
