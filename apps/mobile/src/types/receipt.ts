@@ -34,3 +34,20 @@ export type PendingReceipt = {
   parsed: ParsedReceipt;
 };
 
+export type ReceiptStatus = 'draft' | 'active' | 'settled';
+
+export type Receipt = {
+  id: string;
+  owner_id: string;
+  merchant_name: string | null;
+  receipt_date: string | null;
+  image_path: string | null;
+  subtotal_cents: number;
+  tax_cents: number;
+  tip_cents: number;
+  total_cents: number;
+  status: ReceiptStatus;
+  created_at: string;
+  updated_at: string;
+};
+
