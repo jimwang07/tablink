@@ -19,13 +19,16 @@ function formatDate(dateString: string | null): string {
 }
 
 function StatusBadge({ status }: { status: ReceiptStatus }) {
-  const config = {
+  const config: Record<ReceiptStatus, { label: string; bg: string; text: string }> = {
     draft: { label: 'Draft', bg: colors.surfaceBorder, text: colors.textSecondary },
-    active: { label: 'Active', bg: '#2D5A3D', text: '#6FCF97' },
+    ready: { label: 'Ready', bg: '#2D5A3D', text: '#6FCF97' },
+    shared: { label: 'Shared', bg: '#2D5A3D', text: '#6FCF97' },
+    partially_claimed: { label: 'Partial', bg: '#5A4D2D', text: '#F2C94C' },
+    fully_claimed: { label: 'Claimed', bg: '#2D4A5A', text: '#56CCF2' },
     settled: { label: 'Settled', bg: '#3D3D5A', text: '#A0A0CF' },
   };
 
-  const { label, bg, text } = config[status];
+  const { label, bg, text } = config[status] || config.draft;
 
   return (
     <View style={[styles.badge, { backgroundColor: bg }]}>

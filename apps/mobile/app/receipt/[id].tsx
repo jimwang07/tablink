@@ -8,6 +8,7 @@ import {
   Modal,
   Platform,
   ScrollView,
+  Share,
   StyleSheet,
   Text,
   TextInput,
@@ -109,9 +110,13 @@ export default function ReceiptDetailScreen() {
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [isSharing, setIsSharing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [imageUrl, setImageUrl] = useState<string | null>(null);
   const [isImageExpanded, setIsImageExpanded] = useState(false);
+
+  // Base URL for tablinks - in production this would come from env
+  const TABLINK_BASE_URL = 'http://localhost:3000';
 
   // Editable state
   const [merchantName, setMerchantName] = useState('');
@@ -270,6 +275,43 @@ export default function ReceiptDetailScreen() {
     );
   }, [id, router]);
 
+  const handleShare = useCallback(async () => {
+    if (!id || !receipt) return;
+
+    setIsSharing(true);
+    try {
+      // Update status to shared when creating tablink
+      if (receipt.status === 'draft') {
+        const result = await updateReceipt(id, { status: 'shared' });
+        if (!result.success) {
+          Alert.alert('Error', result.error || 'Failed to activate receipt');
+          return;
+        }
+        // Update local state
+        setReceipt({ ...receipt, status: 'shared' as any });
+      }
+
+      // Generate the tablink URL
+      const tablinkUrl = `${TABLINK_BASE_URL}/item-claimer/${id}`;
+
+      // Open native share sheet
+      const result = await Share.share({
+        message: `Split the bill with me! ${receipt.merchant_name ? `(${receipt.merchant_name})` : ''}\n${tablinkUrl}`,
+        url: tablinkUrl, // iOS only
+        title: 'Share Tablink',
+      });
+
+      if (result.action === Share.sharedAction) {
+        console.log('[ReceiptDetail] Shared successfully');
+      }
+    } catch (err) {
+      console.error('[ReceiptDetail] Share error:', err);
+      Alert.alert('Error', 'Failed to share tablink');
+    } finally {
+      setIsSharing(false);
+    }
+  }, [id, receipt, TABLINK_BASE_URL]);
+
   const placeholderColor = 'rgba(195,200,212,0.5)';
 
   if (isLoading) {
@@ -312,8 +354,26 @@ export default function ReceiptDetailScreen() {
             </Text>
             <Text style={styles.subtitle}>{formatDate(receipt.receipt_date)}</Text>
           </View>
-          <View style={styles.statusBadge}>
-            <Text style={styles.statusText}>{receipt.status}</Text>
+          <View style={[
+            styles.statusBadge,
+            receipt.status === 'draft' && { backgroundColor: colors.surfaceBorder },
+            (receipt.status === 'ready' || receipt.status === 'shared') && { backgroundColor: '#2D5A3D' },
+            receipt.status === 'partially_claimed' && { backgroundColor: '#5A4D2D' },
+            receipt.status === 'fully_claimed' && { backgroundColor: '#2D4A5A' },
+            receipt.status === 'settled' && { backgroundColor: '#3D3D5A' },
+          ]}>
+            <Text style={[
+              styles.statusText,
+              receipt.status === 'draft' && { color: colors.textSecondary },
+              (receipt.status === 'ready' || receipt.status === 'shared') && { color: '#6FCF97' },
+              receipt.status === 'partially_claimed' && { color: '#F2C94C' },
+              receipt.status === 'fully_claimed' && { color: '#56CCF2' },
+              receipt.status === 'settled' && { color: '#A0A0CF' },
+            ]}>
+              {receipt.status === 'partially_claimed' ? 'Partial' :
+               receipt.status === 'fully_claimed' ? 'Claimed' :
+               receipt.status.charAt(0).toUpperCase() + receipt.status.slice(1)}
+            </Text>
           </View>
         </View>
 
@@ -455,20 +515,36 @@ export default function ReceiptDetailScreen() {
         {/* Actions */}
         <View style={styles.actions}>
           <TouchableOpacity
-            style={[styles.saveButton, (isSaving || isDeleting) && styles.buttonDisabled]}
+            style={[styles.shareButton, (isSaving || isDeleting || isSharing) && styles.buttonDisabled]}
+            onPress={handleShare}
+            disabled={isSaving || isDeleting || isSharing}
+          >
+            {isSharing ? (
+              <ActivityIndicator size="small" color="#fff" />
+            ) : (
+              <>
+                <Ionicons name="share-outline" size={20} color="#fff" style={{ marginRight: 8 }} />
+                <Text style={styles.shareButtonText}>
+                  {receipt.status === 'draft' || receipt.status === 'ready' ? 'Create Tablink' : 'Share Tablink'}
+                </Text>
+              </>
+            )}
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.saveButton, (isSaving || isDeleting || isSharing) && styles.buttonDisabled]}
             onPress={handleSave}
-            disabled={isSaving || isDeleting}
+            disabled={isSaving || isDeleting || isSharing}
           >
             {isSaving ? (
-              <ActivityIndicator size="small" color="#fff" />
+              <ActivityIndicator size="small" color={colors.primary} />
             ) : (
               <Text style={styles.saveButtonText}>Save Changes</Text>
             )}
           </TouchableOpacity>
           <TouchableOpacity
-            style={[styles.deleteButton, (isSaving || isDeleting) && styles.buttonDisabled]}
+            style={[styles.deleteButton, (isSaving || isDeleting || isSharing) && styles.buttonDisabled]}
             onPress={handleDelete}
-            disabled={isSaving || isDeleting}
+            disabled={isSaving || isDeleting || isSharing}
           >
             {isDeleting ? (
               <ActivityIndicator size="small" color={colors.danger} />
@@ -796,14 +872,29 @@ const styles = StyleSheet.create({
     marginTop: 8,
     gap: 12,
   },
-  saveButton: {
+  shareButton: {
     backgroundColor: colors.primary,
     borderRadius: 999,
     paddingVertical: 14,
+    flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'center',
+  },
+  shareButtonText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  saveButton: {
+    backgroundColor: colors.surface,
+    borderRadius: 999,
+    paddingVertical: 14,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: colors.surfaceBorder,
   },
   saveButtonText: {
-    color: colors.background,
+    color: colors.text,
     fontSize: 16,
     fontWeight: '600',
   },
