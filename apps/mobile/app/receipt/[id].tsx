@@ -292,7 +292,7 @@ export default function ReceiptDetailScreen() {
       }
 
       // Generate the tablink URL
-      const tablinkUrl = `${TABLINK_BASE_URL}/item-claimer/${id}`;
+      const tablinkUrl = `${TABLINK_BASE_URL}/claim/${id}`;
 
       // Open native share sheet
       const result = await Share.share({
