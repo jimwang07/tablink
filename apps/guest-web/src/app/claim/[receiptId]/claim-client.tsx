@@ -1,7 +1,21 @@
 'use client';
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { getSupabaseClient } from '@/lib/supabase';
+import type { RealtimePostgresChangesPayload } from '@supabase/supabase-js';
+
+// Theme colors matching mobile app
+const colors = {
+  background: '#080A0C',
+  surface: '#111418',
+  surfaceBorder: '#1C2126',
+  muted: '#5A6371',
+  text: '#F5F7FA',
+  textSecondary: '#C3C8D4',
+  primary: '#2DD36F',
+  danger: '#FF5C5C',
+  warning: '#FFB347',
+};
 
 type ReceiptItem = {
   id: string;
@@ -37,8 +51,8 @@ type Participant = {
   color_token: string | null;
 };
 
-const EMOJIS = ['😀', '🎉', '🍕', '🌟', '🎸', '🌈', '🚀', '🎨', '🍦', '🎯'];
-const COLORS = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FFEAA7', '#DDA0DD', '#98D8C8', '#F7DC6F'];
+const EMOJIS = ['😀', '🎉', '🍕', '🌟', '🎸', '🌈', '🚀', '🎨', '🍦', '🎯', '🦊', '🐱', '🦁', '🐸'];
+const COLORS = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FFEAA7', '#DDA0DD', '#98D8C8', '#F7DC6F', '#74b9ff', '#fd79a8'];
 
 function formatCents(cents: number): string {
   return `$${(cents / 100).toFixed(2)}`;
@@ -47,7 +61,7 @@ function formatCents(cents: number): string {
 function formatDate(dateString: string | null): string {
   if (!dateString) return '';
   const date = new Date(dateString);
-  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  return date.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
 }
 
 type Props = {
@@ -64,7 +78,61 @@ export function ClaimPageClient({ receiptId, receipt, items, initialClaims, init
   const [currentParticipant, setCurrentParticipant] = useState<Participant | null>(null);
   const [guestName, setGuestName] = useState('');
   const [isJoining, setIsJoining] = useState(false);
+  const [claimingItemId, setClaimingItemId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  // Subscribe to realtime updates
+  useEffect(() => {
+    const supabase = getSupabaseClient();
+    const itemIds = items.map(i => i.id);
+
+    const channel = supabase
+      .channel(`receipt:${receiptId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'item_claims',
+        },
+        (payload: RealtimePostgresChangesPayload<ItemClaim>) => {
+          if (payload.eventType === 'INSERT') {
+            const newClaim = payload.new as ItemClaim;
+            // Only add if it's for an item on this receipt and not already in our list
+            if (itemIds.includes(newClaim.item_id)) {
+              setClaims(prev => {
+                if (prev.some(c => c.id === newClaim.id)) return prev;
+                return [...prev, newClaim];
+              });
+            }
+          } else if (payload.eventType === 'DELETE') {
+            const oldClaim = payload.old as { id: string };
+            setClaims(prev => prev.filter(c => c.id !== oldClaim.id));
+          }
+        }
+      )
+      .on(
+        'postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'receipt_participants',
+          filter: `receipt_id=eq.${receiptId}`,
+        },
+        (payload: RealtimePostgresChangesPayload<Participant>) => {
+          const newParticipant = payload.new as Participant;
+          setParticipants(prev => {
+            if (prev.some(p => p.id === newParticipant.id)) return prev;
+            return [...prev, newParticipant];
+          });
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [receiptId, items]);
 
   const handleJoin = useCallback(async () => {
     if (!guestName.trim()) {
@@ -105,31 +173,30 @@ export function ClaimPageClient({ receiptId, receipt, items, initialClaims, init
   }, [guestName, receiptId]);
 
   const handleClaimItem = useCallback(async (itemId: string) => {
-    if (!currentParticipant) return;
+    if (!currentParticipant || claimingItemId) return;
 
     const item = items.find(i => i.id === itemId);
     if (!item) return;
 
+    setClaimingItemId(itemId);
+    setError(null);
+
     try {
       const supabase = getSupabaseClient();
 
-      // Check if already claimed by this participant
       const existingClaim = claims.find(
         c => c.item_id === itemId && c.participant_id === currentParticipant.id
       );
 
       if (existingClaim) {
-        // Remove claim
         const { error: deleteError } = await supabase
           .from('item_claims')
           .delete()
           .eq('id', existingClaim.id);
 
         if (deleteError) throw deleteError;
-
         setClaims(prev => prev.filter(c => c.id !== existingClaim.id));
       } else {
-        // Add claim
         const { data, error: insertError } = await supabase
           .from('item_claims')
           .insert({
@@ -142,14 +209,15 @@ export function ClaimPageClient({ receiptId, receipt, items, initialClaims, init
           .single();
 
         if (insertError) throw insertError;
-
         setClaims(prev => [...prev, data]);
       }
     } catch (err) {
       console.error('Failed to update claim:', err);
       setError('Failed to update claim. Please try again.');
+    } finally {
+      setClaimingItemId(null);
     }
-  }, [currentParticipant, items, claims]);
+  }, [currentParticipant, items, claims, claimingItemId]);
 
   const getItemClaimers = (itemId: string) => {
     const itemClaims = claims.filter(c => c.item_id === itemId);
@@ -170,33 +238,44 @@ export function ClaimPageClient({ receiptId, receipt, items, initialClaims, init
         .reduce((sum, c) => sum + c.amount_cents, 0)
     : 0;
 
-  // Calculate share of tax and tip proportionally
   const itemsTotal = items.reduce((sum, item) => sum + item.price_cents * item.quantity, 0);
   const myShare = itemsTotal > 0 ? myTotal / itemsTotal : 0;
   const myTax = Math.round(receipt.tax_cents * myShare);
   const myTip = Math.round(receipt.tip_cents * myShare);
   const myGrandTotal = myTotal + myTax + myTip;
 
+  // Join screen
   if (!currentParticipant) {
     return (
-      <div className="min-h-screen bg-gray-900 flex flex-col">
-        <div className="flex-1 flex items-center justify-center p-4">
-          <div className="bg-gray-800 rounded-xl p-6 max-w-md w-full">
-            <div className="text-center mb-6">
-              <h1 className="text-2xl font-bold text-white mb-2">
+      <div className="min-h-screen flex flex-col" style={{ backgroundColor: colors.background }}>
+        {/* Header */}
+        <header className="px-6 pt-12 pb-4">
+          <h1 className="text-2xl font-bold" style={{ color: colors.primary }}>Tablink</h1>
+        </header>
+
+        <div className="flex-1 flex items-center justify-center px-4 pb-8">
+          <div className="w-full max-w-md rounded-2xl p-6" style={{ backgroundColor: colors.surface, border: `1px solid ${colors.surfaceBorder}` }}>
+            {/* Receipt info */}
+            <div className="text-center mb-8">
+              <div className="inline-flex items-center justify-center w-16 h-16 rounded-full mb-4" style={{ backgroundColor: colors.surfaceBorder }}>
+                <span className="text-3xl">🧾</span>
+              </div>
+              <h2 className="text-2xl font-bold mb-1" style={{ color: colors.text }}>
                 {receipt.merchant_name || 'Split the Bill'}
-              </h1>
+              </h2>
               {receipt.receipt_date && (
-                <p className="text-gray-400 text-sm">{formatDate(receipt.receipt_date)}</p>
+                <p className="text-sm mb-4" style={{ color: colors.textSecondary }}>{formatDate(receipt.receipt_date)}</p>
               )}
-              <p className="text-gray-300 mt-4">
-                Total: <span className="font-semibold">{formatCents(receipt.total_cents)}</span>
-              </p>
+              <div className="inline-block px-4 py-2 rounded-full" style={{ backgroundColor: colors.surfaceBorder }}>
+                <span style={{ color: colors.textSecondary }}>Total: </span>
+                <span className="font-bold" style={{ color: colors.text }}>{formatCents(receipt.total_cents)}</span>
+              </div>
             </div>
 
+            {/* Join form */}
             <div className="space-y-4">
               <div>
-                <label htmlFor="name" className="block text-sm font-medium text-gray-300 mb-2">
+                <label htmlFor="name" className="block text-sm font-medium mb-2" style={{ color: colors.textSecondary }}>
                   Enter your name to claim items
                 </label>
                 <input
@@ -206,31 +285,49 @@ export function ClaimPageClient({ receiptId, receipt, items, initialClaims, init
                   onChange={(e) => setGuestName(e.target.value)}
                   onKeyDown={(e) => e.key === 'Enter' && handleJoin()}
                   placeholder="Your name"
-                  className="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  className="w-full px-4 py-3 rounded-xl text-base outline-none transition-all focus:ring-2"
+                  style={{
+                    backgroundColor: colors.background,
+                    border: `1px solid ${colors.surfaceBorder}`,
+                    color: colors.text,
+                  }}
                   autoFocus
                 />
               </div>
 
               {error && (
-                <p className="text-red-400 text-sm">{error}</p>
+                <p className="text-sm" style={{ color: colors.danger }}>{error}</p>
               )}
 
               <button
                 onClick={handleJoin}
                 disabled={isJoining || !guestName.trim()}
-                className="w-full py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white font-medium rounded-lg transition-colors"
+                className="w-full py-3.5 rounded-full font-semibold text-base transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                style={{
+                  backgroundColor: colors.primary,
+                  color: colors.background,
+                }}
               >
-                {isJoining ? 'Joining...' : 'Join & Claim Items'}
+                {isJoining ? (
+                  <span className="flex items-center justify-center gap-2">
+                    <svg className="animate-spin h-5 w-5" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                    </svg>
+                    Joining...
+                  </span>
+                ) : 'Join & Claim Items'}
               </button>
 
               {participants.length > 0 && (
-                <div className="mt-6 pt-4 border-t border-gray-700">
-                  <p className="text-sm text-gray-400 mb-2">Already joined:</p>
+                <div className="mt-6 pt-5" style={{ borderTop: `1px solid ${colors.surfaceBorder}` }}>
+                  <p className="text-sm mb-3" style={{ color: colors.muted }}>Already joined:</p>
                   <div className="flex flex-wrap gap-2">
                     {participants.map(p => (
                       <span
                         key={p.id}
-                        className="inline-flex items-center gap-1 px-2 py-1 bg-gray-700 rounded-full text-sm text-gray-300"
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm"
+                        style={{ backgroundColor: colors.surfaceBorder, color: colors.textSecondary }}
                       >
                         <span>{p.emoji}</span>
                         <span>{p.display_name}</span>
@@ -246,108 +343,150 @@ export function ClaimPageClient({ receiptId, receipt, items, initialClaims, init
     );
   }
 
+  // Claim screen
   return (
-    <div className="min-h-screen bg-gray-900 flex flex-col">
+    <div className="min-h-screen flex flex-col" style={{ backgroundColor: colors.background }}>
       {/* Header */}
-      <header className="bg-gray-800 border-b border-gray-700 px-4 py-4">
+      <header className="sticky top-0 z-10 px-4 py-4" style={{ backgroundColor: colors.surface, borderBottom: `1px solid ${colors.surfaceBorder}` }}>
         <div className="max-w-lg mx-auto">
           <div className="flex items-center justify-between">
-            <div>
-              <h1 className="text-xl font-bold text-white">
-                {receipt.merchant_name || 'Receipt'}
-              </h1>
-              {receipt.receipt_date && (
-                <p className="text-sm text-gray-400">{formatDate(receipt.receipt_date)}</p>
-              )}
+            <div className="flex items-center gap-3">
+              <span className="text-lg font-bold" style={{ color: colors.primary }}>Tablink</span>
+              <span style={{ color: colors.surfaceBorder }}>|</span>
+              <div>
+                <h1 className="text-lg font-semibold" style={{ color: colors.text }}>
+                  {receipt.merchant_name || 'Receipt'}
+                </h1>
+                {receipt.receipt_date && (
+                  <p className="text-xs" style={{ color: colors.textSecondary }}>{formatDate(receipt.receipt_date)}</p>
+                )}
+              </div>
             </div>
-            <div className="flex items-center gap-2 px-3 py-1.5 bg-gray-700 rounded-full">
+            <div
+              className="flex items-center gap-2 px-3 py-1.5 rounded-full"
+              style={{ backgroundColor: colors.surfaceBorder }}
+            >
               <span>{currentParticipant.emoji}</span>
-              <span className="text-white text-sm">{currentParticipant.display_name}</span>
+              <span className="text-sm font-medium" style={{ color: colors.text }}>{currentParticipant.display_name}</span>
             </div>
           </div>
         </div>
       </header>
 
       {/* Items List */}
-      <main className="flex-1 overflow-auto p-4">
-        <div className="max-w-lg mx-auto space-y-2">
-          <p className="text-gray-400 text-sm mb-4">Tap items to claim them</p>
+      <main className="flex-1 overflow-auto px-4 py-4">
+        <div className="max-w-lg mx-auto">
+          <p className="text-sm mb-4" style={{ color: colors.muted }}>Tap items to claim them</p>
 
           {error && (
-            <div className="bg-red-900/30 border border-red-700 rounded-lg p-3 mb-4">
-              <p className="text-red-400 text-sm">{error}</p>
+            <div className="rounded-xl p-3 mb-4" style={{ backgroundColor: `${colors.danger}20`, border: `1px solid ${colors.danger}40` }}>
+              <p className="text-sm" style={{ color: colors.danger }}>{error}</p>
             </div>
           )}
 
-          {items.map(item => {
-            const claimers = getItemClaimers(item.id);
-            const isMine = isClaimedByMe(item.id);
+          <div className="space-y-2">
+            {items.map(item => {
+              const claimers = getItemClaimers(item.id);
+              const isMine = isClaimedByMe(item.id);
+              const isLoading = claimingItemId === item.id;
 
-            return (
-              <button
-                key={item.id}
-                onClick={() => handleClaimItem(item.id)}
-                className={`w-full text-left p-4 rounded-lg border transition-colors ${
-                  isMine
-                    ? 'bg-blue-900/30 border-blue-600'
-                    : 'bg-gray-800 border-gray-700 hover:border-gray-600'
-                }`}
-              >
-                <div className="flex justify-between items-start">
-                  <div className="flex-1">
-                    <span className="text-white">{item.label}</span>
-                    {item.quantity > 1 && (
-                      <span className="text-gray-400 text-sm ml-2">×{item.quantity}</span>
-                    )}
+              return (
+                <button
+                  key={item.id}
+                  onClick={() => handleClaimItem(item.id)}
+                  disabled={isLoading}
+                  className="w-full text-left p-4 rounded-xl transition-all active:scale-[0.98]"
+                  style={{
+                    backgroundColor: isMine ? `${colors.primary}15` : colors.surface,
+                    border: `1px solid ${isMine ? colors.primary : colors.surfaceBorder}`,
+                    opacity: isLoading ? 0.7 : 1,
+                  }}
+                >
+                  <div className="flex justify-between items-start">
+                    <div className="flex-1 flex items-center gap-2">
+                      {isMine && (
+                        <svg className="w-5 h-5 flex-shrink-0" style={{ color: colors.primary }} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                        </svg>
+                      )}
+                      <div>
+                        <span style={{ color: colors.text }}>{item.label}</span>
+                        {item.quantity > 1 && (
+                          <span className="text-sm ml-2" style={{ color: colors.textSecondary }}>×{item.quantity}</span>
+                        )}
+                      </div>
+                    </div>
+                    <span className="font-semibold ml-4" style={{ color: colors.text }}>
+                      {formatCents(item.price_cents * item.quantity)}
+                    </span>
                   </div>
-                  <span className="text-white font-medium ml-4">
-                    {formatCents(item.price_cents * item.quantity)}
+
+                  {claimers.length > 0 && (
+                    <div className="flex flex-wrap gap-1.5 mt-3">
+                      {claimers.map(claimer => (
+                        <span
+                          key={claimer.id}
+                          className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs"
+                          style={{
+                            backgroundColor: colors.surfaceBorder,
+                            borderLeft: `3px solid ${claimer.color_token}`,
+                          }}
+                        >
+                          <span>{claimer.emoji}</span>
+                          <span style={{ color: colors.textSecondary }}>{claimer.display_name}</span>
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Participants */}
+          {participants.length > 1 && (
+            <div className="mt-6 p-4 rounded-xl" style={{ backgroundColor: colors.surface, border: `1px solid ${colors.surfaceBorder}` }}>
+              <p className="text-sm font-medium mb-3" style={{ color: colors.textSecondary }}>Splitting with</p>
+              <div className="flex flex-wrap gap-2">
+                {participants.filter(p => p.id !== currentParticipant.id).map(p => (
+                  <span
+                    key={p.id}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm"
+                    style={{ backgroundColor: colors.surfaceBorder, color: colors.textSecondary }}
+                  >
+                    <span>{p.emoji}</span>
+                    <span>{p.display_name}</span>
                   </span>
-                </div>
-
-                {claimers.length > 0 && (
-                  <div className="flex flex-wrap gap-1 mt-2">
-                    {claimers.map(claimer => (
-                      <span
-                        key={claimer.id}
-                        className="inline-flex items-center gap-1 px-2 py-0.5 bg-gray-700 rounded text-xs"
-                        style={{ borderLeft: `3px solid ${claimer.color_token}` }}
-                      >
-                        <span>{claimer.emoji}</span>
-                        <span className="text-gray-300">{claimer.display_name}</span>
-                      </span>
-                    ))}
-                  </div>
-                )}
-              </button>
-            );
-          })}
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       </main>
 
       {/* Footer with totals */}
-      <footer className="bg-gray-800 border-t border-gray-700 px-4 py-4">
+      <footer className="sticky bottom-0 px-4 py-4" style={{ backgroundColor: colors.surface, borderTop: `1px solid ${colors.surfaceBorder}` }}>
         <div className="max-w-lg mx-auto">
           <div className="space-y-2 text-sm">
-            <div className="flex justify-between text-gray-400">
+            <div className="flex justify-between" style={{ color: colors.textSecondary }}>
               <span>Your items</span>
               <span>{formatCents(myTotal)}</span>
             </div>
             {receipt.tax_cents > 0 && (
-              <div className="flex justify-between text-gray-400">
+              <div className="flex justify-between" style={{ color: colors.textSecondary }}>
                 <span>Tax (proportional)</span>
                 <span>{formatCents(myTax)}</span>
               </div>
             )}
             {receipt.tip_cents > 0 && (
-              <div className="flex justify-between text-gray-400">
+              <div className="flex justify-between" style={{ color: colors.textSecondary }}>
                 <span>Tip (proportional)</span>
                 <span>{formatCents(myTip)}</span>
               </div>
             )}
-            <div className="flex justify-between text-white font-semibold text-lg pt-2 border-t border-gray-700">
+            <div className="flex justify-between text-lg font-semibold pt-3" style={{ color: colors.text, borderTop: `1px solid ${colors.surfaceBorder}` }}>
               <span>Your total</span>
-              <span>{formatCents(myGrandTotal)}</span>
+              <span style={{ color: colors.primary }}>{formatCents(myGrandTotal)}</span>
             </div>
           </div>
         </div>

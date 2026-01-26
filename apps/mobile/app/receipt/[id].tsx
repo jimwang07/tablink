@@ -30,6 +30,22 @@ import {
   type ReceiptWithItems,
   type ReceiptItem,
 } from '@/src/services/receiptService';
+import type { RealtimePostgresChangesPayload } from '@supabase/supabase-js';
+
+type ItemClaim = {
+  id: string;
+  item_id: string;
+  participant_id: string;
+  portion: number;
+  amount_cents: number;
+};
+
+type Participant = {
+  id: string;
+  display_name: string;
+  emoji: string | null;
+  color_token: string | null;
+};
 
 type EditableItem = {
   key: string;
@@ -125,6 +141,10 @@ export default function ReceiptDetailScreen() {
   const [editableItems, setEditableItems] = useState<EditableItem[]>([]);
   const [hasChanges, setHasChanges] = useState(false);
 
+  // Claims and participants for realtime updates
+  const [claims, setClaims] = useState<ItemClaim[]>([]);
+  const [participants, setParticipants] = useState<Participant[]>([]);
+
   // Load receipt
   useEffect(() => {
     if (!id) return;
@@ -160,6 +180,92 @@ export default function ReceiptDetailScreen() {
 
     load();
   }, [id]);
+
+  // Load claims and participants, and subscribe to realtime updates
+  useEffect(() => {
+    if (!id || !receipt) return;
+
+    const supabase = getSupabaseClient();
+    const itemIds = receipt.items.map(i => i.id);
+
+    // Initial fetch of claims and participants
+    async function fetchClaimsAndParticipants() {
+      // Fetch claims for items on this receipt
+      if (itemIds.length > 0) {
+        const { data: claimsData } = await supabase
+          .from('item_claims')
+          .select('id, item_id, participant_id, portion, amount_cents')
+          .in('item_id', itemIds);
+        if (claimsData) setClaims(claimsData);
+      }
+
+      // Fetch participants
+      const { data: participantsData } = await supabase
+        .from('receipt_participants')
+        .select('id, display_name, emoji, color_token')
+        .eq('receipt_id', id);
+      if (participantsData) setParticipants(participantsData);
+    }
+
+    fetchClaimsAndParticipants();
+
+    // Subscribe to realtime updates
+    const channel = supabase
+      .channel(`receipt:${id}`)
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'item_claims',
+        },
+        (payload: RealtimePostgresChangesPayload<ItemClaim>) => {
+          if (payload.eventType === 'INSERT') {
+            const newClaim = payload.new as ItemClaim;
+            if (itemIds.includes(newClaim.item_id)) {
+              setClaims(prev => {
+                if (prev.some(c => c.id === newClaim.id)) return prev;
+                return [...prev, newClaim];
+              });
+            }
+          } else if (payload.eventType === 'DELETE') {
+            const oldClaim = payload.old as { id: string };
+            setClaims(prev => prev.filter(c => c.id !== oldClaim.id));
+          }
+        }
+      )
+      .on(
+        'postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'receipt_participants',
+          filter: `receipt_id=eq.${id}`,
+        },
+        (payload: RealtimePostgresChangesPayload<Participant>) => {
+          const newParticipant = payload.new as Participant;
+          setParticipants(prev => {
+            if (prev.some(p => p.id === newParticipant.id)) return prev;
+            return [...prev, newParticipant];
+          });
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [id, receipt]);
+
+  // Helper to get claimers for an item
+  const getItemClaimers = useCallback((itemKey: string) => {
+    // itemKey is the item.id (original) or a generated key for new items
+    const itemClaims = claims.filter(c => c.item_id === itemKey);
+    return itemClaims.map(claim => {
+      const participant = participants.find(p => p.id === claim.participant_id);
+      return participant;
+    }).filter(Boolean) as Participant[];
+  }, [claims, participants]);
 
   // Track changes
   useEffect(() => {
@@ -444,13 +550,29 @@ export default function ReceiptDetailScreen() {
                 )}
               >
                 <View style={styles.itemRow}>
-                  <TextInput
-                    value={item.name}
-                    onChangeText={(value) => updateItemField(item.key, 'name', value)}
-                    placeholder="Item name"
-                    placeholderTextColor={placeholderColor}
-                    style={[styles.itemNameInput, { color: '#F5F7FA' }]}
-                  />
+                  <View style={styles.itemMainContent}>
+                    <TextInput
+                      value={item.name}
+                      onChangeText={(value) => updateItemField(item.key, 'name', value)}
+                      placeholder="Item name"
+                      placeholderTextColor={placeholderColor}
+                      style={[styles.itemNameInput, { color: '#F5F7FA' }]}
+                    />
+                    {/* Claimer badges */}
+                    {getItemClaimers(item.key).length > 0 && (
+                      <View style={styles.claimerBadges}>
+                        {getItemClaimers(item.key).map(claimer => (
+                          <View
+                            key={claimer.id}
+                            style={[styles.claimerBadge, { borderLeftColor: claimer.color_token ?? colors.primary }]}
+                          >
+                            <Text style={styles.claimerEmoji}>{claimer.emoji}</Text>
+                            <Text style={styles.claimerName}>{claimer.display_name}</Text>
+                          </View>
+                        ))}
+                      </View>
+                    )}
+                  </View>
                   <View style={styles.itemRightFields}>
                     <TextInput
                       value={item.quantity}
@@ -784,7 +906,7 @@ const styles = StyleSheet.create({
   },
   itemRow: {
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'flex-start',
     paddingVertical: 12,
     paddingHorizontal: 12,
     gap: 8,
@@ -792,12 +914,37 @@ const styles = StyleSheet.create({
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: colors.surfaceBorder,
   },
-  itemNameInput: {
+  itemMainContent: {
     flex: 1,
+  },
+  itemNameInput: {
     fontSize: 15,
     paddingVertical: 4,
     paddingHorizontal: 0,
     backgroundColor: 'transparent',
+  },
+  claimerBadges: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 4,
+    marginTop: 6,
+  },
+  claimerBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: colors.surfaceBorder,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 4,
+    borderLeftWidth: 3,
+    gap: 4,
+  },
+  claimerEmoji: {
+    fontSize: 12,
+  },
+  claimerName: {
+    color: colors.textSecondary,
+    fontSize: 11,
   },
   itemRightFields: {
     flexDirection: 'row',
