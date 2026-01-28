@@ -1,23 +1,34 @@
-import type { Metadata } from 'next'
-import '../styles/globals.css'
-import { metadata as sharedMetadata } from './metadata'
-import Navbar from '@/components/Navbar'
+import type { Metadata } from "next";
+import { Geist, Geist_Mono } from "next/font/google";
+import "./globals.css";
 
-export const metadata: Metadata = sharedMetadata
+const geistSans = Geist({
+  variable: "--font-geist-sans",
+  subsets: ["latin"],
+});
+
+const geistMono = Geist_Mono({
+  variable: "--font-geist-mono",
+  subsets: ["latin"],
+});
+
+export const metadata: Metadata = {
+  title: "Tablink - Claim Your Items",
+  description: "Claim your share of the bill",
+};
 
 export default function RootLayout({
   children,
-}: {
-  children: React.ReactNode
-}) {
+}: Readonly<{
+  children: React.ReactNode;
+}>) {
   return (
     <html lang="en">
-      <body className="App">
-        <Navbar />
-        <main>
-          {children}
-        </main>
+      <body
+        className={`${geistSans.variable} ${geistMono.variable} antialiased`}
+      >
+        {children}
       </body>
     </html>
-  )
+  );
 }

@@ -8,6 +8,7 @@ import {
   Modal,
   Platform,
   ScrollView,
+  Share,
   StyleSheet,
   Text,
   TextInput,
@@ -29,6 +30,26 @@ import {
   type ReceiptWithItems,
   type ReceiptItem,
 } from '@/src/services/receiptService';
+import type { RealtimePostgresChangesPayload } from '@supabase/supabase-js';
+
+type ItemClaim = {
+  id: string;
+  item_id: string;
+  participant_id: string;
+  portion: number;
+  amount_cents: number;
+};
+
+type Participant = {
+  id: string;
+  display_name: string;
+  emoji: string | null;
+  color_token: string | null;
+  payment_status?: string | null;
+  paid_at?: string | null;
+  payment_method?: string | null;
+  payment_amount_cents?: number | null;
+};
 
 type EditableItem = {
   key: string;
@@ -109,9 +130,13 @@ export default function ReceiptDetailScreen() {
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [isSharing, setIsSharing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [imageUrl, setImageUrl] = useState<string | null>(null);
   const [isImageExpanded, setIsImageExpanded] = useState(false);
+
+  // Base URL for tablinks - in production this would come from env
+  const TABLINK_BASE_URL = 'http://localhost:3000';
 
   // Editable state
   const [merchantName, setMerchantName] = useState('');
@@ -119,6 +144,10 @@ export default function ReceiptDetailScreen() {
   const [tipInput, setTipInput] = useState('0.00');
   const [editableItems, setEditableItems] = useState<EditableItem[]>([]);
   const [hasChanges, setHasChanges] = useState(false);
+
+  // Claims and participants for realtime updates
+  const [claims, setClaims] = useState<ItemClaim[]>([]);
+  const [participants, setParticipants] = useState<Participant[]>([]);
 
   // Load receipt
   useEffect(() => {
@@ -155,6 +184,107 @@ export default function ReceiptDetailScreen() {
 
     load();
   }, [id]);
+
+  // Load claims and participants, and subscribe to realtime updates
+  useEffect(() => {
+    if (!id || !receipt) return;
+
+    const supabase = getSupabaseClient();
+    const itemIds = receipt.items.map(i => i.id);
+
+    // Initial fetch of claims and participants
+    async function fetchClaimsAndParticipants() {
+      // Fetch claims for items on this receipt
+      if (itemIds.length > 0) {
+        const { data: claimsData } = await supabase
+          .from('item_claims')
+          .select('id, item_id, participant_id, portion, amount_cents')
+          .in('item_id', itemIds);
+        if (claimsData) setClaims(claimsData);
+      }
+
+      // Fetch participants
+      const { data: participantsData } = await supabase
+        .from('receipt_participants')
+        .select('id, display_name, emoji, color_token, payment_status, paid_at, payment_method, payment_amount_cents')
+        .eq('receipt_id', id);
+      if (participantsData) setParticipants(participantsData);
+    }
+
+    fetchClaimsAndParticipants();
+
+    // Subscribe to realtime updates
+    const channel = supabase
+      .channel(`receipt:${id}`)
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'item_claims',
+        },
+        (payload: RealtimePostgresChangesPayload<ItemClaim>) => {
+          if (payload.eventType === 'INSERT') {
+            const newClaim = payload.new as ItemClaim;
+            if (itemIds.includes(newClaim.item_id)) {
+              setClaims(prev => {
+                if (prev.some(c => c.id === newClaim.id)) return prev;
+                return [...prev, newClaim];
+              });
+            }
+          } else if (payload.eventType === 'DELETE') {
+            const oldClaim = payload.old as { id: string };
+            setClaims(prev => prev.filter(c => c.id !== oldClaim.id));
+          }
+        }
+      )
+      .on(
+        'postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'receipt_participants',
+          filter: `receipt_id=eq.${id}`,
+        },
+        (payload: RealtimePostgresChangesPayload<Participant>) => {
+          const newParticipant = payload.new as Participant;
+          setParticipants(prev => {
+            if (prev.some(p => p.id === newParticipant.id)) return prev;
+            return [...prev, newParticipant];
+          });
+        }
+      )
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'receipt_participants',
+          filter: `receipt_id=eq.${id}`,
+        },
+        (payload: RealtimePostgresChangesPayload<Participant>) => {
+          const updatedParticipant = payload.new as Participant;
+          setParticipants(prev =>
+            prev.map(p => p.id === updatedParticipant.id ? updatedParticipant : p)
+          );
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [id, receipt]);
+
+  // Helper to get claimers for an item
+  const getItemClaimers = useCallback((itemKey: string) => {
+    // itemKey is the item.id (original) or a generated key for new items
+    const itemClaims = claims.filter(c => c.item_id === itemKey);
+    return itemClaims.map(claim => {
+      const participant = participants.find(p => p.id === claim.participant_id);
+      return participant;
+    }).filter(Boolean) as Participant[];
+  }, [claims, participants]);
 
   // Track changes
   useEffect(() => {
@@ -270,6 +400,43 @@ export default function ReceiptDetailScreen() {
     );
   }, [id, router]);
 
+  const handleShare = useCallback(async () => {
+    if (!id || !receipt) return;
+
+    setIsSharing(true);
+    try {
+      // Update status to shared when creating tablink
+      if (receipt.status === 'draft') {
+        const result = await updateReceipt(id, { status: 'shared' });
+        if (!result.success) {
+          Alert.alert('Error', result.error || 'Failed to activate receipt');
+          return;
+        }
+        // Update local state
+        setReceipt({ ...receipt, status: 'shared' as any });
+      }
+
+      // Generate the tablink URL
+      const tablinkUrl = `${TABLINK_BASE_URL}/claim/${id}`;
+
+      // Open native share sheet
+      const result = await Share.share({
+        message: `Split the bill with me! ${receipt.merchant_name ? `(${receipt.merchant_name})` : ''}\n${tablinkUrl}`,
+        url: tablinkUrl, // iOS only
+        title: 'Share Tablink',
+      });
+
+      if (result.action === Share.sharedAction) {
+        console.log('[ReceiptDetail] Shared successfully');
+      }
+    } catch (err) {
+      console.error('[ReceiptDetail] Share error:', err);
+      Alert.alert('Error', 'Failed to share tablink');
+    } finally {
+      setIsSharing(false);
+    }
+  }, [id, receipt, TABLINK_BASE_URL]);
+
   const placeholderColor = 'rgba(195,200,212,0.5)';
 
   if (isLoading) {
@@ -312,8 +479,26 @@ export default function ReceiptDetailScreen() {
             </Text>
             <Text style={styles.subtitle}>{formatDate(receipt.receipt_date)}</Text>
           </View>
-          <View style={styles.statusBadge}>
-            <Text style={styles.statusText}>{receipt.status}</Text>
+          <View style={[
+            styles.statusBadge,
+            receipt.status === 'draft' && { backgroundColor: colors.surfaceBorder },
+            (receipt.status === 'ready' || receipt.status === 'shared') && { backgroundColor: '#2D5A3D' },
+            receipt.status === 'partially_claimed' && { backgroundColor: '#5A4D2D' },
+            receipt.status === 'fully_claimed' && { backgroundColor: '#2D4A5A' },
+            receipt.status === 'settled' && { backgroundColor: '#3D3D5A' },
+          ]}>
+            <Text style={[
+              styles.statusText,
+              receipt.status === 'draft' && { color: colors.textSecondary },
+              (receipt.status === 'ready' || receipt.status === 'shared') && { color: '#6FCF97' },
+              receipt.status === 'partially_claimed' && { color: '#F2C94C' },
+              receipt.status === 'fully_claimed' && { color: '#56CCF2' },
+              receipt.status === 'settled' && { color: '#A0A0CF' },
+            ]}>
+              {receipt.status === 'partially_claimed' ? 'Partial' :
+               receipt.status === 'fully_claimed' ? 'Claimed' :
+               receipt.status.charAt(0).toUpperCase() + receipt.status.slice(1)}
+            </Text>
           </View>
         </View>
 
@@ -384,13 +569,29 @@ export default function ReceiptDetailScreen() {
                 )}
               >
                 <View style={styles.itemRow}>
-                  <TextInput
-                    value={item.name}
-                    onChangeText={(value) => updateItemField(item.key, 'name', value)}
-                    placeholder="Item name"
-                    placeholderTextColor={placeholderColor}
-                    style={[styles.itemNameInput, { color: '#F5F7FA' }]}
-                  />
+                  <View style={styles.itemMainContent}>
+                    <TextInput
+                      value={item.name}
+                      onChangeText={(value) => updateItemField(item.key, 'name', value)}
+                      placeholder="Item name"
+                      placeholderTextColor={placeholderColor}
+                      style={[styles.itemNameInput, { color: '#F5F7FA' }]}
+                    />
+                    {/* Claimer badges */}
+                    {getItemClaimers(item.key).length > 0 && (
+                      <View style={styles.claimerBadges}>
+                        {getItemClaimers(item.key).map(claimer => (
+                          <View
+                            key={claimer.id}
+                            style={[styles.claimerBadge, { borderLeftColor: claimer.color_token ?? colors.primary }]}
+                          >
+                            <Text style={styles.claimerEmoji}>{claimer.emoji}</Text>
+                            <Text style={styles.claimerName}>{claimer.display_name}</Text>
+                          </View>
+                        ))}
+                      </View>
+                    )}
+                  </View>
                   <View style={styles.itemRightFields}>
                     <TextInput
                       value={item.quantity}
@@ -452,23 +653,88 @@ export default function ReceiptDetailScreen() {
           </View>
         </View>
 
+        {/* Payment Status - only show when receipt is shared and has participants */}
+        {(receipt.status === 'shared' || receipt.status === 'partially_claimed' || receipt.status === 'fully_claimed') && participants.length > 0 && (
+          <View style={styles.card}>
+            <Text style={styles.cardTitle}>Payment Status</Text>
+            {participants.map(p => {
+              // Calculate this participant's total
+              const participantClaims = claims.filter(c => c.participant_id === p.id);
+              const claimsTotal = participantClaims.reduce((sum, c) => sum + c.amount_cents, 0);
+              // Calculate proportional share of tax/tip
+              const itemsTotal = editableItems.reduce((sum, item) => {
+                const qty = parseQuantityInput(item.quantity);
+                const price = parseCurrencyInput(item.price);
+                return sum + dollarsToCents(qty * price);
+              }, 0);
+              const share = itemsTotal > 0 ? claimsTotal / itemsTotal : 0;
+              const taxAmount = Math.round(parseCurrencyInput(taxInput) * 100 * share);
+              const tipAmount = Math.round(parseCurrencyInput(tipInput) * 100 * share);
+              const participantTotal = claimsTotal + taxAmount + tipAmount;
+
+              if (participantTotal === 0) return null;
+
+              return (
+                <View key={p.id} style={styles.paymentStatusRow}>
+                  <View style={styles.paymentParticipantInfo}>
+                    <Text style={styles.paymentEmoji}>{p.emoji || '👤'}</Text>
+                    <Text style={styles.paymentName}>{p.display_name}</Text>
+                  </View>
+                  <View style={styles.paymentAmountStatus}>
+                    <Text style={styles.paymentAmount}>
+                      {formatCurrency(participantTotal / 100)}
+                    </Text>
+                    <View style={[
+                      styles.paymentBadge,
+                      p.payment_status === 'paid' ? styles.paymentBadgePaid : styles.paymentBadgePending,
+                    ]}>
+                      <Text style={[
+                        styles.paymentBadgeText,
+                        p.payment_status === 'paid' ? styles.paymentBadgeTextPaid : styles.paymentBadgeTextPending,
+                      ]}>
+                        {p.payment_status === 'paid' ? '✓ Paid' : 'Pending'}
+                      </Text>
+                    </View>
+                  </View>
+                </View>
+              );
+            })}
+          </View>
+        )}
+
         {/* Actions */}
         <View style={styles.actions}>
           <TouchableOpacity
-            style={[styles.saveButton, (isSaving || isDeleting) && styles.buttonDisabled]}
+            style={[styles.shareButton, (isSaving || isDeleting || isSharing) && styles.buttonDisabled]}
+            onPress={handleShare}
+            disabled={isSaving || isDeleting || isSharing}
+          >
+            {isSharing ? (
+              <ActivityIndicator size="small" color="#fff" />
+            ) : (
+              <>
+                <Ionicons name="share-outline" size={20} color="#fff" style={{ marginRight: 8 }} />
+                <Text style={styles.shareButtonText}>
+                  {receipt.status === 'draft' || receipt.status === 'ready' ? 'Create Tablink' : 'Share Tablink'}
+                </Text>
+              </>
+            )}
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.saveButton, (isSaving || isDeleting || isSharing) && styles.buttonDisabled]}
             onPress={handleSave}
-            disabled={isSaving || isDeleting}
+            disabled={isSaving || isDeleting || isSharing}
           >
             {isSaving ? (
-              <ActivityIndicator size="small" color="#fff" />
+              <ActivityIndicator size="small" color={colors.primary} />
             ) : (
               <Text style={styles.saveButtonText}>Save Changes</Text>
             )}
           </TouchableOpacity>
           <TouchableOpacity
-            style={[styles.deleteButton, (isSaving || isDeleting) && styles.buttonDisabled]}
+            style={[styles.deleteButton, (isSaving || isDeleting || isSharing) && styles.buttonDisabled]}
             onPress={handleDelete}
-            disabled={isSaving || isDeleting}
+            disabled={isSaving || isDeleting || isSharing}
           >
             {isDeleting ? (
               <ActivityIndicator size="small" color={colors.danger} />
@@ -708,7 +974,7 @@ const styles = StyleSheet.create({
   },
   itemRow: {
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'flex-start',
     paddingVertical: 12,
     paddingHorizontal: 12,
     gap: 8,
@@ -716,12 +982,37 @@ const styles = StyleSheet.create({
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: colors.surfaceBorder,
   },
-  itemNameInput: {
+  itemMainContent: {
     flex: 1,
+  },
+  itemNameInput: {
     fontSize: 15,
     paddingVertical: 4,
     paddingHorizontal: 0,
     backgroundColor: 'transparent',
+  },
+  claimerBadges: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 4,
+    marginTop: 6,
+  },
+  claimerBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: colors.surfaceBorder,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 4,
+    borderLeftWidth: 3,
+    gap: 4,
+  },
+  claimerEmoji: {
+    fontSize: 12,
+  },
+  claimerName: {
+    color: colors.textSecondary,
+    fontSize: 11,
   },
   itemRightFields: {
     flexDirection: 'row',
@@ -796,14 +1087,29 @@ const styles = StyleSheet.create({
     marginTop: 8,
     gap: 12,
   },
-  saveButton: {
+  shareButton: {
     backgroundColor: colors.primary,
     borderRadius: 999,
     paddingVertical: 14,
+    flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'center',
+  },
+  shareButtonText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  saveButton: {
+    backgroundColor: colors.surface,
+    borderRadius: 999,
+    paddingVertical: 14,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: colors.surfaceBorder,
   },
   saveButtonText: {
-    color: colors.background,
+    color: colors.text,
     fontSize: 16,
     fontWeight: '600',
   },
@@ -822,5 +1128,57 @@ const styles = StyleSheet.create({
   },
   buttonDisabled: {
     opacity: 0.6,
+  },
+  // Payment Status styles
+  paymentStatusRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.surfaceBorder,
+  },
+  paymentParticipantInfo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  paymentEmoji: {
+    fontSize: 20,
+  },
+  paymentName: {
+    color: colors.text,
+    fontSize: 15,
+    fontWeight: '500',
+  },
+  paymentAmountStatus: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  paymentAmount: {
+    color: colors.textSecondary,
+    fontSize: 14,
+  },
+  paymentBadge: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 6,
+  },
+  paymentBadgePaid: {
+    backgroundColor: '#2D5A3D',
+  },
+  paymentBadgePending: {
+    backgroundColor: colors.surfaceBorder,
+  },
+  paymentBadgeText: {
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  paymentBadgeTextPaid: {
+    color: '#6FCF97',
+  },
+  paymentBadgeTextPending: {
+    color: colors.textSecondary,
   },
 });
