@@ -41,6 +41,10 @@ function formatRelativeTime(dateString: string): string {
   }
 }
 
+function formatCents(cents: number): string {
+  return `$${(cents / 100).toFixed(2)}`;
+}
+
 function ActivityItemRow({
   item,
   onPress,
@@ -52,6 +56,8 @@ function ActivityItemRow({
   const description =
     item.type === 'claim'
       ? `claimed "${item.itemName}"`
+      : item.type === 'payment'
+      ? `paid ${item.amountCents ? formatCents(item.amountCents) : ''}${item.paymentMethod ? ` via ${item.paymentMethod}` : ''}`
       : `joined the receipt`;
 
   return (
@@ -132,6 +138,13 @@ export default function ActivityScreen() {
         });
       },
       onJoin: (activity) => {
+        setActivities((prev) => {
+          // Avoid duplicates
+          if (prev.some((a) => a.id === activity.id)) return prev;
+          return [activity, ...prev].slice(0, 50);
+        });
+      },
+      onPayment: (activity) => {
         setActivities((prev) => {
           // Avoid duplicates
           if (prev.some((a) => a.id === activity.id)) return prev;

@@ -18,6 +18,15 @@ type Receipt = {
   tip_cents: number;
   total_cents: number;
   status: string;
+  owner_id: string;
+};
+
+type OwnerProfile = {
+  display_name: string | null;
+  venmo_handle: string | null;
+  cashapp_handle: string | null;
+  paypal_handle: string | null;
+  zelle_identifier: string | null;
 };
 
 type ItemClaim = {
@@ -41,7 +50,7 @@ async function getReceiptData(receiptId: string) {
   // Fetch receipt
   const { data: receipt, error: receiptError } = await supabase
     .from('receipts')
-    .select('id, merchant_name, receipt_date, subtotal_cents, tax_cents, tip_cents, total_cents, status')
+    .select('id, merchant_name, receipt_date, subtotal_cents, tax_cents, tip_cents, total_cents, status, owner_id')
     .eq('id', receiptId)
     .single();
 
@@ -74,14 +83,22 @@ async function getReceiptData(receiptId: string) {
   // Fetch participants
   const { data: participants, error: participantsError } = await supabase
     .from('receipt_participants')
-    .select('id, display_name, emoji, color_token')
+    .select('id, display_name, emoji, color_token, payment_status')
     .eq('receipt_id', receiptId);
+
+  // Fetch owner profile for payment handles
+  const { data: ownerProfile } = await supabase
+    .from('user_profiles')
+    .select('display_name, venmo_handle, cashapp_handle, paypal_handle, zelle_identifier')
+    .eq('user_id', receipt.owner_id)
+    .single();
 
   return {
     receipt: receipt as Receipt,
     items: (items || []) as ReceiptItem[],
     claims: (claims || []) as ItemClaim[],
     participants: (participants || []) as Participant[],
+    ownerProfile: (ownerProfile || null) as OwnerProfile | null,
   };
 }
 
@@ -111,6 +128,7 @@ export default async function ClaimPage({
       items={data.items}
       initialClaims={data.claims}
       initialParticipants={data.participants}
+      ownerProfile={data.ownerProfile}
     />
   );
 }

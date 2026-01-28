@@ -23,6 +23,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { usePendingReceipt } from '@/src/hooks/usePendingReceipt';
 import { useAuth } from '@/src/hooks/useAuth';
 import { saveReceipt, updateReceipt } from '@/src/services/receiptService';
+import { getSupabaseClient } from '@/src/lib/supabaseClient';
 import { colors } from '@/src/theme';
 import type { ParsedReceiptItem } from '@/src/types/receipt';
 
@@ -98,6 +99,35 @@ export default function ReceiptReviewScreen() {
   const [isImageExpanded, setIsImageExpanded] = useState(false);
   const [showShareSuccess, setShowShareSuccess] = useState(false);
   const [sharedReceiptId, setSharedReceiptId] = useState<string | null>(null);
+  const [hasPaymentMethods, setHasPaymentMethods] = useState<boolean | null>(null);
+
+  // Check if user has payment methods set up
+  useEffect(() => {
+    async function checkPaymentMethods() {
+      if (!session?.user?.id) return;
+
+      const supabase = getSupabaseClient();
+      const { data } = await supabase
+        .from('user_profiles')
+        .select('venmo_handle, cashapp_handle, paypal_handle, zelle_identifier')
+        .eq('user_id', session.user.id)
+        .single();
+
+      if (data) {
+        const hasAny = !!(
+          data.venmo_handle ||
+          data.cashapp_handle ||
+          data.paypal_handle ||
+          data.zelle_identifier
+        );
+        setHasPaymentMethods(hasAny);
+      } else {
+        setHasPaymentMethods(false);
+      }
+    }
+
+    checkPaymentMethods();
+  }, [session?.user?.id]);
 
   const TABLINK_BASE_URL = 'http://localhost:3000';
 
@@ -210,6 +240,22 @@ export default function ReceiptReviewScreen() {
       return;
     }
 
+    // Check if user has payment methods set up
+    if (!hasPaymentMethods) {
+      Alert.alert(
+        'Set Up Payment Methods',
+        'Before sharing a receipt, add your payment info (Venmo, CashApp, etc.) so guests can pay you.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Go to Settings',
+            onPress: () => router.push('/(host)/settings'),
+          },
+        ]
+      );
+      return;
+    }
+
     setIsSharing(true);
     try {
       const updatedParsed = buildUpdatedParsed();
@@ -251,7 +297,7 @@ export default function ReceiptReviewScreen() {
     } finally {
       setIsSharing(false);
     }
-  }, [buildUpdatedParsed, pendingReceipt, session, setPendingReceipt, TABLINK_BASE_URL]);
+  }, [buildUpdatedParsed, pendingReceipt, session, setPendingReceipt, TABLINK_BASE_URL, hasPaymentMethods, router]);
 
   const handleViewReceipt = useCallback(() => {
     setShowShareSuccess(false);

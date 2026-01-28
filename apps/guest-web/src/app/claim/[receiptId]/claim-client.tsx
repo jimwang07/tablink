@@ -49,6 +49,15 @@ type Participant = {
   display_name: string;
   emoji: string | null;
   color_token: string | null;
+  payment_status?: string;
+};
+
+type OwnerProfile = {
+  display_name: string | null;
+  venmo_handle: string | null;
+  cashapp_handle: string | null;
+  paypal_handle: string | null;
+  zelle_identifier: string | null;
 };
 
 const EMOJIS = ['😀', '🎉', '🍕', '🌟', '🎸', '🌈', '🚀', '🎨', '🍦', '🎯', '🦊', '🐱', '🦁', '🐸'];
@@ -70,9 +79,10 @@ type Props = {
   items: ReceiptItem[];
   initialClaims: ItemClaim[];
   initialParticipants: Participant[];
+  ownerProfile: OwnerProfile | null;
 };
 
-export function ClaimPageClient({ receiptId, receipt, items, initialClaims, initialParticipants }: Props) {
+export function ClaimPageClient({ receiptId, receipt, items, initialClaims, initialParticipants, ownerProfile }: Props) {
   const [claims, setClaims] = useState<ItemClaim[]>(initialClaims);
   const [participants, setParticipants] = useState<Participant[]>(initialParticipants);
   const [currentParticipant, setCurrentParticipant] = useState<Participant | null>(null);
@@ -80,6 +90,10 @@ export function ClaimPageClient({ receiptId, receipt, items, initialClaims, init
   const [isJoining, setIsJoining] = useState(false);
   const [claimingItemId, setClaimingItemId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [isMarkingPaid, setIsMarkingPaid] = useState(false);
+  const [paymentStatus, setPaymentStatus] = useState<'unpaid' | 'paid'>('unpaid');
+  const [copiedZelle, setCopiedZelle] = useState(false);
+  const [showPaymentModal, setShowPaymentModal] = useState(false);
 
   // Subscribe to realtime updates
   useEffect(() => {
@@ -219,6 +233,102 @@ export function ClaimPageClient({ receiptId, receipt, items, initialClaims, init
     }
   }, [currentParticipant, items, claims, claimingItemId]);
 
+  // Calculate totals - needed before payment callbacks
+  const myTotal = currentParticipant
+    ? claims
+        .filter(c => c.participant_id === currentParticipant.id)
+        .reduce((sum, c) => sum + c.amount_cents, 0)
+    : 0;
+
+  const itemsTotal = items.reduce((sum, item) => sum + item.price_cents * item.quantity, 0);
+  const myShare = itemsTotal > 0 ? myTotal / itemsTotal : 0;
+  const myTax = Math.round(receipt.tax_cents * myShare);
+  const myTip = Math.round(receipt.tip_cents * myShare);
+  const myGrandTotal = myTotal + myTax + myTip;
+
+  const handleMarkPaid = useCallback(async (method: string) => {
+    if (!currentParticipant || isMarkingPaid) return;
+
+    setIsMarkingPaid(true);
+    setError(null);
+
+    try {
+      const supabase = getSupabaseClient();
+
+      const { error: updateError } = await supabase
+        .from('receipt_participants')
+        .update({
+          payment_status: 'paid',
+          paid_at: new Date().toISOString(),
+          payment_method: method,
+          payment_amount_cents: myGrandTotal,
+        })
+        .eq('id', currentParticipant.id);
+
+      if (updateError) throw updateError;
+
+      setPaymentStatus('paid');
+      setCurrentParticipant(prev => prev ? { ...prev, payment_status: 'paid' } : null);
+    } catch (err) {
+      console.error('Failed to mark as paid:', err);
+      setError('Failed to update payment status. Please try again.');
+    } finally {
+      setIsMarkingPaid(false);
+    }
+  }, [currentParticipant, isMarkingPaid, myGrandTotal]);
+
+  const handleCopyZelle = useCallback(() => {
+    if (ownerProfile?.zelle_identifier) {
+      navigator.clipboard.writeText(ownerProfile.zelle_identifier);
+      setCopiedZelle(true);
+      setTimeout(() => setCopiedZelle(false), 2000);
+    }
+  }, [ownerProfile?.zelle_identifier]);
+
+  const getPaymentOptions = useCallback(() => {
+    if (!ownerProfile) return [];
+
+    const amountDollars = (myGrandTotal / 100).toFixed(2);
+    const options = [];
+
+    if (ownerProfile.venmo_handle) {
+      const username = ownerProfile.venmo_handle.replace(/^@/, '');
+      options.push({
+        name: 'Venmo',
+        color: '#3D95CE',
+        url: `venmo://paycharge?txn=pay&recipients=${username}&amount=${amountDollars}&note=Tablink`,
+        fallbackUrl: `https://venmo.com/${username}`,
+      });
+    }
+
+    if (ownerProfile.cashapp_handle) {
+      const cashtag = ownerProfile.cashapp_handle.replace(/^\$/, '');
+      options.push({
+        name: 'Cash App',
+        color: '#00D632',
+        url: `https://cash.app/$${cashtag}/${amountDollars}`,
+      });
+    }
+
+    if (ownerProfile.paypal_handle) {
+      options.push({
+        name: 'PayPal',
+        color: '#003087',
+        url: `https://paypal.me/${ownerProfile.paypal_handle}/${amountDollars}`,
+      });
+    }
+
+    if (ownerProfile.zelle_identifier) {
+      options.push({
+        name: 'Zelle',
+        color: '#6D1ED4',
+        identifier: ownerProfile.zelle_identifier,
+      });
+    }
+
+    return options;
+  }, [ownerProfile, myGrandTotal]);
+
   const getItemClaimers = (itemId: string) => {
     const itemClaims = claims.filter(c => c.item_id === itemId);
     return itemClaims.map(claim => {
@@ -231,18 +341,6 @@ export function ClaimPageClient({ receiptId, receipt, items, initialClaims, init
     if (!currentParticipant) return false;
     return claims.some(c => c.item_id === itemId && c.participant_id === currentParticipant.id);
   };
-
-  const myTotal = currentParticipant
-    ? claims
-        .filter(c => c.participant_id === currentParticipant.id)
-        .reduce((sum, c) => sum + c.amount_cents, 0)
-    : 0;
-
-  const itemsTotal = items.reduce((sum, item) => sum + item.price_cents * item.quantity, 0);
-  const myShare = itemsTotal > 0 ? myTotal / itemsTotal : 0;
-  const myTax = Math.round(receipt.tax_cents * myShare);
-  const myTip = Math.round(receipt.tip_cents * myShare);
-  const myGrandTotal = myTotal + myTax + myTip;
 
   // Join screen
   if (!currentParticipant) {
@@ -464,7 +562,7 @@ export function ClaimPageClient({ receiptId, receipt, items, initialClaims, init
         </div>
       </main>
 
-      {/* Footer with totals */}
+      {/* Footer with totals and payment */}
       <footer className="sticky bottom-0 px-4 py-4" style={{ backgroundColor: colors.surface, borderTop: `1px solid ${colors.surfaceBorder}` }}>
         <div className="max-w-lg mx-auto">
           <div className="space-y-2 text-sm">
@@ -489,8 +587,121 @@ export function ClaimPageClient({ receiptId, receipt, items, initialClaims, init
               <span style={{ color: colors.primary }}>{formatCents(myGrandTotal)}</span>
             </div>
           </div>
+
+          {/* Payment Button */}
+          {myGrandTotal > 0 && (
+            <div className="mt-4 pt-4" style={{ borderTop: `1px solid ${colors.surfaceBorder}` }}>
+              {paymentStatus === 'paid' ? (
+                <div className="text-center py-3 rounded-xl" style={{ backgroundColor: `${colors.primary}15` }}>
+                  <div className="flex items-center justify-center gap-2">
+                    <svg className="w-5 h-5" style={{ color: colors.primary }} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                    </svg>
+                    <span className="font-semibold" style={{ color: colors.primary }}>Payment confirmed!</span>
+                  </div>
+                  <p className="text-sm mt-1" style={{ color: colors.textSecondary }}>Thanks for settling up</p>
+                </div>
+              ) : (
+                <button
+                  onClick={() => setShowPaymentModal(true)}
+                  className="w-full py-3.5 rounded-full font-semibold text-base transition-all active:scale-[0.98]"
+                  style={{
+                    backgroundColor: colors.primary,
+                    color: colors.background,
+                  }}
+                >
+                  Pay {ownerProfile?.display_name || 'Host'}
+                </button>
+              )}
+            </div>
+          )}
         </div>
       </footer>
+
+      {/* Payment Modal */}
+      {showPaymentModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-end justify-center"
+          style={{ backgroundColor: 'rgba(0,0,0,0.6)' }}
+          onClick={() => setShowPaymentModal(false)}
+        >
+          <div
+            className="w-full max-w-lg rounded-t-3xl p-6 pb-10"
+            style={{ backgroundColor: colors.surface }}
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="flex justify-between items-center mb-6">
+              <h2 className="text-xl font-bold" style={{ color: colors.text }}>
+                Pay {ownerProfile?.display_name || 'Host'}
+              </h2>
+              <button
+                onClick={() => setShowPaymentModal(false)}
+                className="p-2 rounded-full"
+                style={{ backgroundColor: colors.surfaceBorder }}
+              >
+                <svg className="w-5 h-5" style={{ color: colors.text }} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            <div className="text-center mb-6">
+              <p className="text-sm" style={{ color: colors.textSecondary }}>Amount due</p>
+              <p className="text-3xl font-bold" style={{ color: colors.primary }}>{formatCents(myGrandTotal)}</p>
+            </div>
+
+            {ownerProfile && getPaymentOptions().length > 0 ? (
+              <div className="space-y-3">
+                {getPaymentOptions().map(option => (
+                  'url' in option ? (
+                    <a
+                      key={option.name}
+                      href={option.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex items-center justify-center gap-3 py-4 rounded-xl font-semibold text-base transition-all active:scale-[0.98] w-full"
+                      style={{ backgroundColor: option.color, color: '#fff' }}
+                    >
+                      Pay with {option.name}
+                    </a>
+                  ) : (
+                    <button
+                      key={option.name}
+                      onClick={handleCopyZelle}
+                      className="flex items-center justify-center gap-3 py-4 rounded-xl font-semibold text-base transition-all active:scale-[0.98] w-full"
+                      style={{ backgroundColor: option.color, color: '#fff' }}
+                    >
+                      {copiedZelle ? 'Copied to clipboard!' : `Zelle: ${option.identifier}`}
+                    </button>
+                  )
+                ))}
+              </div>
+            ) : (
+              <p className="text-center py-4" style={{ color: colors.textSecondary }}>
+                No payment methods available. Contact the host directly.
+              </p>
+            )}
+
+            <div className="mt-6 pt-4" style={{ borderTop: `1px solid ${colors.surfaceBorder}` }}>
+              <button
+                onClick={() => {
+                  handleMarkPaid('manual');
+                  setShowPaymentModal(false);
+                }}
+                disabled={isMarkingPaid}
+                className="w-full py-3 rounded-full font-medium text-base transition-all disabled:opacity-50"
+                style={{
+                  backgroundColor: 'transparent',
+                  color: colors.text,
+                  border: `1px solid ${colors.surfaceBorder}`,
+                }}
+              >
+                {isMarkingPaid ? 'Confirming...' : "I've already paid"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -1,7 +1,7 @@
 import { getSupabaseClient } from '@/src/lib/supabaseClient';
 import type { RealtimePostgresChangesPayload } from '@supabase/supabase-js';
 
-export type ActivityType = 'claim' | 'join';
+export type ActivityType = 'claim' | 'join' | 'payment';
 
 export type ActivityItem = {
   id: string;
@@ -12,6 +12,8 @@ export type ActivityItem = {
   participantName: string;
   participantEmoji: string | null;
   itemName?: string; // Only for claim type
+  paymentMethod?: string; // Only for payment type
+  amountCents?: number; // Only for payment type
 };
 
 type ItemClaim = {
@@ -27,6 +29,10 @@ type Participant = {
   display_name: string;
   emoji: string | null;
   created_at: string;
+  payment_status?: string;
+  paid_at?: string;
+  payment_method?: string;
+  payment_amount_cents?: number;
 };
 
 type ReceiptItem = {
@@ -70,7 +76,7 @@ export async function fetchRecentActivity(userId: string): Promise<ActivityItem[
   // Fetch all participants for these receipts
   const { data: participants, error: participantsError } = await supabase
     .from('receipt_participants')
-    .select('id, receipt_id, display_name, emoji, created_at')
+    .select('id, receipt_id, display_name, emoji, created_at, payment_status, paid_at, payment_method, payment_amount_cents')
     .in('receipt_id', receiptIds)
     .order('created_at', { ascending: false });
 
@@ -127,6 +133,21 @@ export async function fetchRecentActivity(userId: string): Promise<ActivityItem[
       participantName: p.display_name,
       participantEmoji: p.emoji,
     });
+
+    // Add payment activities for participants who have paid
+    if (p.payment_status === 'paid' && p.paid_at) {
+      activities.push({
+        id: `payment-${p.id}`,
+        type: 'payment',
+        timestamp: p.paid_at,
+        receiptId: p.receipt_id,
+        receiptName: receiptNameMap.get(p.receipt_id) || 'Receipt',
+        participantName: p.display_name,
+        participantEmoji: p.emoji,
+        paymentMethod: p.payment_method ?? undefined,
+        amountCents: p.payment_amount_cents ?? undefined,
+      });
+    }
   });
 
   // Add claim activities
@@ -158,6 +179,7 @@ export async function fetchRecentActivity(userId: string): Promise<ActivityItem[
 export type ActivitySubscriptionCallbacks = {
   onClaim: (activity: ActivityItem) => void;
   onJoin: (activity: ActivityItem) => void;
+  onPayment: (activity: ActivityItem) => void;
 };
 
 export function subscribeToActivity(
@@ -190,7 +212,7 @@ export function subscribeToActivity(
     if (receiptIds.length > 0) {
       const { data: participants } = await supabase
         .from('receipt_participants')
-        .select('id, receipt_id, display_name, emoji, created_at')
+        .select('id, receipt_id, display_name, emoji, created_at, payment_status, paid_at, payment_method, payment_amount_cents')
         .in('receipt_id', receiptIds);
 
       participantMap = new Map();
@@ -296,6 +318,42 @@ export function subscribeToActivity(
           participantName: participant.display_name,
           participantEmoji: participant.emoji,
         });
+      }
+    )
+    .on(
+      'postgres_changes',
+      {
+        event: 'UPDATE',
+        schema: 'public',
+        table: 'receipt_participants',
+      },
+      async (payload: RealtimePostgresChangesPayload<Participant>) => {
+        const updated = payload.new as Participant;
+        const old = payload.old as Partial<Participant>;
+
+        // Check if payment_status changed to 'paid'
+        if (old.payment_status !== 'paid' && updated.payment_status === 'paid') {
+          // Check if this receipt is one of ours
+          if (!receiptIds.includes(updated.receipt_id)) {
+            await initializeData();
+            if (!receiptIds.includes(updated.receipt_id)) return;
+          }
+
+          // Update participant map
+          participantMap.set(updated.id, updated);
+
+          callbacks.onPayment({
+            id: `payment-${updated.id}-${Date.now()}`,
+            type: 'payment',
+            timestamp: updated.paid_at || new Date().toISOString(),
+            receiptId: updated.receipt_id,
+            receiptName: receiptNameMap.get(updated.receipt_id) || 'Receipt',
+            participantName: updated.display_name,
+            participantEmoji: updated.emoji,
+            paymentMethod: updated.payment_method ?? undefined,
+            amountCents: updated.payment_amount_cents ?? undefined,
+          });
+        }
       }
     )
     .subscribe();

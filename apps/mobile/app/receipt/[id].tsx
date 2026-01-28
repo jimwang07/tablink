@@ -45,6 +45,10 @@ type Participant = {
   display_name: string;
   emoji: string | null;
   color_token: string | null;
+  payment_status?: string | null;
+  paid_at?: string | null;
+  payment_method?: string | null;
+  payment_amount_cents?: number | null;
 };
 
 type EditableItem = {
@@ -202,7 +206,7 @@ export default function ReceiptDetailScreen() {
       // Fetch participants
       const { data: participantsData } = await supabase
         .from('receipt_participants')
-        .select('id, display_name, emoji, color_token')
+        .select('id, display_name, emoji, color_token, payment_status, paid_at, payment_method, payment_amount_cents')
         .eq('receipt_id', id);
       if (participantsData) setParticipants(participantsData);
     }
@@ -248,6 +252,21 @@ export default function ReceiptDetailScreen() {
             if (prev.some(p => p.id === newParticipant.id)) return prev;
             return [...prev, newParticipant];
           });
+        }
+      )
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'receipt_participants',
+          filter: `receipt_id=eq.${id}`,
+        },
+        (payload: RealtimePostgresChangesPayload<Participant>) => {
+          const updatedParticipant = payload.new as Participant;
+          setParticipants(prev =>
+            prev.map(p => p.id === updatedParticipant.id ? updatedParticipant : p)
+          );
         }
       )
       .subscribe();
@@ -633,6 +652,55 @@ export default function ReceiptDetailScreen() {
             <Text style={styles.totalValue}>{formatCurrency(grandTotal)}</Text>
           </View>
         </View>
+
+        {/* Payment Status - only show when receipt is shared and has participants */}
+        {(receipt.status === 'shared' || receipt.status === 'partially_claimed' || receipt.status === 'fully_claimed') && participants.length > 0 && (
+          <View style={styles.card}>
+            <Text style={styles.cardTitle}>Payment Status</Text>
+            {participants.map(p => {
+              // Calculate this participant's total
+              const participantClaims = claims.filter(c => c.participant_id === p.id);
+              const claimsTotal = participantClaims.reduce((sum, c) => sum + c.amount_cents, 0);
+              // Calculate proportional share of tax/tip
+              const itemsTotal = editableItems.reduce((sum, item) => {
+                const qty = parseQuantityInput(item.quantity);
+                const price = parseCurrencyInput(item.price);
+                return sum + dollarsToCents(qty * price);
+              }, 0);
+              const share = itemsTotal > 0 ? claimsTotal / itemsTotal : 0;
+              const taxAmount = Math.round(parseCurrencyInput(taxInput) * 100 * share);
+              const tipAmount = Math.round(parseCurrencyInput(tipInput) * 100 * share);
+              const participantTotal = claimsTotal + taxAmount + tipAmount;
+
+              if (participantTotal === 0) return null;
+
+              return (
+                <View key={p.id} style={styles.paymentStatusRow}>
+                  <View style={styles.paymentParticipantInfo}>
+                    <Text style={styles.paymentEmoji}>{p.emoji || '👤'}</Text>
+                    <Text style={styles.paymentName}>{p.display_name}</Text>
+                  </View>
+                  <View style={styles.paymentAmountStatus}>
+                    <Text style={styles.paymentAmount}>
+                      {formatCurrency(participantTotal / 100)}
+                    </Text>
+                    <View style={[
+                      styles.paymentBadge,
+                      p.payment_status === 'paid' ? styles.paymentBadgePaid : styles.paymentBadgePending,
+                    ]}>
+                      <Text style={[
+                        styles.paymentBadgeText,
+                        p.payment_status === 'paid' ? styles.paymentBadgeTextPaid : styles.paymentBadgeTextPending,
+                      ]}>
+                        {p.payment_status === 'paid' ? '✓ Paid' : 'Pending'}
+                      </Text>
+                    </View>
+                  </View>
+                </View>
+              );
+            })}
+          </View>
+        )}
 
         {/* Actions */}
         <View style={styles.actions}>
@@ -1060,5 +1128,57 @@ const styles = StyleSheet.create({
   },
   buttonDisabled: {
     opacity: 0.6,
+  },
+  // Payment Status styles
+  paymentStatusRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.surfaceBorder,
+  },
+  paymentParticipantInfo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  paymentEmoji: {
+    fontSize: 20,
+  },
+  paymentName: {
+    color: colors.text,
+    fontSize: 15,
+    fontWeight: '500',
+  },
+  paymentAmountStatus: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  paymentAmount: {
+    color: colors.textSecondary,
+    fontSize: 14,
+  },
+  paymentBadge: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 6,
+  },
+  paymentBadgePaid: {
+    backgroundColor: '#2D5A3D',
+  },
+  paymentBadgePending: {
+    backgroundColor: colors.surfaceBorder,
+  },
+  paymentBadgeText: {
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  paymentBadgeTextPaid: {
+    color: '#6FCF97',
+  },
+  paymentBadgeTextPending: {
+    color: colors.textSecondary,
   },
 });
