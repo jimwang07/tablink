@@ -88,6 +88,7 @@ export function ClaimPageClient({ receiptId, receipt, items, initialClaims, init
   const [currentParticipant, setCurrentParticipant] = useState<Participant | null>(null);
   const [guestName, setGuestName] = useState('');
   const [isJoining, setIsJoining] = useState(false);
+  const [showNewNameInput, setShowNewNameInput] = useState(false);
   const [claimingItemId, setClaimingItemId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isMarkingPaid, setIsMarkingPaid] = useState(false);
@@ -269,6 +270,10 @@ export function ClaimPageClient({ receiptId, receipt, items, initialClaims, init
 
       setPaymentStatus('paid');
       setCurrentParticipant(prev => prev ? { ...prev, payment_status: 'paid' } : null);
+      // Also update the participants array so item highlighting works
+      setParticipants(prev => prev.map(p =>
+        p.id === currentParticipant.id ? { ...p, payment_status: 'paid' } : p
+      ));
     } catch (err) {
       console.error('Failed to mark as paid:', err);
       setError('Failed to update payment status. Please try again.');
@@ -293,11 +298,12 @@ export function ClaimPageClient({ receiptId, receipt, items, initialClaims, init
 
     if (ownerProfile.venmo_handle) {
       const username = ownerProfile.venmo_handle.replace(/^@/, '');
+      // Use web URL - works on both desktop and mobile (mobile will prompt to open app)
+      // Note: Venmo web doesn't support pre-filled amounts
       options.push({
         name: 'Venmo',
         color: '#3D95CE',
-        url: `venmo://paycharge?txn=pay&recipients=${username}&amount=${amountDollars}&note=Tablink`,
-        fallbackUrl: `https://venmo.com/${username}`,
+        url: `https://venmo.com/u/${username}`,
       });
     }
 
@@ -372,66 +378,99 @@ export function ClaimPageClient({ receiptId, receipt, items, initialClaims, init
 
             {/* Join form */}
             <div className="space-y-4">
-              <div>
-                <label htmlFor="name" className="block text-sm font-medium mb-2" style={{ color: colors.textSecondary }}>
-                  Enter your name to claim items
-                </label>
-                <input
-                  id="name"
-                  type="text"
-                  value={guestName}
-                  onChange={(e) => setGuestName(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && handleJoin()}
-                  placeholder="Your name"
-                  className="w-full px-4 py-3 rounded-xl text-base outline-none transition-all focus:ring-2"
-                  style={{
-                    backgroundColor: colors.background,
-                    border: `1px solid ${colors.surfaceBorder}`,
-                    color: colors.text,
-                  }}
-                  autoFocus
-                />
-              </div>
-
               {error && (
                 <p className="text-sm" style={{ color: colors.danger }}>{error}</p>
               )}
 
-              <button
-                onClick={handleJoin}
-                disabled={isJoining || !guestName.trim()}
-                className="w-full py-3.5 rounded-full font-semibold text-base transition-all disabled:opacity-50 disabled:cursor-not-allowed"
-                style={{
-                  backgroundColor: colors.primary,
-                  color: colors.background,
-                }}
-              >
-                {isJoining ? (
-                  <span className="flex items-center justify-center gap-2">
-                    <svg className="animate-spin h-5 w-5" viewBox="0 0 24 24">
-                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
-                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-                    </svg>
-                    Joining...
-                  </span>
-                ) : 'Join & Claim Items'}
-              </button>
-
-              {participants.length > 0 && (
-                <div className="mt-6 pt-5" style={{ borderTop: `1px solid ${colors.surfaceBorder}` }}>
-                  <p className="text-sm mb-3" style={{ color: colors.muted }}>Already joined:</p>
-                  <div className="flex flex-wrap gap-2">
+              {/* Existing participants to select from */}
+              {participants.length > 0 && !showNewNameInput && (
+                <div>
+                  <p className="text-sm font-medium mb-3" style={{ color: colors.textSecondary }}>
+                    Select your name
+                  </p>
+                  <div className="space-y-2">
                     {participants.map(p => (
-                      <span
+                      <button
                         key={p.id}
-                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm"
-                        style={{ backgroundColor: colors.surfaceBorder, color: colors.textSecondary }}
+                        onClick={() => setCurrentParticipant(p)}
+                        disabled={isJoining}
+                        className="w-full flex items-center gap-3 p-4 rounded-xl text-left transition-all active:scale-[0.98]"
+                        style={{
+                          backgroundColor: colors.background,
+                          border: `1px solid ${colors.surfaceBorder}`,
+                        }}
                       >
-                        <span>{p.emoji}</span>
-                        <span>{p.display_name}</span>
-                      </span>
+                        <span className="text-2xl">{p.emoji}</span>
+                        <span className="font-medium" style={{ color: colors.text }}>{p.display_name}</span>
+                      </button>
                     ))}
                   </div>
+                  <button
+                    onClick={() => setShowNewNameInput(true)}
+                    className="w-full mt-3 py-3 rounded-full font-medium text-sm transition-all"
+                    style={{
+                      backgroundColor: 'transparent',
+                      color: colors.textSecondary,
+                      border: `1px dashed ${colors.surfaceBorder}`,
+                    }}
+                  >
+                    + Add a different name
+                  </button>
+                </div>
+              )}
+
+              {/* New name input - shown if no participants or user clicks "Add different name" */}
+              {(participants.length === 0 || showNewNameInput) && (
+                <div>
+                  <label htmlFor="name" className="block text-sm font-medium mb-2" style={{ color: colors.textSecondary }}>
+                    Enter your name to claim items
+                  </label>
+                  <input
+                    id="name"
+                    type="text"
+                    value={guestName}
+                    onChange={(e) => setGuestName(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && handleJoin()}
+                    placeholder="Your name"
+                    className="w-full px-4 py-3 rounded-xl text-base outline-none transition-all focus:ring-2"
+                    style={{
+                      backgroundColor: colors.background,
+                      border: `1px solid ${colors.surfaceBorder}`,
+                      color: colors.text,
+                    }}
+                    autoFocus
+                  />
+                  <button
+                    onClick={handleJoin}
+                    disabled={isJoining || !guestName.trim()}
+                    className="w-full mt-4 py-3.5 rounded-full font-semibold text-base transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                    style={{
+                      backgroundColor: colors.primary,
+                      color: colors.background,
+                    }}
+                  >
+                    {isJoining ? (
+                      <span className="flex items-center justify-center gap-2">
+                        <svg className="animate-spin h-5 w-5" viewBox="0 0 24 24">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                        </svg>
+                        Joining...
+                      </span>
+                    ) : 'Join & Claim Items'}
+                  </button>
+                  {participants.length > 0 && (
+                    <button
+                      onClick={() => {
+                        setShowNewNameInput(false);
+                        setGuestName('');
+                      }}
+                      className="w-full mt-2 py-2 text-sm"
+                      style={{ color: colors.muted }}
+                    >
+                      Cancel
+                    </button>
+                  )}
                 </div>
               )}
             </div>
@@ -487,26 +526,32 @@ export function ClaimPageClient({ receiptId, receipt, items, initialClaims, init
               const claimers = getItemClaimers(item.id);
               const isMine = isClaimedByMe(item.id);
               const isLoading = claimingItemId === item.id;
+              // Item is settled only when it has claimers AND all claimers have paid
+              const isSettled = claimers.length > 0 && claimers.every(c => c.payment_status === 'paid');
 
               return (
                 <button
                   key={item.id}
                   onClick={() => handleClaimItem(item.id)}
-                  disabled={isLoading}
+                  disabled={isLoading || paymentStatus === 'paid'}
                   className="w-full text-left p-4 rounded-xl transition-all active:scale-[0.98]"
                   style={{
-                    backgroundColor: isMine ? `${colors.primary}15` : colors.surface,
-                    border: `1px solid ${isMine ? colors.primary : colors.surfaceBorder}`,
+                    backgroundColor: isSettled ? `${colors.primary}25` : isMine ? `${colors.primary}15` : colors.surface,
+                    border: `2px solid ${isSettled ? colors.primary : isMine ? `${colors.primary}80` : colors.surfaceBorder}`,
                     opacity: isLoading ? 0.7 : 1,
                   }}
                 >
                   <div className="flex justify-between items-start">
                     <div className="flex-1 flex items-center gap-2">
-                      {isMine && (
+                      {isSettled ? (
+                        <svg className="w-5 h-5 flex-shrink-0" style={{ color: colors.primary }} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                        </svg>
+                      ) : isMine ? (
                         <svg className="w-5 h-5 flex-shrink-0" style={{ color: colors.primary }} fill="none" viewBox="0 0 24 24" stroke="currentColor">
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
                         </svg>
-                      )}
+                      ) : null}
                       <div>
                         <span style={{ color: colors.text }}>{item.label}</span>
                         {item.quantity > 1 && (
@@ -514,9 +559,16 @@ export function ClaimPageClient({ receiptId, receipt, items, initialClaims, init
                         )}
                       </div>
                     </div>
-                    <span className="font-semibold ml-4" style={{ color: colors.text }}>
-                      {formatCents(item.price_cents * item.quantity)}
-                    </span>
+                    <div className="flex items-center gap-2 ml-4">
+                      {isSettled && (
+                        <span className="text-xs font-semibold px-2 py-0.5 rounded" style={{ backgroundColor: `${colors.primary}25`, color: colors.primary }}>
+                          Settled
+                        </span>
+                      )}
+                      <span className="font-semibold" style={{ color: isSettled ? colors.primary : colors.text }}>
+                        {formatCents(item.price_cents * item.quantity)}
+                      </span>
+                    </div>
                   </div>
 
                   {claimers.length > 0 && (
@@ -696,7 +748,7 @@ export function ClaimPageClient({ receiptId, receipt, items, initialClaims, init
                   border: `1px solid ${colors.surfaceBorder}`,
                 }}
               >
-                {isMarkingPaid ? 'Confirming...' : "I've already paid"}
+                {isMarkingPaid ? 'Confirming...' : "I've paid!"}
               </button>
             </div>
           </div>

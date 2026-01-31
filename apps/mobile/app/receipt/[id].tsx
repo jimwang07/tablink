@@ -7,6 +7,7 @@ import {
   KeyboardAvoidingView,
   Modal,
   Platform,
+  Pressable,
   ScrollView,
   Share,
   StyleSheet,
@@ -22,6 +23,7 @@ import Animated, { FadeOut, LinearTransition } from 'react-native-reanimated';
 import { Ionicons } from '@expo/vector-icons';
 
 import { colors } from '@/src/theme';
+import { useAuth } from '@/src/hooks/useAuth';
 import {
   fetchReceipt,
   updateReceipt,
@@ -125,8 +127,10 @@ function buildEditableItems(items: ReceiptItem[]): EditableItem[] {
 export default function ReceiptDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
+  const { user } = useAuth();
 
   const [receipt, setReceipt] = useState<ReceiptWithItems | null>(null);
+  const [hasPaymentMethods, setHasPaymentMethods] = useState<boolean | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
@@ -148,6 +152,42 @@ export default function ReceiptDetailScreen() {
   // Claims and participants for realtime updates
   const [claims, setClaims] = useState<ItemClaim[]>([]);
   const [participants, setParticipants] = useState<Participant[]>([]);
+
+  // Add participant form
+  const [newParticipantName, setNewParticipantName] = useState('');
+  const [isAddingParticipant, setIsAddingParticipant] = useState(false);
+
+  // Item assignment modal
+  const [assigningItem, setAssigningItem] = useState<EditableItem | null>(null);
+  const [isUpdatingClaim, setIsUpdatingClaim] = useState(false);
+
+  // Check if user has payment methods set up
+  useEffect(() => {
+    async function checkPaymentMethods() {
+      if (!user?.id) return;
+
+      const supabase = getSupabaseClient();
+      const { data } = await supabase
+        .from('user_profiles')
+        .select('venmo_handle, cashapp_handle, paypal_handle, zelle_identifier')
+        .eq('user_id', user.id)
+        .single();
+
+      if (data) {
+        const hasAny = !!(
+          data.venmo_handle ||
+          data.cashapp_handle ||
+          data.paypal_handle ||
+          data.zelle_identifier
+        );
+        setHasPaymentMethods(hasAny);
+      } else {
+        setHasPaymentMethods(false);
+      }
+    }
+
+    checkPaymentMethods();
+  }, [user?.id]);
 
   // Load receipt
   useEffect(() => {
@@ -403,6 +443,22 @@ export default function ReceiptDetailScreen() {
   const handleShare = useCallback(async () => {
     if (!id || !receipt) return;
 
+    // Check if user has payment methods set up
+    if (!hasPaymentMethods) {
+      Alert.alert(
+        'Set Up Payment Methods',
+        'Before sharing a receipt, add your payment info (Venmo, CashApp, etc.) so guests can pay you.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Go to Settings',
+            onPress: () => router.push('/(host)/settings'),
+          },
+        ]
+      );
+      return;
+    }
+
     setIsSharing(true);
     try {
       // Update status to shared when creating tablink
@@ -435,7 +491,134 @@ export default function ReceiptDetailScreen() {
     } finally {
       setIsSharing(false);
     }
-  }, [id, receipt, TABLINK_BASE_URL]);
+  }, [id, receipt, TABLINK_BASE_URL, hasPaymentMethods, router]);
+
+  const EMOJIS = ['😀', '🎉', '🍕', '🌟', '🎸', '🌈', '🚀', '🎨', '🍦', '🎯', '🦊', '🐱', '🦁', '🐸'];
+  const COLORS = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FFEAA7', '#DDA0DD', '#98D8C8', '#F7DC6F', '#74b9ff', '#fd79a8'];
+
+  const handleAddParticipant = useCallback(async () => {
+    if (!id || !newParticipantName.trim()) return;
+
+    setIsAddingParticipant(true);
+    try {
+      const supabase = getSupabaseClient();
+      const emoji = EMOJIS[Math.floor(Math.random() * EMOJIS.length)];
+      const color = COLORS[Math.floor(Math.random() * COLORS.length)];
+
+      const { data, error: insertError } = await supabase
+        .from('receipt_participants')
+        .insert({
+          receipt_id: id,
+          display_name: newParticipantName.trim(),
+          emoji,
+          color_token: color,
+          role: 'guest',
+        })
+        .select()
+        .single();
+
+      if (insertError) throw insertError;
+
+      setParticipants(prev => [...prev, data]);
+      setNewParticipantName('');
+      Keyboard.dismiss();
+    } catch (err) {
+      console.error('[ReceiptDetail] Failed to add participant:', err);
+      Alert.alert('Error', 'Failed to add participant');
+    } finally {
+      setIsAddingParticipant(false);
+    }
+  }, [id, newParticipantName]);
+
+  const handleRemoveParticipant = useCallback(async (participantId: string) => {
+    const participant = participants.find(p => p.id === participantId);
+    if (!participant) return;
+
+    // Check if participant has any claims
+    const hasClaims = claims.some(c => c.participant_id === participantId);
+    if (hasClaims) {
+      Alert.alert('Cannot Remove', 'This participant has claimed items. Remove their claims first.');
+      return;
+    }
+
+    Alert.alert(
+      'Remove Participant',
+      `Remove ${participant.display_name} from this receipt?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Remove',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              const supabase = getSupabaseClient();
+              const { error: deleteError } = await supabase
+                .from('receipt_participants')
+                .delete()
+                .eq('id', participantId);
+
+              if (deleteError) throw deleteError;
+              setParticipants(prev => prev.filter(p => p.id !== participantId));
+            } catch (err) {
+              console.error('[ReceiptDetail] Failed to remove participant:', err);
+              Alert.alert('Error', 'Failed to remove participant');
+            }
+          },
+        },
+      ]
+    );
+  }, [participants, claims]);
+
+  const handleToggleClaim = useCallback(async (participantId: string) => {
+    if (!assigningItem || isUpdatingClaim) return;
+
+    const itemKey = assigningItem.key;
+    const itemPrice = dollarsToCents(parseCurrencyInput(assigningItem.price));
+    const existingClaim = claims.find(
+      c => c.item_id === itemKey && c.participant_id === participantId
+    );
+
+    setIsUpdatingClaim(true);
+    try {
+      const supabase = getSupabaseClient();
+
+      if (existingClaim) {
+        // Remove the claim
+        const { error: deleteError } = await supabase
+          .from('item_claims')
+          .delete()
+          .eq('id', existingClaim.id);
+
+        if (deleteError) throw deleteError;
+        setClaims(prev => prev.filter(c => c.id !== existingClaim.id));
+      } else {
+        // Add a claim
+        const { data, error: insertError } = await supabase
+          .from('item_claims')
+          .insert({
+            item_id: itemKey,
+            participant_id: participantId,
+            portion: 1,
+            amount_cents: itemPrice,
+          })
+          .select()
+          .single();
+
+        if (insertError) throw insertError;
+        setClaims(prev => [...prev, data]);
+      }
+    } catch (err) {
+      console.error('[ReceiptDetail] Failed to update claim:', err);
+      Alert.alert('Error', 'Failed to update assignment');
+    } finally {
+      setIsUpdatingClaim(false);
+    }
+  }, [assigningItem, claims, isUpdatingClaim]);
+
+  const handleItemLongPress = useCallback((item: EditableItem) => {
+    Keyboard.dismiss();
+    setAssigningItem(item);
+  }, []);
 
   const placeholderColor = 'rgba(195,200,212,0.5)';
 
@@ -542,6 +725,7 @@ export default function ReceiptDetailScreen() {
               <Text style={styles.addButtonText}>+ Add item</Text>
             </TouchableOpacity>
           </View>
+          <Text style={styles.hint}>Tap <Ionicons name="person-add-outline" size={12} color={colors.textSecondary} /> to assign. Tap fields to edit. Swipe left to delete.</Text>
           {editableItems.map((item) => (
             <Animated.View
               key={item.key}
@@ -568,54 +752,78 @@ export default function ReceiptDetailScreen() {
                   </View>
                 )}
               >
-                <View style={styles.itemRow}>
-                  <View style={styles.itemMainContent}>
-                    <TextInput
-                      value={item.name}
-                      onChangeText={(value) => updateItemField(item.key, 'name', value)}
-                      placeholder="Item name"
-                      placeholderTextColor={placeholderColor}
-                      style={[styles.itemNameInput, { color: '#F5F7FA' }]}
-                    />
-                    {/* Claimer badges */}
-                    {getItemClaimers(item.key).length > 0 && (
-                      <View style={styles.claimerBadges}>
-                        {getItemClaimers(item.key).map(claimer => (
-                          <View
-                            key={claimer.id}
-                            style={[styles.claimerBadge, { borderLeftColor: claimer.color_token ?? colors.primary }]}
-                          >
-                            <Text style={styles.claimerEmoji}>{claimer.emoji}</Text>
-                            <Text style={styles.claimerName}>{claimer.display_name}</Text>
+                {(() => {
+                  const itemClaimers = getItemClaimers(item.key);
+                  const isSettled = itemClaimers.length > 0 && itemClaimers.every(c => c.payment_status === 'paid');
+
+                  return (
+                    <View style={[styles.itemRow, isSettled && styles.itemRowSettled]}>
+                      <TouchableOpacity
+                        style={styles.assignButton}
+                        onPress={() => handleItemLongPress(item)}
+                        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                      >
+                        <Ionicons
+                          name={isSettled ? "checkmark-circle" : itemClaimers.length > 0 ? "people" : "person-add-outline"}
+                          size={18}
+                          color={isSettled ? colors.primary : itemClaimers.length > 0 ? colors.primary : colors.muted}
+                        />
+                      </TouchableOpacity>
+                      <View style={styles.itemMainContent}>
+                        <TextInput
+                          value={item.name}
+                          onChangeText={(value) => updateItemField(item.key, 'name', value)}
+                          placeholder="Item name"
+                          placeholderTextColor={placeholderColor}
+                          style={[styles.itemNameInput, { color: '#F5F7FA' }]}
+                        />
+                        {/* Claimer badges */}
+                        {itemClaimers.length > 0 && (
+                          <View style={styles.claimerBadges}>
+                            {itemClaimers.map(claimer => (
+                              <View
+                                key={claimer.id}
+                                style={[styles.claimerBadge, { borderLeftColor: claimer.color_token ?? colors.primary }]}
+                              >
+                                <Text style={styles.claimerEmoji}>{claimer.emoji}</Text>
+                                <Text style={styles.claimerName}>{claimer.display_name}</Text>
+                              </View>
+                            ))}
                           </View>
-                        ))}
+                        )}
                       </View>
-                    )}
-                  </View>
-                  <View style={styles.itemRightFields}>
-                    <TextInput
-                      value={item.quantity}
-                      onChangeText={(value) => updateItemField(item.key, 'quantity', value)}
-                      placeholder="1"
-                      placeholderTextColor={placeholderColor}
-                      keyboardType="decimal-pad"
-                      style={styles.itemQtyInput}
-                    />
-                    <Text style={styles.itemTimesSymbol}>×</Text>
-                    <TextInput
-                      value={item.price}
-                      onChangeText={(value) => updateItemField(item.key, 'price', value)}
-                      placeholder="0.00"
-                      placeholderTextColor={placeholderColor}
-                      keyboardType="decimal-pad"
-                      style={styles.itemPriceInput}
-                    />
-                  </View>
-                </View>
+                      <View style={styles.itemRightSection}>
+                        <View style={styles.itemRightFields}>
+                          <TextInput
+                            value={item.quantity}
+                            onChangeText={(value) => updateItemField(item.key, 'quantity', value)}
+                            placeholder="1"
+                            placeholderTextColor={placeholderColor}
+                            keyboardType="decimal-pad"
+                            style={styles.itemQtyInput}
+                          />
+                          <Text style={styles.itemTimesSymbol}>×</Text>
+                          <TextInput
+                            value={item.price}
+                            onChangeText={(value) => updateItemField(item.key, 'price', value)}
+                            placeholder="0.00"
+                            placeholderTextColor={placeholderColor}
+                            keyboardType="decimal-pad"
+                            style={styles.itemPriceInput}
+                          />
+                        </View>
+                        {isSettled && (
+                          <View style={styles.settledBadge}>
+                            <Text style={styles.settledBadgeText}>Settled</Text>
+                          </View>
+                        )}
+                      </View>
+                    </View>
+                  );
+                })()}
               </Swipeable>
             </Animated.View>
           ))}
-          <Text style={styles.hint}>Swipe left to delete an item.</Text>
         </View>
 
         {/* Totals */}
@@ -653,54 +861,98 @@ export default function ReceiptDetailScreen() {
           </View>
         </View>
 
-        {/* Payment Status - only show when receipt is shared and has participants */}
-        {(receipt.status === 'shared' || receipt.status === 'partially_claimed' || receipt.status === 'fully_claimed') && participants.length > 0 && (
-          <View style={styles.card}>
-            <Text style={styles.cardTitle}>Payment Status</Text>
-            {participants.map(p => {
-              // Calculate this participant's total
-              const participantClaims = claims.filter(c => c.participant_id === p.id);
-              const claimsTotal = participantClaims.reduce((sum, c) => sum + c.amount_cents, 0);
-              // Calculate proportional share of tax/tip
-              const itemsTotal = editableItems.reduce((sum, item) => {
-                const qty = parseQuantityInput(item.quantity);
-                const price = parseCurrencyInput(item.price);
-                return sum + dollarsToCents(qty * price);
-              }, 0);
-              const share = itemsTotal > 0 ? claimsTotal / itemsTotal : 0;
-              const taxAmount = Math.round(parseCurrencyInput(taxInput) * 100 * share);
-              const tipAmount = Math.round(parseCurrencyInput(tipInput) * 100 * share);
-              const participantTotal = claimsTotal + taxAmount + tipAmount;
+        {/* Participants */}
+        <View style={styles.card}>
+          <View style={styles.cardHeader}>
+            <Text style={styles.cardTitle}>Participants</Text>
+            <Text style={styles.participantCount}>{participants.length} people</Text>
+          </View>
 
-              if (participantTotal === 0) return null;
+          {/* Add participant form */}
+          <View style={styles.addParticipantRow}>
+            <TextInput
+              value={newParticipantName}
+              onChangeText={setNewParticipantName}
+              onSubmitEditing={handleAddParticipant}
+              placeholder="Add a name..."
+              placeholderTextColor={placeholderColor}
+              style={styles.addParticipantInput}
+              returnKeyType="done"
+            />
+            <TouchableOpacity
+              style={[styles.addParticipantButton, (!newParticipantName.trim() || isAddingParticipant) && styles.addParticipantButtonDisabled]}
+              onPress={handleAddParticipant}
+              disabled={!newParticipantName.trim() || isAddingParticipant}
+            >
+              {isAddingParticipant ? (
+                <ActivityIndicator size="small" color={colors.background} />
+              ) : (
+                <Ionicons name="add" size={20} color={colors.background} />
+              )}
+            </TouchableOpacity>
+          </View>
 
-              return (
-                <View key={p.id} style={styles.paymentStatusRow}>
-                  <View style={styles.paymentParticipantInfo}>
-                    <Text style={styles.paymentEmoji}>{p.emoji || '👤'}</Text>
-                    <Text style={styles.paymentName}>{p.display_name}</Text>
-                  </View>
-                  <View style={styles.paymentAmountStatus}>
-                    <Text style={styles.paymentAmount}>
-                      {formatCurrency(participantTotal / 100)}
-                    </Text>
-                    <View style={[
-                      styles.paymentBadge,
-                      p.payment_status === 'paid' ? styles.paymentBadgePaid : styles.paymentBadgePending,
-                    ]}>
-                      <Text style={[
-                        styles.paymentBadgeText,
-                        p.payment_status === 'paid' ? styles.paymentBadgeTextPaid : styles.paymentBadgeTextPending,
-                      ]}>
-                        {p.payment_status === 'paid' ? '✓ Paid' : 'Pending'}
-                      </Text>
+          {/* Participant list */}
+          {participants.length > 0 ? (
+            <View style={styles.participantList}>
+              {participants.map(p => {
+                // Calculate this participant's total
+                const participantClaims = claims.filter(c => c.participant_id === p.id);
+                const claimsTotal = participantClaims.reduce((sum, c) => sum + c.amount_cents, 0);
+                const itemsTotal = editableItems.reduce((sum, item) => {
+                  const qty = parseQuantityInput(item.quantity);
+                  const price = parseCurrencyInput(item.price);
+                  return sum + dollarsToCents(qty * price);
+                }, 0);
+                const share = itemsTotal > 0 ? claimsTotal / itemsTotal : 0;
+                const pTax = Math.round(parseCurrencyInput(taxInput) * 100 * share);
+                const pTip = Math.round(parseCurrencyInput(tipInput) * 100 * share);
+                const participantTotal = claimsTotal + pTax + pTip;
+                const isShared = receipt.status === 'shared' || receipt.status === 'partially_claimed' || receipt.status === 'fully_claimed';
+
+                return (
+                  <View key={p.id} style={styles.participantRow}>
+                    <View style={styles.participantInfo}>
+                      <Text style={styles.participantEmoji}>{p.emoji || '👤'}</Text>
+                      <View style={styles.participantNameAndAmount}>
+                        <Text style={styles.participantName}>{p.display_name}</Text>
+                        {participantTotal > 0 && (
+                          <Text style={styles.participantAmount}>{formatCurrency(participantTotal / 100)}</Text>
+                        )}
+                      </View>
+                    </View>
+                    <View style={styles.participantActions}>
+                      {isShared && participantTotal > 0 && (
+                        <View style={[
+                          styles.paymentBadge,
+                          p.payment_status === 'paid' ? styles.paymentBadgePaid : styles.paymentBadgePending,
+                        ]}>
+                          <Text style={[
+                            styles.paymentBadgeText,
+                            p.payment_status === 'paid' ? styles.paymentBadgeTextPaid : styles.paymentBadgeTextPending,
+                          ]}>
+                            {p.payment_status === 'paid' ? '✓ Paid' : 'Pending'}
+                          </Text>
+                        </View>
+                      )}
+                      <TouchableOpacity
+                        onPress={() => handleRemoveParticipant(p.id)}
+                        style={styles.removeParticipantButton}
+                        hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                      >
+                        <Ionicons name="close-circle" size={22} color={colors.muted} />
+                      </TouchableOpacity>
                     </View>
                   </View>
-                </View>
-              );
-            })}
-          </View>
-        )}
+                );
+              })}
+            </View>
+          ) : (
+            <Text style={styles.noParticipantsText}>
+              Add names of people splitting this bill. They can select their name when they open the tablink.
+            </Text>
+          )}
+        </View>
 
         {/* Actions */}
         <View style={styles.actions}>
@@ -715,7 +967,7 @@ export default function ReceiptDetailScreen() {
               <>
                 <Ionicons name="share-outline" size={20} color="#fff" style={{ marginRight: 8 }} />
                 <Text style={styles.shareButtonText}>
-                  {receipt.status === 'draft' || receipt.status === 'ready' ? 'Create Tablink' : 'Share Tablink'}
+                  Share Receipt
                 </Text>
               </>
             )}
@@ -766,6 +1018,84 @@ export default function ReceiptDetailScreen() {
             </TouchableOpacity>
           </View>
         </View>
+      </Modal>
+
+      {/* Assignment Modal */}
+      <Modal
+        visible={assigningItem !== null}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setAssigningItem(null)}
+      >
+        <Pressable
+          style={styles.assignModalBackdrop}
+          onPress={() => setAssigningItem(null)}
+        >
+          <Pressable style={styles.assignModalContent} onPress={(e) => e.stopPropagation()}>
+            <View style={styles.assignModalHeader}>
+              <View>
+                <Text style={styles.assignModalTitle}>Assign Item</Text>
+                <Text style={styles.assignModalItemName} numberOfLines={1}>
+                  {assigningItem?.name || 'Untitled item'}
+                </Text>
+              </View>
+              <TouchableOpacity
+                onPress={() => setAssigningItem(null)}
+                style={styles.assignModalCloseButton}
+              >
+                <Ionicons name="close" size={24} color={colors.text} />
+              </TouchableOpacity>
+            </View>
+
+            {participants.length > 0 ? (
+              <View style={styles.assignParticipantList}>
+                {participants.map(p => {
+                  const isAssigned = assigningItem
+                    ? claims.some(c => c.item_id === assigningItem.key && c.participant_id === p.id)
+                    : false;
+
+                  return (
+                    <TouchableOpacity
+                      key={p.id}
+                      style={[
+                        styles.assignParticipantRow,
+                        isAssigned && styles.assignParticipantRowSelected,
+                      ]}
+                      onPress={() => handleToggleClaim(p.id)}
+                      disabled={isUpdatingClaim}
+                    >
+                      <View style={styles.assignParticipantInfo}>
+                        <Text style={styles.assignParticipantEmoji}>{p.emoji || '👤'}</Text>
+                        <Text style={styles.assignParticipantName}>{p.display_name}</Text>
+                      </View>
+                      <View style={[
+                        styles.assignCheckbox,
+                        isAssigned && styles.assignCheckboxChecked,
+                      ]}>
+                        {isAssigned && (
+                          <Ionicons name="checkmark" size={16} color={colors.background} />
+                        )}
+                      </View>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+            ) : (
+              <View style={styles.assignEmptyState}>
+                <Text style={styles.assignEmptyText}>
+                  Add participants first to assign items
+                </Text>
+              </View>
+            )}
+
+            <TouchableOpacity
+              style={styles.assignDoneButton}
+              onPress={() => setAssigningItem(null)}
+            >
+              <Text style={styles.assignDoneButtonText}>Done</Text>
+            </TouchableOpacity>
+          </Pressable>
+        </Pressable>
       </Modal>
     </KeyboardAvoidingView>
   );
@@ -954,7 +1284,6 @@ const styles = StyleSheet.create({
   },
   itemWrapper: {
     position: 'relative',
-    marginBottom: 8,
   },
   swipeDeleteBehind: {
     position: 'absolute',
@@ -975,15 +1304,34 @@ const styles = StyleSheet.create({
   itemRow: {
     flexDirection: 'row',
     alignItems: 'flex-start',
-    paddingVertical: 12,
     paddingHorizontal: 12,
     gap: 8,
     backgroundColor: colors.surface,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: colors.surfaceBorder,
   },
+  itemRowSettled: {
+    backgroundColor: '#151a17', // subtle green tint, opaque
+  },
   itemMainContent: {
     flex: 1,
+    paddingVertical: 12,
+  },
+  itemRightSection: {
+    alignItems: 'flex-end',
+    paddingVertical: 12,
+  },
+  settledBadge: {
+    backgroundColor: `${colors.primary}20`,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+    marginTop: 4,
+  },
+  settledBadgeText: {
+    color: colors.primary,
+    fontSize: 10,
+    fontWeight: '600',
   },
   itemNameInput: {
     fontSize: 15,
@@ -1045,7 +1393,16 @@ const styles = StyleSheet.create({
   hint: {
     color: colors.textSecondary,
     fontSize: 12,
-    marginTop: 4,
+    marginBottom: 8,
+  },
+  assignButton: {
+    width: 32,
+    height: 32,
+    borderRadius: 8,
+    backgroundColor: colors.surfaceBorder,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginTop: 12,
   },
   summaryRow: {
     flexDirection: 'row',
@@ -1129,37 +1486,7 @@ const styles = StyleSheet.create({
   buttonDisabled: {
     opacity: 0.6,
   },
-  // Payment Status styles
-  paymentStatusRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingVertical: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.surfaceBorder,
-  },
-  paymentParticipantInfo: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-  },
-  paymentEmoji: {
-    fontSize: 20,
-  },
-  paymentName: {
-    color: colors.text,
-    fontSize: 15,
-    fontWeight: '500',
-  },
-  paymentAmountStatus: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-  },
-  paymentAmount: {
-    color: colors.textSecondary,
-    fontSize: 14,
-  },
+  // Payment badge styles
   paymentBadge: {
     paddingHorizontal: 10,
     paddingVertical: 4,
@@ -1180,5 +1507,197 @@ const styles = StyleSheet.create({
   },
   paymentBadgeTextPending: {
     color: colors.textSecondary,
+  },
+  // Participant management styles
+  participantCount: {
+    color: colors.muted,
+    fontSize: 14,
+  },
+  addParticipantRow: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+  addParticipantInput: {
+    flex: 1,
+    backgroundColor: 'rgba(17,20,24,0.75)',
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderWidth: 1,
+    borderColor: colors.surfaceBorder,
+    color: colors.text,
+    fontSize: 15,
+  },
+  addParticipantButton: {
+    width: 44,
+    height: 44,
+    borderRadius: 12,
+    backgroundColor: colors.primary,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  addParticipantButtonDisabled: {
+    opacity: 0.5,
+  },
+  participantList: {
+    gap: 2,
+  },
+  participantRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: colors.surfaceBorder,
+  },
+  participantInfo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    flex: 1,
+  },
+  participantEmoji: {
+    fontSize: 20,
+  },
+  participantNameAndAmount: {
+    flex: 1,
+  },
+  participantName: {
+    color: colors.text,
+    fontSize: 15,
+    fontWeight: '500',
+  },
+  participantAmount: {
+    color: colors.textSecondary,
+    fontSize: 13,
+    marginTop: 2,
+  },
+  participantActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  hasClaimsBadge: {
+    backgroundColor: colors.surfaceBorder,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 4,
+    marginLeft: 8,
+  },
+  hasClaimsText: {
+    color: colors.textSecondary,
+    fontSize: 11,
+  },
+  removeParticipantButton: {
+    padding: 4,
+  },
+  noParticipantsText: {
+    color: colors.muted,
+    fontSize: 14,
+    lineHeight: 20,
+  },
+  // Assignment modal styles
+  assignModalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    justifyContent: 'flex-end',
+  },
+  assignModalContent: {
+    backgroundColor: colors.surface,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    paddingTop: 20,
+    paddingBottom: 40,
+    maxHeight: '70%',
+  },
+  assignModalHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    paddingHorizontal: 20,
+    paddingBottom: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.surfaceBorder,
+  },
+  assignModalTitle: {
+    color: colors.textSecondary,
+    fontSize: 13,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+    marginBottom: 4,
+  },
+  assignModalItemName: {
+    color: colors.text,
+    fontSize: 18,
+    fontWeight: '600',
+    maxWidth: 260,
+  },
+  assignModalCloseButton: {
+    padding: 4,
+  },
+  assignParticipantList: {
+    paddingHorizontal: 20,
+    paddingTop: 8,
+  },
+  assignParticipantRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 14,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: colors.surfaceBorder,
+  },
+  assignParticipantRowSelected: {
+    backgroundColor: `${colors.primary}15`,
+    marginHorizontal: -20,
+    paddingHorizontal: 20,
+  },
+  assignParticipantInfo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  assignParticipantEmoji: {
+    fontSize: 24,
+  },
+  assignParticipantName: {
+    color: colors.text,
+    fontSize: 16,
+    fontWeight: '500',
+  },
+  assignCheckbox: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    borderWidth: 2,
+    borderColor: colors.surfaceBorder,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  assignCheckboxChecked: {
+    backgroundColor: colors.primary,
+    borderColor: colors.primary,
+  },
+  assignEmptyState: {
+    padding: 40,
+    alignItems: 'center',
+  },
+  assignEmptyText: {
+    color: colors.muted,
+    fontSize: 15,
+    textAlign: 'center',
+  },
+  assignDoneButton: {
+    marginHorizontal: 20,
+    marginTop: 20,
+    paddingVertical: 14,
+    borderRadius: 999,
+    backgroundColor: colors.primary,
+    alignItems: 'center',
+  },
+  assignDoneButtonText: {
+    color: colors.background,
+    fontSize: 16,
+    fontWeight: '600',
   },
 });

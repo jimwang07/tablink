@@ -249,7 +249,28 @@ export default function ReceiptReviewScreen() {
           { text: 'Cancel', style: 'cancel' },
           {
             text: 'Go to Settings',
-            onPress: () => router.push('/(host)/settings'),
+            onPress: async () => {
+              // Auto-save receipt as draft before navigating to settings
+              try {
+                const updatedParsed = buildUpdatedParsed();
+                if (updatedParsed) {
+                  const updatedReceipt = { ...pendingReceipt, parsed: updatedParsed };
+                  const result = await saveReceipt(updatedReceipt, session.user.id);
+                  if (result.success) {
+                    setPendingReceipt(null);
+                    Alert.alert(
+                      'Receipt Saved',
+                      'Your receipt has been saved as a draft. You can find it on the home screen after setting up your payment info.',
+                      [{ text: 'OK', onPress: () => router.push('/(host)/settings') }]
+                    );
+                    return;
+                  }
+                }
+              } catch (err) {
+                console.error('[review] Failed to auto-save receipt:', err);
+              }
+              router.push('/(host)/settings');
+            },
           },
         ]
       );
