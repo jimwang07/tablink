@@ -129,7 +129,7 @@ export default function ReceiptReviewScreen() {
     checkPaymentMethods();
   }, [session?.user?.id]);
 
-  const TABLINK_BASE_URL = 'http://localhost:3000';
+  const TABLINK_BASE_URL = process.env.EXPO_PUBLIC_TABLINK_URL || 'http://localhost:3000';
 
   useEffect(() => {
     if (!pendingReceipt) {

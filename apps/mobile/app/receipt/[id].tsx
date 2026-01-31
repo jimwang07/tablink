@@ -140,7 +140,7 @@ export default function ReceiptDetailScreen() {
   const [isImageExpanded, setIsImageExpanded] = useState(false);
 
   // Base URL for tablinks - in production this would come from env
-  const TABLINK_BASE_URL = 'http://localhost:3000';
+  const TABLINK_BASE_URL = process.env.EXPO_PUBLIC_TABLINK_URL || 'http://localhost:3000';
 
   // Editable state
   const [merchantName, setMerchantName] = useState('');

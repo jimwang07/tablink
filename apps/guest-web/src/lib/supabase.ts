@@ -1,8 +1,8 @@
-import { createTablinkClient, type TablinkClient } from '@tablink/shared/supabase';
+import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 
-let client: TablinkClient | null = null;
+let client: SupabaseClient | null = null;
 
-export function getSupabaseClient(): TablinkClient {
+export function getSupabaseClient(): SupabaseClient {
   if (!client) {
     const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
     const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
@@ -11,10 +11,7 @@ export function getSupabaseClient(): TablinkClient {
       throw new Error('Missing Supabase configuration. Set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY.');
     }
 
-    client = createTablinkClient({
-      supabaseUrl,
-      supabaseAnonKey,
-    });
+    client = createClient(supabaseUrl, supabaseAnonKey);
   }
 
   return client;
