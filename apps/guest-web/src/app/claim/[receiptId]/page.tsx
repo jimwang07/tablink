@@ -42,6 +42,7 @@ type Participant = {
   display_name: string;
   emoji: string | null;
   color_token: string | null;
+  role?: 'owner' | 'guest';
 };
 
 async function getReceiptData(receiptId: string) {
@@ -83,7 +84,7 @@ async function getReceiptData(receiptId: string) {
   // Fetch participants
   const { data: participants, error: participantsError } = await supabase
     .from('receipt_participants')
-    .select('id, display_name, emoji, color_token, payment_status')
+    .select('id, display_name, emoji, color_token, role, payment_status')
     .eq('receipt_id', receiptId);
 
   // Fetch owner profile for payment handles

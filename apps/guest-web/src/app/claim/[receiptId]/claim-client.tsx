@@ -49,6 +49,7 @@ type Participant = {
   display_name: string;
   emoji: string | null;
   color_token: string | null;
+  role?: 'owner' | 'guest';
   payment_status?: string;
 };
 
@@ -382,14 +383,14 @@ export function ClaimPageClient({ receiptId, receipt, items, initialClaims, init
                 <p className="text-sm" style={{ color: colors.danger }}>{error}</p>
               )}
 
-              {/* Existing participants to select from */}
-              {participants.length > 0 && !showNewNameInput && (
+              {/* Existing participants to select from (excluding owner) */}
+              {participants.filter(p => p.role !== 'owner').length > 0 && !showNewNameInput && (
                 <div>
                   <p className="text-sm font-medium mb-3" style={{ color: colors.textSecondary }}>
                     Select your name
                   </p>
                   <div className="space-y-2">
-                    {participants.map(p => (
+                    {participants.filter(p => p.role !== 'owner').map(p => (
                       <button
                         key={p.id}
                         onClick={() => setCurrentParticipant(p)}
@@ -419,8 +420,8 @@ export function ClaimPageClient({ receiptId, receipt, items, initialClaims, init
                 </div>
               )}
 
-              {/* New name input - shown if no participants or user clicks "Add different name" */}
-              {(participants.length === 0 || showNewNameInput) && (
+              {/* New name input - shown if no guest participants or user clicks "Add different name" */}
+              {(participants.filter(p => p.role !== 'owner').length === 0 || showNewNameInput) && (
                 <div>
                   <label htmlFor="name" className="block text-sm font-medium mb-2" style={{ color: colors.textSecondary }}>
                     Enter your name to claim items
@@ -459,7 +460,7 @@ export function ClaimPageClient({ receiptId, receipt, items, initialClaims, init
                       </span>
                     ) : 'Join & Claim Items'}
                   </button>
-                  {participants.length > 0 && (
+                  {participants.filter(p => p.role !== 'owner').length > 0 && (
                     <button
                       onClick={() => {
                         setShowNewNameInput(false);

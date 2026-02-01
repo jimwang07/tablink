@@ -75,6 +75,31 @@ export async function saveReceipt(
 
   console.log('[receiptService] Receipt created with id:', receiptId);
 
+  // Get owner's profile for display name
+  const { data: profile } = await supabase
+    .from('user_profiles')
+    .select('display_name')
+    .eq('user_id', userId)
+    .single();
+
+  const ownerDisplayName = profile?.display_name || 'Me';
+
+  // Auto-add owner as participant (their items are auto-paid since they paid the bill)
+  const { error: participantError } = await supabase
+    .from('receipt_participants')
+    .insert({
+      receipt_id: receiptId,
+      display_name: ownerDisplayName,
+      profile_id: userId,
+      role: 'owner',
+      payment_status: 'paid', // Owner doesn't need to pay themselves
+      emoji: '👤',
+    });
+
+  if (participantError) {
+    console.error('[receiptService] Failed to add owner as participant:', participantError);
+  }
+
   // Insert items
   if (parsed.items.length > 0) {
     const itemsToInsert = parsed.items.map((item, index) => ({

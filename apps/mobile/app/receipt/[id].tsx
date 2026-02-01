@@ -47,6 +47,7 @@ type Participant = {
   display_name: string;
   emoji: string | null;
   color_token: string | null;
+  role?: 'owner' | 'guest';
   payment_status?: string | null;
   paid_at?: string | null;
   payment_method?: string | null;
@@ -246,7 +247,7 @@ export default function ReceiptDetailScreen() {
       // Fetch participants
       const { data: participantsData } = await supabase
         .from('receipt_participants')
-        .select('id, display_name, emoji, color_token, payment_status, paid_at, payment_method, payment_amount_cents')
+        .select('id, display_name, emoji, color_token, role, payment_status, paid_at, payment_method, payment_amount_cents')
         .eq('receipt_id', id);
       if (participantsData) setParticipants(participantsData);
     }
@@ -316,14 +317,23 @@ export default function ReceiptDetailScreen() {
     };
   }, [id, receipt]);
 
-  // Helper to get claimers for an item
+  // Helper to get claimers for an item (deduplicated by participant)
   const getItemClaimers = useCallback((itemKey: string) => {
     // itemKey is the item.id (original) or a generated key for new items
     const itemClaims = claims.filter(c => c.item_id === itemKey);
-    return itemClaims.map(claim => {
+    const seenIds = new Set<string>();
+    const claimers: Participant[] = [];
+
+    for (const claim of itemClaims) {
+      if (seenIds.has(claim.participant_id)) continue;
       const participant = participants.find(p => p.id === claim.participant_id);
-      return participant;
-    }).filter(Boolean) as Participant[];
+      if (participant) {
+        seenIds.add(claim.participant_id);
+        claimers.push(participant);
+      }
+    }
+
+    return claimers;
   }, [claims, participants]);
 
   // Track changes
@@ -754,29 +764,37 @@ export default function ReceiptDetailScreen() {
               >
                 {(() => {
                   const itemClaimers = getItemClaimers(item.key);
-                  const isSettled = itemClaimers.length > 0 && itemClaimers.every(c => c.payment_status === 'paid');
+                  const isPaid = itemClaimers.length > 0 && itemClaimers.every(c => c.payment_status === 'paid');
+                  const isClaimed = itemClaimers.length > 0 && !isPaid;
 
                   return (
-                    <View style={[styles.itemRow, isSettled && styles.itemRowSettled]}>
+                    <View style={[styles.itemRow, isClaimed && styles.itemRowClaimed, isPaid && styles.itemRowPaid]}>
                       <TouchableOpacity
                         style={styles.assignButton}
                         onPress={() => handleItemLongPress(item)}
                         hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                       >
                         <Ionicons
-                          name={isSettled ? "checkmark-circle" : itemClaimers.length > 0 ? "people" : "person-add-outline"}
+                          name={isPaid ? "checkmark-circle" : itemClaimers.length > 0 ? "people" : "person-add-outline"}
                           size={18}
-                          color={isSettled ? colors.primary : itemClaimers.length > 0 ? colors.primary : colors.muted}
+                          color={isPaid ? colors.primary : isClaimed ? '#F2C94C' : colors.muted}
                         />
                       </TouchableOpacity>
                       <View style={styles.itemMainContent}>
-                        <TextInput
-                          value={item.name}
-                          onChangeText={(value) => updateItemField(item.key, 'name', value)}
-                          placeholder="Item name"
-                          placeholderTextColor={placeholderColor}
-                          style={[styles.itemNameInput, { color: '#F5F7FA' }]}
-                        />
+                        <View style={styles.itemNameRow}>
+                          <TextInput
+                            value={item.name}
+                            onChangeText={(value) => updateItemField(item.key, 'name', value)}
+                            placeholder="Item name"
+                            placeholderTextColor={placeholderColor}
+                            style={[styles.itemNameInput, { color: '#F5F7FA', flex: 1 }]}
+                          />
+                          {isPaid && (
+                            <View style={styles.paidBadge}>
+                              <Text style={styles.paidBadgeText}>Paid</Text>
+                            </View>
+                          )}
+                        </View>
                         {/* Claimer badges */}
                         {itemClaimers.length > 0 && (
                           <View style={styles.claimerBadges}>
@@ -812,11 +830,6 @@ export default function ReceiptDetailScreen() {
                             style={styles.itemPriceInput}
                           />
                         </View>
-                        {isSettled && (
-                          <View style={styles.settledBadge}>
-                            <Text style={styles.settledBadgeText}>Settled</Text>
-                          </View>
-                        )}
                       </View>
                     </View>
                   );
@@ -910,19 +923,24 @@ export default function ReceiptDetailScreen() {
                 const participantTotal = claimsTotal + pTax + pTip;
                 const isShared = receipt.status === 'shared' || receipt.status === 'partially_claimed' || receipt.status === 'fully_claimed';
 
+                const isOwner = p.role === 'owner';
+
                 return (
                   <View key={p.id} style={styles.participantRow}>
                     <View style={styles.participantInfo}>
                       <Text style={styles.participantEmoji}>{p.emoji || '👤'}</Text>
                       <View style={styles.participantNameAndAmount}>
-                        <Text style={styles.participantName}>{p.display_name}</Text>
+                        <View style={styles.participantNameRow}>
+                          <Text style={styles.participantName}>{p.display_name}</Text>
+                          {isOwner && <Text style={styles.participantYouLabel}>(You)</Text>}
+                        </View>
                         {participantTotal > 0 && (
                           <Text style={styles.participantAmount}>{formatCurrency(participantTotal / 100)}</Text>
                         )}
                       </View>
                     </View>
                     <View style={styles.participantActions}>
-                      {isShared && participantTotal > 0 && (
+                      {participantTotal > 0 && (
                         <View style={[
                           styles.paymentBadge,
                           p.payment_status === 'paid' ? styles.paymentBadgePaid : styles.paymentBadgePending,
@@ -935,13 +953,15 @@ export default function ReceiptDetailScreen() {
                           </Text>
                         </View>
                       )}
-                      <TouchableOpacity
-                        onPress={() => handleRemoveParticipant(p.id)}
-                        style={styles.removeParticipantButton}
-                        hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-                      >
-                        <Ionicons name="close-circle" size={22} color={colors.muted} />
-                      </TouchableOpacity>
+                      {!isOwner && (
+                        <TouchableOpacity
+                          onPress={() => handleRemoveParticipant(p.id)}
+                          style={styles.removeParticipantButton}
+                          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                        >
+                          <Ionicons name="close-circle" size={22} color={colors.muted} />
+                        </TouchableOpacity>
+                      )}
                     </View>
                   </View>
                 );
@@ -1307,31 +1327,37 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     gap: 8,
     backgroundColor: colors.surface,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: colors.surfaceBorder,
+    borderRadius: 8,
   },
-  itemRowSettled: {
-    backgroundColor: '#151a17', // subtle green tint, opaque
+  itemRowClaimed: {
+    backgroundColor: '#2e2a1a', // yellow tint for claimed items
+  },
+  itemRowPaid: {
+    backgroundColor: '#1a2e1f', // green tint for paid items
   },
   itemMainContent: {
     flex: 1,
     paddingVertical: 12,
   },
+  itemNameRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  paidBadge: {
+    backgroundColor: `${colors.primary}20`,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 4,
+  },
+  paidBadgeText: {
+    color: colors.primary,
+    fontSize: 11,
+    fontWeight: '600',
+  },
   itemRightSection: {
     alignItems: 'flex-end',
     paddingVertical: 12,
-  },
-  settledBadge: {
-    backgroundColor: `${colors.primary}20`,
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 4,
-    marginTop: 4,
-  },
-  settledBadgeText: {
-    color: colors.primary,
-    fontSize: 10,
-    fontWeight: '600',
   },
   itemNameInput: {
     fontSize: 15,
@@ -1562,10 +1588,19 @@ const styles = StyleSheet.create({
   participantNameAndAmount: {
     flex: 1,
   },
+  participantNameRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
   participantName: {
     color: colors.text,
     fontSize: 15,
     fontWeight: '500',
+  },
+  participantYouLabel: {
+    color: colors.textSecondary,
+    fontSize: 13,
   },
   participantAmount: {
     color: colors.textSecondary,
