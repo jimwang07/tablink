@@ -34,7 +34,7 @@ export type PendingReceipt = {
   parsed: ParsedReceipt;
 };
 
-export type ReceiptStatus = 'draft' | 'active' | 'settled';
+export type ReceiptStatus = 'draft' | 'ready' | 'shared' | 'partially_claimed' | 'fully_claimed' | 'settled';
 
 export type Receipt = {
   id: string;

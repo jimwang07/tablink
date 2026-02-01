@@ -7,7 +7,9 @@ import {
   KeyboardAvoidingView,
   Modal,
   Platform,
+  Pressable,
   ScrollView,
+  Share,
   StyleSheet,
   Text,
   TextInput,
@@ -21,6 +23,7 @@ import Animated, { FadeOut, LinearTransition } from 'react-native-reanimated';
 import { Ionicons } from '@expo/vector-icons';
 
 import { colors } from '@/src/theme';
+import { useAuth } from '@/src/hooks/useAuth';
 import {
   fetchReceipt,
   updateReceipt,
@@ -29,6 +32,27 @@ import {
   type ReceiptWithItems,
   type ReceiptItem,
 } from '@/src/services/receiptService';
+import type { RealtimePostgresChangesPayload } from '@supabase/supabase-js';
+
+type ItemClaim = {
+  id: string;
+  item_id: string;
+  participant_id: string;
+  portion: number;
+  amount_cents: number;
+};
+
+type Participant = {
+  id: string;
+  display_name: string;
+  emoji: string | null;
+  color_token: string | null;
+  role?: 'owner' | 'guest';
+  payment_status?: string | null;
+  paid_at?: string | null;
+  payment_method?: string | null;
+  payment_amount_cents?: number | null;
+};
 
 type EditableItem = {
   key: string;
@@ -104,14 +128,20 @@ function buildEditableItems(items: ReceiptItem[]): EditableItem[] {
 export default function ReceiptDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
+  const { user } = useAuth();
 
   const [receipt, setReceipt] = useState<ReceiptWithItems | null>(null);
+  const [hasPaymentMethods, setHasPaymentMethods] = useState<boolean | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [isSharing, setIsSharing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [imageUrl, setImageUrl] = useState<string | null>(null);
   const [isImageExpanded, setIsImageExpanded] = useState(false);
+
+  // Base URL for tablinks - in production this would come from env
+  const TABLINK_BASE_URL = process.env.EXPO_PUBLIC_TABLINK_URL || 'http://localhost:3000';
 
   // Editable state
   const [merchantName, setMerchantName] = useState('');
@@ -119,6 +149,46 @@ export default function ReceiptDetailScreen() {
   const [tipInput, setTipInput] = useState('0.00');
   const [editableItems, setEditableItems] = useState<EditableItem[]>([]);
   const [hasChanges, setHasChanges] = useState(false);
+
+  // Claims and participants for realtime updates
+  const [claims, setClaims] = useState<ItemClaim[]>([]);
+  const [participants, setParticipants] = useState<Participant[]>([]);
+
+  // Add participant form
+  const [newParticipantName, setNewParticipantName] = useState('');
+  const [isAddingParticipant, setIsAddingParticipant] = useState(false);
+
+  // Item assignment modal
+  const [assigningItem, setAssigningItem] = useState<EditableItem | null>(null);
+  const [isUpdatingClaim, setIsUpdatingClaim] = useState(false);
+
+  // Check if user has payment methods set up
+  useEffect(() => {
+    async function checkPaymentMethods() {
+      if (!user?.id) return;
+
+      const supabase = getSupabaseClient();
+      const { data } = await supabase
+        .from('user_profiles')
+        .select('venmo_handle, cashapp_handle, paypal_handle, zelle_identifier')
+        .eq('user_id', user.id)
+        .single();
+
+      if (data) {
+        const hasAny = !!(
+          data.venmo_handle ||
+          data.cashapp_handle ||
+          data.paypal_handle ||
+          data.zelle_identifier
+        );
+        setHasPaymentMethods(hasAny);
+      } else {
+        setHasPaymentMethods(false);
+      }
+    }
+
+    checkPaymentMethods();
+  }, [user?.id]);
 
   // Load receipt
   useEffect(() => {
@@ -155,6 +225,116 @@ export default function ReceiptDetailScreen() {
 
     load();
   }, [id]);
+
+  // Load claims and participants, and subscribe to realtime updates
+  useEffect(() => {
+    if (!id || !receipt) return;
+
+    const supabase = getSupabaseClient();
+    const itemIds = receipt.items.map(i => i.id);
+
+    // Initial fetch of claims and participants
+    async function fetchClaimsAndParticipants() {
+      // Fetch claims for items on this receipt
+      if (itemIds.length > 0) {
+        const { data: claimsData } = await supabase
+          .from('item_claims')
+          .select('id, item_id, participant_id, portion, amount_cents')
+          .in('item_id', itemIds);
+        if (claimsData) setClaims(claimsData);
+      }
+
+      // Fetch participants
+      const { data: participantsData } = await supabase
+        .from('receipt_participants')
+        .select('id, display_name, emoji, color_token, role, payment_status, paid_at, payment_method, payment_amount_cents')
+        .eq('receipt_id', id);
+      if (participantsData) setParticipants(participantsData);
+    }
+
+    fetchClaimsAndParticipants();
+
+    // Subscribe to realtime updates
+    const channel = supabase
+      .channel(`receipt:${id}`)
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'item_claims',
+        },
+        (payload: RealtimePostgresChangesPayload<ItemClaim>) => {
+          if (payload.eventType === 'INSERT') {
+            const newClaim = payload.new as ItemClaim;
+            if (itemIds.includes(newClaim.item_id)) {
+              setClaims(prev => {
+                if (prev.some(c => c.id === newClaim.id)) return prev;
+                return [...prev, newClaim];
+              });
+            }
+          } else if (payload.eventType === 'DELETE') {
+            const oldClaim = payload.old as { id: string };
+            setClaims(prev => prev.filter(c => c.id !== oldClaim.id));
+          }
+        }
+      )
+      .on(
+        'postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'receipt_participants',
+          filter: `receipt_id=eq.${id}`,
+        },
+        (payload: RealtimePostgresChangesPayload<Participant>) => {
+          const newParticipant = payload.new as Participant;
+          setParticipants(prev => {
+            if (prev.some(p => p.id === newParticipant.id)) return prev;
+            return [...prev, newParticipant];
+          });
+        }
+      )
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'receipt_participants',
+          filter: `receipt_id=eq.${id}`,
+        },
+        (payload: RealtimePostgresChangesPayload<Participant>) => {
+          const updatedParticipant = payload.new as Participant;
+          setParticipants(prev =>
+            prev.map(p => p.id === updatedParticipant.id ? updatedParticipant : p)
+          );
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [id, receipt]);
+
+  // Helper to get claimers for an item (deduplicated by participant)
+  const getItemClaimers = useCallback((itemKey: string) => {
+    // itemKey is the item.id (original) or a generated key for new items
+    const itemClaims = claims.filter(c => c.item_id === itemKey);
+    const seenIds = new Set<string>();
+    const claimers: Participant[] = [];
+
+    for (const claim of itemClaims) {
+      if (seenIds.has(claim.participant_id)) continue;
+      const participant = participants.find(p => p.id === claim.participant_id);
+      if (participant) {
+        seenIds.add(claim.participant_id);
+        claimers.push(participant);
+      }
+    }
+
+    return claimers;
+  }, [claims, participants]);
 
   // Track changes
   useEffect(() => {
@@ -270,6 +450,186 @@ export default function ReceiptDetailScreen() {
     );
   }, [id, router]);
 
+  const handleShare = useCallback(async () => {
+    if (!id || !receipt) return;
+
+    // Check if user has payment methods set up
+    if (!hasPaymentMethods) {
+      Alert.alert(
+        'Set Up Payment Methods',
+        'Before sharing a receipt, add your payment info (Venmo, CashApp, etc.) so guests can pay you.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Go to Settings',
+            onPress: () => router.push('/(host)/settings'),
+          },
+        ]
+      );
+      return;
+    }
+
+    setIsSharing(true);
+    try {
+      // Update status to shared when creating tablink
+      if (receipt.status === 'draft') {
+        const result = await updateReceipt(id, { status: 'shared' });
+        if (!result.success) {
+          Alert.alert('Error', result.error || 'Failed to activate receipt');
+          return;
+        }
+        // Update local state
+        setReceipt({ ...receipt, status: 'shared' as any });
+      }
+
+      // Generate the tablink URL
+      const tablinkUrl = `${TABLINK_BASE_URL}/claim/${id}`;
+
+      // Open native share sheet
+      const result = await Share.share({
+        message: `Split the bill with me! ${receipt.merchant_name ? `(${receipt.merchant_name})` : ''}\n${tablinkUrl}`,
+        url: tablinkUrl, // iOS only
+        title: 'Share Tablink',
+      });
+
+      if (result.action === Share.sharedAction) {
+        console.log('[ReceiptDetail] Shared successfully');
+      }
+    } catch (err) {
+      console.error('[ReceiptDetail] Share error:', err);
+      Alert.alert('Error', 'Failed to share tablink');
+    } finally {
+      setIsSharing(false);
+    }
+  }, [id, receipt, TABLINK_BASE_URL, hasPaymentMethods, router]);
+
+  const EMOJIS = ['😀', '🎉', '🍕', '🌟', '🎸', '🌈', '🚀', '🎨', '🍦', '🎯', '🦊', '🐱', '🦁', '🐸'];
+  const COLORS = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FFEAA7', '#DDA0DD', '#98D8C8', '#F7DC6F', '#74b9ff', '#fd79a8'];
+
+  const handleAddParticipant = useCallback(async () => {
+    if (!id || !newParticipantName.trim()) return;
+
+    setIsAddingParticipant(true);
+    try {
+      const supabase = getSupabaseClient();
+      const emoji = EMOJIS[Math.floor(Math.random() * EMOJIS.length)];
+      const color = COLORS[Math.floor(Math.random() * COLORS.length)];
+
+      const { data, error: insertError } = await supabase
+        .from('receipt_participants')
+        .insert({
+          receipt_id: id,
+          display_name: newParticipantName.trim(),
+          emoji,
+          color_token: color,
+          role: 'guest',
+        })
+        .select()
+        .single();
+
+      if (insertError) throw insertError;
+
+      setParticipants(prev => [...prev, data]);
+      setNewParticipantName('');
+      Keyboard.dismiss();
+    } catch (err) {
+      console.error('[ReceiptDetail] Failed to add participant:', err);
+      Alert.alert('Error', 'Failed to add participant');
+    } finally {
+      setIsAddingParticipant(false);
+    }
+  }, [id, newParticipantName]);
+
+  const handleRemoveParticipant = useCallback(async (participantId: string) => {
+    const participant = participants.find(p => p.id === participantId);
+    if (!participant) return;
+
+    // Check if participant has any claims
+    const hasClaims = claims.some(c => c.participant_id === participantId);
+    if (hasClaims) {
+      Alert.alert('Cannot Remove', 'This participant has claimed items. Remove their claims first.');
+      return;
+    }
+
+    Alert.alert(
+      'Remove Participant',
+      `Remove ${participant.display_name} from this receipt?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Remove',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              const supabase = getSupabaseClient();
+              const { error: deleteError } = await supabase
+                .from('receipt_participants')
+                .delete()
+                .eq('id', participantId);
+
+              if (deleteError) throw deleteError;
+              setParticipants(prev => prev.filter(p => p.id !== participantId));
+            } catch (err) {
+              console.error('[ReceiptDetail] Failed to remove participant:', err);
+              Alert.alert('Error', 'Failed to remove participant');
+            }
+          },
+        },
+      ]
+    );
+  }, [participants, claims]);
+
+  const handleToggleClaim = useCallback(async (participantId: string) => {
+    if (!assigningItem || isUpdatingClaim) return;
+
+    const itemKey = assigningItem.key;
+    const itemPrice = dollarsToCents(parseCurrencyInput(assigningItem.price));
+    const existingClaim = claims.find(
+      c => c.item_id === itemKey && c.participant_id === participantId
+    );
+
+    setIsUpdatingClaim(true);
+    try {
+      const supabase = getSupabaseClient();
+
+      if (existingClaim) {
+        // Remove the claim
+        const { error: deleteError } = await supabase
+          .from('item_claims')
+          .delete()
+          .eq('id', existingClaim.id);
+
+        if (deleteError) throw deleteError;
+        setClaims(prev => prev.filter(c => c.id !== existingClaim.id));
+      } else {
+        // Add a claim
+        const { data, error: insertError } = await supabase
+          .from('item_claims')
+          .insert({
+            item_id: itemKey,
+            participant_id: participantId,
+            portion: 1,
+            amount_cents: itemPrice,
+          })
+          .select()
+          .single();
+
+        if (insertError) throw insertError;
+        setClaims(prev => [...prev, data]);
+      }
+    } catch (err) {
+      console.error('[ReceiptDetail] Failed to update claim:', err);
+      Alert.alert('Error', 'Failed to update assignment');
+    } finally {
+      setIsUpdatingClaim(false);
+    }
+  }, [assigningItem, claims, isUpdatingClaim]);
+
+  const handleItemLongPress = useCallback((item: EditableItem) => {
+    Keyboard.dismiss();
+    setAssigningItem(item);
+  }, []);
+
   const placeholderColor = 'rgba(195,200,212,0.5)';
 
   if (isLoading) {
@@ -312,8 +672,26 @@ export default function ReceiptDetailScreen() {
             </Text>
             <Text style={styles.subtitle}>{formatDate(receipt.receipt_date)}</Text>
           </View>
-          <View style={styles.statusBadge}>
-            <Text style={styles.statusText}>{receipt.status}</Text>
+          <View style={[
+            styles.statusBadge,
+            receipt.status === 'draft' && { backgroundColor: colors.surfaceBorder },
+            (receipt.status === 'ready' || receipt.status === 'shared') && { backgroundColor: '#2D5A3D' },
+            receipt.status === 'partially_claimed' && { backgroundColor: '#5A4D2D' },
+            receipt.status === 'fully_claimed' && { backgroundColor: '#2D4A5A' },
+            receipt.status === 'settled' && { backgroundColor: '#3D3D5A' },
+          ]}>
+            <Text style={[
+              styles.statusText,
+              receipt.status === 'draft' && { color: colors.textSecondary },
+              (receipt.status === 'ready' || receipt.status === 'shared') && { color: '#6FCF97' },
+              receipt.status === 'partially_claimed' && { color: '#F2C94C' },
+              receipt.status === 'fully_claimed' && { color: '#56CCF2' },
+              receipt.status === 'settled' && { color: '#A0A0CF' },
+            ]}>
+              {receipt.status === 'partially_claimed' ? 'Partial' :
+               receipt.status === 'fully_claimed' ? 'Claimed' :
+               receipt.status.charAt(0).toUpperCase() + receipt.status.slice(1)}
+            </Text>
           </View>
         </View>
 
@@ -357,6 +735,7 @@ export default function ReceiptDetailScreen() {
               <Text style={styles.addButtonText}>+ Add item</Text>
             </TouchableOpacity>
           </View>
+          <Text style={styles.hint}>Tap <Ionicons name="person-add-outline" size={12} color={colors.textSecondary} /> to assign. Tap fields to edit. Swipe left to delete.</Text>
           {editableItems.map((item) => (
             <Animated.View
               key={item.key}
@@ -383,38 +762,81 @@ export default function ReceiptDetailScreen() {
                   </View>
                 )}
               >
-                <View style={styles.itemRow}>
-                  <TextInput
-                    value={item.name}
-                    onChangeText={(value) => updateItemField(item.key, 'name', value)}
-                    placeholder="Item name"
-                    placeholderTextColor={placeholderColor}
-                    style={[styles.itemNameInput, { color: '#F5F7FA' }]}
-                  />
-                  <View style={styles.itemRightFields}>
-                    <TextInput
-                      value={item.quantity}
-                      onChangeText={(value) => updateItemField(item.key, 'quantity', value)}
-                      placeholder="1"
-                      placeholderTextColor={placeholderColor}
-                      keyboardType="decimal-pad"
-                      style={styles.itemQtyInput}
-                    />
-                    <Text style={styles.itemTimesSymbol}>×</Text>
-                    <TextInput
-                      value={item.price}
-                      onChangeText={(value) => updateItemField(item.key, 'price', value)}
-                      placeholder="0.00"
-                      placeholderTextColor={placeholderColor}
-                      keyboardType="decimal-pad"
-                      style={styles.itemPriceInput}
-                    />
-                  </View>
-                </View>
+                {(() => {
+                  const itemClaimers = getItemClaimers(item.key);
+                  const isPaid = itemClaimers.length > 0 && itemClaimers.every(c => c.payment_status === 'paid');
+                  const isClaimed = itemClaimers.length > 0 && !isPaid;
+
+                  return (
+                    <View style={[styles.itemRow, isClaimed && styles.itemRowClaimed, isPaid && styles.itemRowPaid]}>
+                      <TouchableOpacity
+                        style={styles.assignButton}
+                        onPress={() => handleItemLongPress(item)}
+                        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                      >
+                        <Ionicons
+                          name={isPaid ? "checkmark-circle" : itemClaimers.length > 0 ? "people" : "person-add-outline"}
+                          size={18}
+                          color={isPaid ? colors.primary : isClaimed ? '#F2C94C' : colors.muted}
+                        />
+                      </TouchableOpacity>
+                      <View style={styles.itemMainContent}>
+                        <View style={styles.itemNameRow}>
+                          <TextInput
+                            value={item.name}
+                            onChangeText={(value) => updateItemField(item.key, 'name', value)}
+                            placeholder="Item name"
+                            placeholderTextColor={placeholderColor}
+                            style={[styles.itemNameInput, { color: '#F5F7FA', flex: 1 }]}
+                          />
+                          {isPaid && (
+                            <View style={styles.paidBadge}>
+                              <Text style={styles.paidBadgeText}>Paid</Text>
+                            </View>
+                          )}
+                        </View>
+                        {/* Claimer badges */}
+                        {itemClaimers.length > 0 && (
+                          <View style={styles.claimerBadges}>
+                            {itemClaimers.map(claimer => (
+                              <View
+                                key={claimer.id}
+                                style={[styles.claimerBadge, { borderLeftColor: claimer.color_token ?? colors.primary }]}
+                              >
+                                <Text style={styles.claimerEmoji}>{claimer.emoji}</Text>
+                                <Text style={styles.claimerName}>{claimer.display_name}</Text>
+                              </View>
+                            ))}
+                          </View>
+                        )}
+                      </View>
+                      <View style={styles.itemRightSection}>
+                        <View style={styles.itemRightFields}>
+                          <TextInput
+                            value={item.quantity}
+                            onChangeText={(value) => updateItemField(item.key, 'quantity', value)}
+                            placeholder="1"
+                            placeholderTextColor={placeholderColor}
+                            keyboardType="decimal-pad"
+                            style={styles.itemQtyInput}
+                          />
+                          <Text style={styles.itemTimesSymbol}>×</Text>
+                          <TextInput
+                            value={item.price}
+                            onChangeText={(value) => updateItemField(item.key, 'price', value)}
+                            placeholder="0.00"
+                            placeholderTextColor={placeholderColor}
+                            keyboardType="decimal-pad"
+                            style={styles.itemPriceInput}
+                          />
+                        </View>
+                      </View>
+                    </View>
+                  );
+                })()}
               </Swipeable>
             </Animated.View>
           ))}
-          <Text style={styles.hint}>Swipe left to delete an item.</Text>
         </View>
 
         {/* Totals */}
@@ -452,23 +874,139 @@ export default function ReceiptDetailScreen() {
           </View>
         </View>
 
+        {/* Participants */}
+        <View style={styles.card}>
+          <View style={styles.cardHeader}>
+            <Text style={styles.cardTitle}>Participants</Text>
+            <Text style={styles.participantCount}>{participants.length} people</Text>
+          </View>
+
+          {/* Add participant form */}
+          <View style={styles.addParticipantRow}>
+            <TextInput
+              value={newParticipantName}
+              onChangeText={setNewParticipantName}
+              onSubmitEditing={handleAddParticipant}
+              placeholder="Add a name..."
+              placeholderTextColor={placeholderColor}
+              style={styles.addParticipantInput}
+              returnKeyType="done"
+            />
+            <TouchableOpacity
+              style={[styles.addParticipantButton, (!newParticipantName.trim() || isAddingParticipant) && styles.addParticipantButtonDisabled]}
+              onPress={handleAddParticipant}
+              disabled={!newParticipantName.trim() || isAddingParticipant}
+            >
+              {isAddingParticipant ? (
+                <ActivityIndicator size="small" color={colors.background} />
+              ) : (
+                <Ionicons name="add" size={20} color={colors.background} />
+              )}
+            </TouchableOpacity>
+          </View>
+
+          {/* Participant list */}
+          {participants.length > 0 ? (
+            <View style={styles.participantList}>
+              {participants.map(p => {
+                // Calculate this participant's total
+                const participantClaims = claims.filter(c => c.participant_id === p.id);
+                const claimsTotal = participantClaims.reduce((sum, c) => sum + c.amount_cents, 0);
+                const itemsTotal = editableItems.reduce((sum, item) => {
+                  const qty = parseQuantityInput(item.quantity);
+                  const price = parseCurrencyInput(item.price);
+                  return sum + dollarsToCents(qty * price);
+                }, 0);
+                const share = itemsTotal > 0 ? claimsTotal / itemsTotal : 0;
+                const pTax = Math.round(parseCurrencyInput(taxInput) * 100 * share);
+                const pTip = Math.round(parseCurrencyInput(tipInput) * 100 * share);
+                const participantTotal = claimsTotal + pTax + pTip;
+                const isShared = receipt.status === 'shared' || receipt.status === 'partially_claimed' || receipt.status === 'fully_claimed';
+
+                const isOwner = p.role === 'owner';
+
+                return (
+                  <View key={p.id} style={styles.participantRow}>
+                    <View style={styles.participantInfo}>
+                      <Text style={styles.participantEmoji}>{p.emoji || '👤'}</Text>
+                      <View style={styles.participantNameAndAmount}>
+                        <View style={styles.participantNameRow}>
+                          <Text style={styles.participantName}>{p.display_name}</Text>
+                          {isOwner && <Text style={styles.participantYouLabel}>(You)</Text>}
+                        </View>
+                        {participantTotal > 0 && (
+                          <Text style={styles.participantAmount}>{formatCurrency(participantTotal / 100)}</Text>
+                        )}
+                      </View>
+                    </View>
+                    <View style={styles.participantActions}>
+                      {participantTotal > 0 && (
+                        <View style={[
+                          styles.paymentBadge,
+                          p.payment_status === 'paid' ? styles.paymentBadgePaid : styles.paymentBadgePending,
+                        ]}>
+                          <Text style={[
+                            styles.paymentBadgeText,
+                            p.payment_status === 'paid' ? styles.paymentBadgeTextPaid : styles.paymentBadgeTextPending,
+                          ]}>
+                            {p.payment_status === 'paid' ? '✓ Paid' : 'Pending'}
+                          </Text>
+                        </View>
+                      )}
+                      {!isOwner && (
+                        <TouchableOpacity
+                          onPress={() => handleRemoveParticipant(p.id)}
+                          style={styles.removeParticipantButton}
+                          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                        >
+                          <Ionicons name="close-circle" size={22} color={colors.muted} />
+                        </TouchableOpacity>
+                      )}
+                    </View>
+                  </View>
+                );
+              })}
+            </View>
+          ) : (
+            <Text style={styles.noParticipantsText}>
+              Add names of people splitting this bill. They can select their name when they open the tablink.
+            </Text>
+          )}
+        </View>
+
         {/* Actions */}
         <View style={styles.actions}>
           <TouchableOpacity
-            style={[styles.saveButton, (isSaving || isDeleting) && styles.buttonDisabled]}
+            style={[styles.shareButton, (isSaving || isDeleting || isSharing) && styles.buttonDisabled]}
+            onPress={handleShare}
+            disabled={isSaving || isDeleting || isSharing}
+          >
+            {isSharing ? (
+              <ActivityIndicator size="small" color="#fff" />
+            ) : (
+              <>
+                <Ionicons name="share-outline" size={20} color="#fff" style={{ marginRight: 8 }} />
+                <Text style={styles.shareButtonText}>
+                  Share Receipt
+                </Text>
+              </>
+            )}
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.saveButton, (isSaving || isDeleting || isSharing) && styles.buttonDisabled]}
             onPress={handleSave}
-            disabled={isSaving || isDeleting}
+            disabled={isSaving || isDeleting || isSharing}
           >
             {isSaving ? (
-              <ActivityIndicator size="small" color="#fff" />
+              <ActivityIndicator size="small" color={colors.primary} />
             ) : (
               <Text style={styles.saveButtonText}>Save Changes</Text>
             )}
           </TouchableOpacity>
           <TouchableOpacity
-            style={[styles.deleteButton, (isSaving || isDeleting) && styles.buttonDisabled]}
+            style={[styles.deleteButton, (isSaving || isDeleting || isSharing) && styles.buttonDisabled]}
             onPress={handleDelete}
-            disabled={isSaving || isDeleting}
+            disabled={isSaving || isDeleting || isSharing}
           >
             {isDeleting ? (
               <ActivityIndicator size="small" color={colors.danger} />
@@ -500,6 +1038,84 @@ export default function ReceiptDetailScreen() {
             </TouchableOpacity>
           </View>
         </View>
+      </Modal>
+
+      {/* Assignment Modal */}
+      <Modal
+        visible={assigningItem !== null}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setAssigningItem(null)}
+      >
+        <Pressable
+          style={styles.assignModalBackdrop}
+          onPress={() => setAssigningItem(null)}
+        >
+          <Pressable style={styles.assignModalContent} onPress={(e) => e.stopPropagation()}>
+            <View style={styles.assignModalHeader}>
+              <View>
+                <Text style={styles.assignModalTitle}>Assign Item</Text>
+                <Text style={styles.assignModalItemName} numberOfLines={1}>
+                  {assigningItem?.name || 'Untitled item'}
+                </Text>
+              </View>
+              <TouchableOpacity
+                onPress={() => setAssigningItem(null)}
+                style={styles.assignModalCloseButton}
+              >
+                <Ionicons name="close" size={24} color={colors.text} />
+              </TouchableOpacity>
+            </View>
+
+            {participants.length > 0 ? (
+              <View style={styles.assignParticipantList}>
+                {participants.map(p => {
+                  const isAssigned = assigningItem
+                    ? claims.some(c => c.item_id === assigningItem.key && c.participant_id === p.id)
+                    : false;
+
+                  return (
+                    <TouchableOpacity
+                      key={p.id}
+                      style={[
+                        styles.assignParticipantRow,
+                        isAssigned && styles.assignParticipantRowSelected,
+                      ]}
+                      onPress={() => handleToggleClaim(p.id)}
+                      disabled={isUpdatingClaim}
+                    >
+                      <View style={styles.assignParticipantInfo}>
+                        <Text style={styles.assignParticipantEmoji}>{p.emoji || '👤'}</Text>
+                        <Text style={styles.assignParticipantName}>{p.display_name}</Text>
+                      </View>
+                      <View style={[
+                        styles.assignCheckbox,
+                        isAssigned && styles.assignCheckboxChecked,
+                      ]}>
+                        {isAssigned && (
+                          <Ionicons name="checkmark" size={16} color={colors.background} />
+                        )}
+                      </View>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+            ) : (
+              <View style={styles.assignEmptyState}>
+                <Text style={styles.assignEmptyText}>
+                  Add participants first to assign items
+                </Text>
+              </View>
+            )}
+
+            <TouchableOpacity
+              style={styles.assignDoneButton}
+              onPress={() => setAssigningItem(null)}
+            >
+              <Text style={styles.assignDoneButtonText}>Done</Text>
+            </TouchableOpacity>
+          </Pressable>
+        </Pressable>
       </Modal>
     </KeyboardAvoidingView>
   );
@@ -688,7 +1304,6 @@ const styles = StyleSheet.create({
   },
   itemWrapper: {
     position: 'relative',
-    marginBottom: 8,
   },
   swipeDeleteBehind: {
     position: 'absolute',
@@ -708,20 +1323,70 @@ const styles = StyleSheet.create({
   },
   itemRow: {
     flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 12,
+    alignItems: 'flex-start',
     paddingHorizontal: 12,
     gap: 8,
     backgroundColor: colors.surface,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: colors.surfaceBorder,
+    borderRadius: 8,
+  },
+  itemRowClaimed: {
+    backgroundColor: '#2e2a1a', // yellow tint for claimed items
+  },
+  itemRowPaid: {
+    backgroundColor: '#1a2e1f', // green tint for paid items
+  },
+  itemMainContent: {
+    flex: 1,
+    paddingVertical: 12,
+  },
+  itemNameRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  paidBadge: {
+    backgroundColor: `${colors.primary}20`,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 4,
+  },
+  paidBadgeText: {
+    color: colors.primary,
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  itemRightSection: {
+    alignItems: 'flex-end',
+    paddingVertical: 12,
   },
   itemNameInput: {
-    flex: 1,
     fontSize: 15,
     paddingVertical: 4,
     paddingHorizontal: 0,
     backgroundColor: 'transparent',
+  },
+  claimerBadges: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 4,
+    marginTop: 6,
+  },
+  claimerBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: colors.surfaceBorder,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 4,
+    borderLeftWidth: 3,
+    gap: 4,
+  },
+  claimerEmoji: {
+    fontSize: 12,
+  },
+  claimerName: {
+    color: colors.textSecondary,
+    fontSize: 11,
   },
   itemRightFields: {
     flexDirection: 'row',
@@ -754,7 +1419,16 @@ const styles = StyleSheet.create({
   hint: {
     color: colors.textSecondary,
     fontSize: 12,
-    marginTop: 4,
+    marginBottom: 8,
+  },
+  assignButton: {
+    width: 32,
+    height: 32,
+    borderRadius: 8,
+    backgroundColor: colors.surfaceBorder,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginTop: 12,
   },
   summaryRow: {
     flexDirection: 'row',
@@ -796,14 +1470,29 @@ const styles = StyleSheet.create({
     marginTop: 8,
     gap: 12,
   },
-  saveButton: {
+  shareButton: {
     backgroundColor: colors.primary,
     borderRadius: 999,
     paddingVertical: 14,
+    flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'center',
+  },
+  shareButtonText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  saveButton: {
+    backgroundColor: colors.surface,
+    borderRadius: 999,
+    paddingVertical: 14,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: colors.surfaceBorder,
   },
   saveButtonText: {
-    color: colors.background,
+    color: colors.text,
     fontSize: 16,
     fontWeight: '600',
   },
@@ -822,5 +1511,228 @@ const styles = StyleSheet.create({
   },
   buttonDisabled: {
     opacity: 0.6,
+  },
+  // Payment badge styles
+  paymentBadge: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 6,
+  },
+  paymentBadgePaid: {
+    backgroundColor: '#2D5A3D',
+  },
+  paymentBadgePending: {
+    backgroundColor: colors.surfaceBorder,
+  },
+  paymentBadgeText: {
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  paymentBadgeTextPaid: {
+    color: '#6FCF97',
+  },
+  paymentBadgeTextPending: {
+    color: colors.textSecondary,
+  },
+  // Participant management styles
+  participantCount: {
+    color: colors.muted,
+    fontSize: 14,
+  },
+  addParticipantRow: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+  addParticipantInput: {
+    flex: 1,
+    backgroundColor: 'rgba(17,20,24,0.75)',
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderWidth: 1,
+    borderColor: colors.surfaceBorder,
+    color: colors.text,
+    fontSize: 15,
+  },
+  addParticipantButton: {
+    width: 44,
+    height: 44,
+    borderRadius: 12,
+    backgroundColor: colors.primary,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  addParticipantButtonDisabled: {
+    opacity: 0.5,
+  },
+  participantList: {
+    gap: 2,
+  },
+  participantRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: colors.surfaceBorder,
+  },
+  participantInfo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    flex: 1,
+  },
+  participantEmoji: {
+    fontSize: 20,
+  },
+  participantNameAndAmount: {
+    flex: 1,
+  },
+  participantNameRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  participantName: {
+    color: colors.text,
+    fontSize: 15,
+    fontWeight: '500',
+  },
+  participantYouLabel: {
+    color: colors.textSecondary,
+    fontSize: 13,
+  },
+  participantAmount: {
+    color: colors.textSecondary,
+    fontSize: 13,
+    marginTop: 2,
+  },
+  participantActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  hasClaimsBadge: {
+    backgroundColor: colors.surfaceBorder,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 4,
+    marginLeft: 8,
+  },
+  hasClaimsText: {
+    color: colors.textSecondary,
+    fontSize: 11,
+  },
+  removeParticipantButton: {
+    padding: 4,
+  },
+  noParticipantsText: {
+    color: colors.muted,
+    fontSize: 14,
+    lineHeight: 20,
+  },
+  // Assignment modal styles
+  assignModalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    justifyContent: 'flex-end',
+  },
+  assignModalContent: {
+    backgroundColor: colors.surface,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    paddingTop: 20,
+    paddingBottom: 40,
+    maxHeight: '70%',
+  },
+  assignModalHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    paddingHorizontal: 20,
+    paddingBottom: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.surfaceBorder,
+  },
+  assignModalTitle: {
+    color: colors.textSecondary,
+    fontSize: 13,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+    marginBottom: 4,
+  },
+  assignModalItemName: {
+    color: colors.text,
+    fontSize: 18,
+    fontWeight: '600',
+    maxWidth: 260,
+  },
+  assignModalCloseButton: {
+    padding: 4,
+  },
+  assignParticipantList: {
+    paddingHorizontal: 20,
+    paddingTop: 8,
+  },
+  assignParticipantRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 14,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: colors.surfaceBorder,
+  },
+  assignParticipantRowSelected: {
+    backgroundColor: `${colors.primary}15`,
+    marginHorizontal: -20,
+    paddingHorizontal: 20,
+  },
+  assignParticipantInfo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  assignParticipantEmoji: {
+    fontSize: 24,
+  },
+  assignParticipantName: {
+    color: colors.text,
+    fontSize: 16,
+    fontWeight: '500',
+  },
+  assignCheckbox: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    borderWidth: 2,
+    borderColor: colors.surfaceBorder,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  assignCheckboxChecked: {
+    backgroundColor: colors.primary,
+    borderColor: colors.primary,
+  },
+  assignEmptyState: {
+    padding: 40,
+    alignItems: 'center',
+  },
+  assignEmptyText: {
+    color: colors.muted,
+    fontSize: 15,
+    textAlign: 'center',
+  },
+  assignDoneButton: {
+    marginHorizontal: 20,
+    marginTop: 20,
+    paddingVertical: 14,
+    borderRadius: 999,
+    backgroundColor: colors.primary,
+    alignItems: 'center',
+  },
+  assignDoneButtonText: {
+    color: colors.background,
+    fontSize: 16,
+    fontWeight: '600',
   },
 });
