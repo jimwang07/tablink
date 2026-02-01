@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState, useRef } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -16,6 +16,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import { Confetti } from '@/src/components/Confetti';
 import { getSupabaseClient } from '@/src/lib/supabaseClient';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Swipeable } from 'react-native-gesture-handler';
@@ -161,6 +162,12 @@ export default function ReceiptDetailScreen() {
   // Item assignment modal
   const [assigningItem, setAssigningItem] = useState<EditableItem | null>(null);
   const [isUpdatingClaim, setIsUpdatingClaim] = useState(false);
+
+  // Confetti celebration for settled receipts
+  const [showConfetti, setShowConfetti] = useState(false);
+  const [showSettledModal, setShowSettledModal] = useState(false);
+  const initialCheckDoneRef = useRef(false);
+  const wasSettledRef = useRef(false);
 
   // Check if user has payment methods set up
   useEffect(() => {
@@ -353,6 +360,74 @@ export default function ReceiptDetailScreen() {
   const taxAmount = useMemo(() => parseCurrencyInput(taxInput), [taxInput]);
   const tipAmount = useMemo(() => parseCurrencyInput(tipInput), [tipInput]);
   const grandTotal = useMemo(() => subtotal + taxAmount + tipAmount, [subtotal, taxAmount, tipAmount]);
+
+  // Calculate effective status based on payment data
+  const effectiveStatus = useMemo(() => {
+    if (!receipt) return 'draft';
+    // If already settled in DB, use that
+    if (receipt.status === 'settled') return 'settled';
+    // If draft, use that
+    if (receipt.status === 'draft') return 'draft';
+
+    // Check if fully paid: all items with claims have all claimers paid
+    if (claims.length > 0 && participants.length > 0) {
+      // Build map of participant payment status
+      const paidParticipants = new Set(
+        participants.filter(p => p.payment_status === 'paid').map(p => p.id)
+      );
+
+      // Check if all claims are from paid participants
+      const allClaimsPaid = claims.every(c => paidParticipants.has(c.participant_id));
+
+      if (allClaimsPaid) {
+        return 'settled';
+      }
+    }
+
+    // Otherwise use DB status
+    return receipt.status;
+  }, [receipt, claims, participants]);
+
+  // Trigger confetti when receipt becomes settled
+  useEffect(() => {
+    if (!id || !receipt) return;
+
+    const isSettled = effectiveStatus === 'settled';
+
+    const markCelebrationShown = async () => {
+      const supabase = getSupabaseClient();
+      await supabase
+        .from('receipts')
+        .update({ celebration_shown: true })
+        .eq('id', id);
+    };
+
+    // Handle initial check (first time viewing this receipt)
+    if (!initialCheckDoneRef.current) {
+      initialCheckDoneRef.current = true;
+      wasSettledRef.current = isSettled;
+
+      if (isSettled && receipt.celebration_shown !== true) {
+        // Show confetti and mark as shown in database
+        setShowConfetti(true);
+        setShowSettledModal(true);
+        markCelebrationShown();
+      }
+      return;
+    }
+
+    // Handle real-time updates: status changed to settled while viewing
+    // Only show if celebration hasn't been shown before
+    if (isSettled && !wasSettledRef.current && receipt.celebration_shown !== true) {
+      wasSettledRef.current = true;
+      setShowConfetti(true);
+      setShowSettledModal(true);
+      markCelebrationShown();
+    }
+
+    // Update tracking ref
+    wasSettledRef.current = isSettled;
+  }, [id, effectiveStatus, receipt]);
 
   const updateItemField = useCallback((key: string, field: keyof EditableItem, value: string) => {
     setEditableItems((current) =>
@@ -674,23 +749,21 @@ export default function ReceiptDetailScreen() {
           </View>
           <View style={[
             styles.statusBadge,
-            receipt.status === 'draft' && { backgroundColor: colors.surfaceBorder },
-            (receipt.status === 'ready' || receipt.status === 'shared') && { backgroundColor: '#2D5A3D' },
-            receipt.status === 'partially_claimed' && { backgroundColor: '#5A4D2D' },
-            receipt.status === 'fully_claimed' && { backgroundColor: '#2D4A5A' },
-            receipt.status === 'settled' && { backgroundColor: '#3D3D5A' },
+            effectiveStatus === 'draft' && { backgroundColor: colors.surfaceBorder },
+            (effectiveStatus === 'ready' || effectiveStatus === 'shared' || effectiveStatus === 'partially_claimed') && { backgroundColor: '#5A4D2D' },
+            effectiveStatus === 'fully_claimed' && { backgroundColor: '#2D4A5A' },
+            effectiveStatus === 'settled' && { backgroundColor: '#2D5A3D' },
           ]}>
             <Text style={[
               styles.statusText,
-              receipt.status === 'draft' && { color: colors.textSecondary },
-              (receipt.status === 'ready' || receipt.status === 'shared') && { color: '#6FCF97' },
-              receipt.status === 'partially_claimed' && { color: '#F2C94C' },
-              receipt.status === 'fully_claimed' && { color: '#56CCF2' },
-              receipt.status === 'settled' && { color: '#A0A0CF' },
+              effectiveStatus === 'draft' && { color: colors.textSecondary },
+              (effectiveStatus === 'ready' || effectiveStatus === 'shared' || effectiveStatus === 'partially_claimed') && { color: '#F2C94C' },
+              effectiveStatus === 'fully_claimed' && { color: '#56CCF2' },
+              effectiveStatus === 'settled' && { color: '#6FCF97' },
             ]}>
-              {receipt.status === 'partially_claimed' ? 'Partial' :
-               receipt.status === 'fully_claimed' ? 'Claimed' :
-               receipt.status.charAt(0).toUpperCase() + receipt.status.slice(1)}
+              {effectiveStatus === 'partially_claimed' ? 'Partial' :
+               effectiveStatus === 'fully_claimed' ? 'Claimed' :
+               effectiveStatus.charAt(0).toUpperCase() + effectiveStatus.slice(1)}
             </Text>
           </View>
         </View>
@@ -1116,6 +1189,43 @@ export default function ReceiptDetailScreen() {
             </TouchableOpacity>
           </Pressable>
         </Pressable>
+      </Modal>
+
+      {/* Settled celebration modal */}
+      <Modal
+        visible={showSettledModal}
+        animationType="fade"
+        transparent
+        onRequestClose={() => setShowSettledModal(false)}
+      >
+        <Pressable
+          style={styles.settledModalBackdrop}
+          onPress={() => setShowSettledModal(false)}
+        >
+          <View style={styles.settledModalContent}>
+            <Text style={styles.settledModalEmoji}>🎉</Text>
+            <Text style={styles.settledModalTitle}>All Settled!</Text>
+            <Text style={styles.settledModalMessage}>
+              Everyone has paid their share for this receipt. Nice work!
+            </Text>
+            <TouchableOpacity
+              style={styles.settledModalButton}
+              onPress={() => setShowSettledModal(false)}
+            >
+              <Text style={styles.settledModalButtonText}>Awesome!</Text>
+            </TouchableOpacity>
+          </View>
+        </Pressable>
+
+        {/* Confetti raining from top */}
+        {showConfetti && (
+          <Confetti
+            count={50}
+            duration={3000}
+            rainDuration={1500}
+            onAnimationEnd={() => setShowConfetti(false)}
+          />
+        )}
       </Modal>
     </KeyboardAvoidingView>
   );
@@ -1731,6 +1841,52 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   assignDoneButtonText: {
+    color: colors.background,
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  // Settled celebration modal styles
+  settledModalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.7)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  settledModalContent: {
+    backgroundColor: colors.surface,
+    borderRadius: 24,
+    padding: 32,
+    alignItems: 'center',
+    maxWidth: 320,
+    width: '100%',
+    borderWidth: 1,
+    borderColor: colors.surfaceBorder,
+  },
+  settledModalEmoji: {
+    fontSize: 64,
+    marginBottom: 16,
+  },
+  settledModalTitle: {
+    color: colors.primary,
+    fontSize: 28,
+    fontWeight: '700',
+    marginBottom: 12,
+  },
+  settledModalMessage: {
+    color: colors.textSecondary,
+    fontSize: 16,
+    textAlign: 'center',
+    lineHeight: 24,
+    marginBottom: 24,
+  },
+  settledModalButton: {
+    backgroundColor: colors.primary,
+    paddingVertical: 14,
+    paddingHorizontal: 48,
+    borderRadius: 999,
+  },
+  settledModalButtonText: {
     color: colors.background,
     fontSize: 16,
     fontWeight: '600',

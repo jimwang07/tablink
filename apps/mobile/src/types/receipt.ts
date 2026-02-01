@@ -47,6 +47,7 @@ export type Receipt = {
   tip_cents: number;
   total_cents: number;
   status: ReceiptStatus;
+  celebration_shown: boolean;
   created_at: string;
   updated_at: string;
 };
