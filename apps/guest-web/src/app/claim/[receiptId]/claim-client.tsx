@@ -14,7 +14,7 @@ const colors = {
   textSecondary: '#C3C8D4',
   primary: '#2DD36F',
   danger: '#FF5C5C',
-  warning: '#FFB347',
+  warning: '#F2C94C',
 };
 
 type ReceiptItem = {
@@ -114,7 +114,6 @@ export function ClaimPageClient({ receiptId, receipt, items, initialClaims, init
         (payload: RealtimePostgresChangesPayload<ItemClaim>) => {
           if (payload.eventType === 'INSERT') {
             const newClaim = payload.new as ItemClaim;
-            // Only add if it's for an item on this receipt and not already in our list
             if (itemIds.includes(newClaim.item_id)) {
               setClaims(prev => {
                 if (prev.some(c => c.id === newClaim.id)) return prev;
@@ -205,27 +204,63 @@ export function ClaimPageClient({ receiptId, receipt, items, initialClaims, init
       );
 
       if (existingClaim) {
+        // Remove the claim
         const { error: deleteError } = await supabase
           .from('item_claims')
           .delete()
           .eq('id', existingClaim.id);
 
         if (deleteError) throw deleteError;
-        setClaims(prev => prev.filter(c => c.id !== existingClaim.id));
+
+        // Get remaining claims for this item and update their amounts
+        const remainingClaims = claims.filter(c => c.item_id === itemId && c.id !== existingClaim.id);
+        if (remainingClaims.length > 0) {
+          const newAmount = Math.round(item.price_cents / remainingClaims.length);
+          await supabase
+            .from('item_claims')
+            .update({ amount_cents: newAmount })
+            .eq('item_id', itemId);
+
+          // Update local state
+          setClaims(prev => prev
+            .filter(c => c.id !== existingClaim.id)
+            .map(c => c.item_id === itemId ? { ...c, amount_cents: newAmount } : c)
+          );
+        } else {
+          setClaims(prev => prev.filter(c => c.id !== existingClaim.id));
+        }
       } else {
+        // Add a new claim
+        const existingClaimsCount = claims.filter(c => c.item_id === itemId).length;
+        const newTotalClaimers = existingClaimsCount + 1;
+        const newAmount = Math.round(item.price_cents / newTotalClaimers);
+
         const { data, error: insertError } = await supabase
           .from('item_claims')
           .insert({
             item_id: itemId,
             participant_id: currentParticipant.id,
             portion: 1,
-            amount_cents: item.price_cents,
+            amount_cents: newAmount,
           })
           .select()
           .single();
 
         if (insertError) throw insertError;
-        setClaims(prev => [...prev, data]);
+
+        // Update existing claims for this item with new split amount
+        if (existingClaimsCount > 0) {
+          await supabase
+            .from('item_claims')
+            .update({ amount_cents: newAmount })
+            .eq('item_id', itemId);
+        }
+
+        // Update local state
+        setClaims(prev => [
+          ...prev.map(c => c.item_id === itemId ? { ...c, amount_cents: newAmount } : c),
+          data,
+        ]);
       }
     } catch (err) {
       console.error('Failed to update claim:', err);
@@ -235,14 +270,14 @@ export function ClaimPageClient({ receiptId, receipt, items, initialClaims, init
     }
   }, [currentParticipant, items, claims, claimingItemId]);
 
-  // Calculate totals - needed before payment callbacks
+  // Calculate totals
   const myTotal = currentParticipant
     ? claims
         .filter(c => c.participant_id === currentParticipant.id)
         .reduce((sum, c) => sum + c.amount_cents, 0)
     : 0;
 
-  const itemsTotal = items.reduce((sum, item) => sum + item.price_cents * item.quantity, 0);
+  const itemsTotal = items.reduce((sum, item) => sum + item.price_cents, 0);
   const myShare = itemsTotal > 0 ? myTotal / itemsTotal : 0;
   const myTax = Math.round(receipt.tax_cents * myShare);
   const myTip = Math.round(receipt.tip_cents * myShare);
@@ -271,7 +306,6 @@ export function ClaimPageClient({ receiptId, receipt, items, initialClaims, init
 
       setPaymentStatus('paid');
       setCurrentParticipant(prev => prev ? { ...prev, payment_status: 'paid' } : null);
-      // Also update the participants array so item highlighting works
       setParticipants(prev => prev.map(p =>
         p.id === currentParticipant.id ? { ...p, payment_status: 'paid' } : p
       ));
@@ -299,8 +333,6 @@ export function ClaimPageClient({ receiptId, receipt, items, initialClaims, init
 
     if (ownerProfile.venmo_handle) {
       const username = ownerProfile.venmo_handle.replace(/^@/, '');
-      // Use web URL - works on both desktop and mobile (mobile will prompt to open app)
-      // Note: Venmo web doesn't support pre-filled amounts
       options.push({
         name: 'Venmo',
         color: '#3D95CE',
@@ -351,80 +383,133 @@ export function ClaimPageClient({ receiptId, receipt, items, initialClaims, init
 
   // Join screen
   if (!currentParticipant) {
+    const guestParticipants = participants.filter(p => p.role !== 'owner');
+
     return (
       <div className="min-h-screen flex flex-col" style={{ backgroundColor: colors.background }}>
+        {/* Gradient background accent */}
+        <div
+          className="absolute inset-0 pointer-events-none"
+          style={{
+            background: `radial-gradient(ellipse at top, ${colors.primary}08 0%, transparent 50%)`,
+          }}
+        />
+
         {/* Header */}
-        <header className="px-6 pt-12 pb-4">
-          <h1 className="text-2xl font-bold" style={{ color: colors.primary }}>Tablink</h1>
+        <header className="relative px-6 pt-12 pb-6">
+          <div className="flex items-center gap-2">
+            <div
+              className="w-8 h-8 rounded-lg flex items-center justify-center"
+              style={{ backgroundColor: colors.primary }}
+            >
+              <span className="text-sm font-bold" style={{ color: colors.background }}>T</span>
+            </div>
+            <span className="text-xl font-bold" style={{ color: colors.text }}>Tablink</span>
+          </div>
         </header>
 
-        <div className="flex-1 flex items-center justify-center px-4 pb-8">
-          <div className="w-full max-w-md rounded-2xl p-6" style={{ backgroundColor: colors.surface, border: `1px solid ${colors.surfaceBorder}` }}>
+        <div className="relative flex-1 flex items-center justify-center px-4 pb-12">
+          <div
+            className="w-full max-w-md rounded-3xl p-8 shadow-2xl"
+            style={{
+              backgroundColor: colors.surface,
+              border: `1px solid ${colors.surfaceBorder}`,
+              boxShadow: `0 25px 50px -12px rgba(0,0,0,0.5), 0 0 0 1px ${colors.surfaceBorder}`,
+            }}
+          >
             {/* Receipt info */}
             <div className="text-center mb-8">
-              <div className="inline-flex items-center justify-center w-16 h-16 rounded-full mb-4" style={{ backgroundColor: colors.surfaceBorder }}>
-                <span className="text-3xl">🧾</span>
+              <div
+                className="inline-flex items-center justify-center w-20 h-20 rounded-2xl mb-5"
+                style={{
+                  backgroundColor: colors.surfaceBorder,
+                  boxShadow: `inset 0 2px 4px rgba(0,0,0,0.2)`,
+                }}
+              >
+                <span className="text-4xl">🧾</span>
               </div>
-              <h2 className="text-2xl font-bold mb-1" style={{ color: colors.text }}>
+              <h2 className="text-2xl font-bold mb-2" style={{ color: colors.text }}>
                 {receipt.merchant_name || 'Split the Bill'}
               </h2>
               {receipt.receipt_date && (
-                <p className="text-sm mb-4" style={{ color: colors.textSecondary }}>{formatDate(receipt.receipt_date)}</p>
+                <p className="text-sm mb-5" style={{ color: colors.textSecondary }}>
+                  {formatDate(receipt.receipt_date)}
+                </p>
               )}
-              <div className="inline-block px-4 py-2 rounded-full" style={{ backgroundColor: colors.surfaceBorder }}>
-                <span style={{ color: colors.textSecondary }}>Total: </span>
-                <span className="font-bold" style={{ color: colors.text }}>{formatCents(receipt.total_cents)}</span>
+              <div
+                className="inline-flex items-center gap-2 px-5 py-2.5 rounded-full"
+                style={{ backgroundColor: colors.background, border: `1px solid ${colors.surfaceBorder}` }}
+              >
+                <span className="text-sm" style={{ color: colors.textSecondary }}>Total</span>
+                <span className="text-lg font-bold" style={{ color: colors.primary }}>
+                  {formatCents(receipt.total_cents)}
+                </span>
               </div>
             </div>
 
             {/* Join form */}
             <div className="space-y-4">
               {error && (
-                <p className="text-sm" style={{ color: colors.danger }}>{error}</p>
+                <div
+                  className="px-4 py-3 rounded-xl text-sm"
+                  style={{ backgroundColor: `${colors.danger}15`, border: `1px solid ${colors.danger}30`, color: colors.danger }}
+                >
+                  {error}
+                </div>
               )}
 
-              {/* Existing participants to select from (excluding owner) */}
-              {participants.filter(p => p.role !== 'owner').length > 0 && !showNewNameInput && (
+              {/* Existing participants to select from */}
+              {guestParticipants.length > 0 && !showNewNameInput && (
                 <div>
                   <p className="text-sm font-medium mb-3" style={{ color: colors.textSecondary }}>
                     Select your name
                   </p>
                   <div className="space-y-2">
-                    {participants.filter(p => p.role !== 'owner').map(p => (
+                    {guestParticipants.map(p => (
                       <button
                         key={p.id}
                         onClick={() => setCurrentParticipant(p)}
                         disabled={isJoining}
-                        className="w-full flex items-center gap-3 p-4 rounded-xl text-left transition-all active:scale-[0.98]"
+                        className="w-full flex items-center gap-4 p-4 rounded-2xl text-left transition-all hover:scale-[1.02] active:scale-[0.98]"
                         style={{
                           backgroundColor: colors.background,
                           border: `1px solid ${colors.surfaceBorder}`,
                         }}
                       >
-                        <span className="text-2xl">{p.emoji}</span>
-                        <span className="font-medium" style={{ color: colors.text }}>{p.display_name}</span>
+                        <div
+                          className="w-12 h-12 rounded-xl flex items-center justify-center"
+                          style={{ backgroundColor: `${p.color_token}20` }}
+                        >
+                          <span className="text-2xl">{p.emoji}</span>
+                        </div>
+                        <span className="font-medium text-lg" style={{ color: colors.text }}>
+                          {p.display_name}
+                        </span>
                       </button>
                     ))}
                   </div>
                   <button
                     onClick={() => setShowNewNameInput(true)}
-                    className="w-full mt-3 py-3 rounded-full font-medium text-sm transition-all"
+                    className="w-full mt-4 py-3.5 rounded-full font-medium text-sm transition-all hover:bg-white/5"
                     style={{
-                      backgroundColor: 'transparent',
                       color: colors.textSecondary,
                       border: `1px dashed ${colors.surfaceBorder}`,
                     }}
                   >
-                    + Add a different name
+                    + I'm someone else
                   </button>
                 </div>
               )}
 
-              {/* New name input - shown if no guest participants or user clicks "Add different name" */}
-              {(participants.filter(p => p.role !== 'owner').length === 0 || showNewNameInput) && (
+              {/* New name input */}
+              {(guestParticipants.length === 0 || showNewNameInput) && (
                 <div>
-                  <label htmlFor="name" className="block text-sm font-medium mb-2" style={{ color: colors.textSecondary }}>
-                    Enter your name to claim items
+                  <label
+                    htmlFor="name"
+                    className="block text-sm font-medium mb-3"
+                    style={{ color: colors.textSecondary }}
+                  >
+                    {guestParticipants.length > 0 ? 'Enter your name' : 'What\'s your name?'}
                   </label>
                   <input
                     id="name"
@@ -433,7 +518,7 @@ export function ClaimPageClient({ receiptId, receipt, items, initialClaims, init
                     onChange={(e) => setGuestName(e.target.value)}
                     onKeyDown={(e) => e.key === 'Enter' && handleJoin()}
                     placeholder="Your name"
-                    className="w-full px-4 py-3 rounded-xl text-base outline-none transition-all focus:ring-2"
+                    className="w-full px-5 py-4 rounded-2xl text-base outline-none transition-all focus:ring-2"
                     style={{
                       backgroundColor: colors.background,
                       border: `1px solid ${colors.surfaceBorder}`,
@@ -444,7 +529,7 @@ export function ClaimPageClient({ receiptId, receipt, items, initialClaims, init
                   <button
                     onClick={handleJoin}
                     disabled={isJoining || !guestName.trim()}
-                    className="w-full mt-4 py-3.5 rounded-full font-semibold text-base transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                    className="w-full mt-5 py-4 rounded-full font-semibold text-base transition-all disabled:opacity-50 disabled:cursor-not-allowed hover:brightness-110 active:scale-[0.98]"
                     style={{
                       backgroundColor: colors.primary,
                       color: colors.background,
@@ -458,18 +543,18 @@ export function ClaimPageClient({ receiptId, receipt, items, initialClaims, init
                         </svg>
                         Joining...
                       </span>
-                    ) : 'Join & Claim Items'}
+                    ) : 'Continue'}
                   </button>
-                  {participants.filter(p => p.role !== 'owner').length > 0 && (
+                  {guestParticipants.length > 0 && (
                     <button
                       onClick={() => {
                         setShowNewNameInput(false);
                         setGuestName('');
                       }}
-                      className="w-full mt-2 py-2 text-sm"
+                      className="w-full mt-3 py-2 text-sm transition-all hover:opacity-80"
                       style={{ color: colors.muted }}
                     >
-                      Cancel
+                      Back to name list
                     </button>
                   )}
                 </div>
@@ -477,6 +562,13 @@ export function ClaimPageClient({ receiptId, receipt, items, initialClaims, init
             </div>
           </div>
         </div>
+
+        {/* Footer branding */}
+        <footer className="relative pb-6 text-center">
+          <p className="text-xs" style={{ color: colors.muted }}>
+            Powered by Tablink
+          </p>
+        </footer>
       </div>
     );
   }
@@ -485,39 +577,64 @@ export function ClaimPageClient({ receiptId, receipt, items, initialClaims, init
   return (
     <div className="min-h-screen flex flex-col" style={{ backgroundColor: colors.background }}>
       {/* Header */}
-      <header className="sticky top-0 z-10 px-4 py-4" style={{ backgroundColor: colors.surface, borderBottom: `1px solid ${colors.surfaceBorder}` }}>
+      <header
+        className="sticky top-0 z-10 px-4 py-4 backdrop-blur-lg"
+        style={{
+          backgroundColor: `${colors.surface}ee`,
+          borderBottom: `1px solid ${colors.surfaceBorder}`,
+        }}
+      >
         <div className="max-w-lg mx-auto">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
-              <span className="text-lg font-bold" style={{ color: colors.primary }}>Tablink</span>
-              <span style={{ color: colors.surfaceBorder }}>|</span>
+              <div
+                className="w-8 h-8 rounded-lg flex items-center justify-center"
+                style={{ backgroundColor: colors.primary }}
+              >
+                <span className="text-sm font-bold" style={{ color: colors.background }}>T</span>
+              </div>
               <div>
                 <h1 className="text-lg font-semibold" style={{ color: colors.text }}>
                   {receipt.merchant_name || 'Receipt'}
                 </h1>
                 {receipt.receipt_date && (
-                  <p className="text-xs" style={{ color: colors.textSecondary }}>{formatDate(receipt.receipt_date)}</p>
+                  <p className="text-xs" style={{ color: colors.textSecondary }}>
+                    {formatDate(receipt.receipt_date)}
+                  </p>
                 )}
               </div>
             </div>
             <div
-              className="flex items-center gap-2 px-3 py-1.5 rounded-full"
+              className="flex items-center gap-2 px-3 py-2 rounded-full"
               style={{ backgroundColor: colors.surfaceBorder }}
             >
-              <span>{currentParticipant.emoji}</span>
-              <span className="text-sm font-medium" style={{ color: colors.text }}>{currentParticipant.display_name}</span>
+              <span className="text-lg">{currentParticipant.emoji}</span>
+              <span className="text-sm font-medium" style={{ color: colors.text }}>
+                {currentParticipant.display_name}
+              </span>
             </div>
           </div>
         </div>
       </header>
 
       {/* Items List */}
-      <main className="flex-1 overflow-auto px-4 py-4">
+      <main className="flex-1 overflow-auto px-4 py-6">
         <div className="max-w-lg mx-auto">
-          <p className="text-sm mb-4" style={{ color: colors.muted }}>Tap items to claim them</p>
+          <div className="flex items-center gap-2 mb-4">
+            <div
+              className="w-2 h-2 rounded-full animate-pulse"
+              style={{ backgroundColor: colors.primary }}
+            />
+            <p className="text-sm" style={{ color: colors.textSecondary }}>
+              Tap items you ordered
+            </p>
+          </div>
 
           {error && (
-            <div className="rounded-xl p-3 mb-4" style={{ backgroundColor: `${colors.danger}20`, border: `1px solid ${colors.danger}40` }}>
+            <div
+              className="rounded-2xl p-4 mb-4"
+              style={{ backgroundColor: `${colors.danger}15`, border: `1px solid ${colors.danger}30` }}
+            >
               <p className="text-sm" style={{ color: colors.danger }}>{error}</p>
             </div>
           )}
@@ -527,86 +644,144 @@ export function ClaimPageClient({ receiptId, receipt, items, initialClaims, init
               const claimers = getItemClaimers(item.id);
               const isMine = isClaimedByMe(item.id);
               const isLoading = claimingItemId === item.id;
-              // Item is settled only when it has claimers AND all claimers have paid
               const isSettled = claimers.length > 0 && claimers.every(c => c.payment_status === 'paid');
+              const isClaimed = claimers.length > 0 && !isSettled;
 
               return (
                 <button
                   key={item.id}
                   onClick={() => handleClaimItem(item.id)}
-                  disabled={isLoading || paymentStatus === 'paid'}
-                  className="w-full text-left p-4 rounded-xl transition-all active:scale-[0.98]"
+                  disabled={isLoading || paymentStatus === 'paid' || isSettled}
+                  className="w-full text-left p-4 rounded-2xl transition-all duration-200 hover:scale-[1.01] active:scale-[0.99]"
                   style={{
-                    backgroundColor: isSettled ? `${colors.primary}25` : isMine ? `${colors.primary}15` : colors.surface,
-                    border: `2px solid ${isSettled ? colors.primary : isMine ? `${colors.primary}80` : colors.surfaceBorder}`,
-                    opacity: isLoading ? 0.7 : 1,
+                    backgroundColor: isSettled
+                      ? `${colors.primary}18`
+                      : isMine
+                        ? `${colors.primary}12`
+                        : isClaimed
+                          ? `${colors.warning}08`
+                          : colors.surface,
+                    border: `1.5px solid ${
+                      isSettled
+                        ? colors.primary
+                        : isMine
+                          ? `${colors.primary}60`
+                          : isClaimed
+                            ? `${colors.warning}40`
+                            : colors.surfaceBorder
+                    }`,
+                    opacity: isLoading ? 0.6 : 1,
                   }}
                 >
-                  <div className="flex justify-between items-start">
-                    <div className="flex-1 flex items-center gap-2">
-                      {isSettled ? (
-                        <svg className="w-5 h-5 flex-shrink-0" style={{ color: colors.primary }} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-                        </svg>
-                      ) : isMine ? (
-                        <svg className="w-5 h-5 flex-shrink-0" style={{ color: colors.primary }} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                        </svg>
-                      ) : null}
-                      <div>
-                        <span style={{ color: colors.text }}>{item.label}</span>
-                        {item.quantity > 1 && (
-                          <span className="text-sm ml-2" style={{ color: colors.textSecondary }}>×{item.quantity}</span>
+                  <div className="flex justify-between items-start gap-3">
+                    <div className="flex-1 flex items-start gap-3">
+                      {/* Checkbox/status indicator */}
+                      <div
+                        className="w-6 h-6 rounded-lg flex items-center justify-center flex-shrink-0 mt-0.5 transition-all"
+                        style={{
+                          backgroundColor: isSettled || isMine ? colors.primary : 'transparent',
+                          border: isSettled || isMine ? 'none' : `2px solid ${colors.surfaceBorder}`,
+                        }}
+                      >
+                        {(isSettled || isMine) && (
+                          <svg className="w-4 h-4" style={{ color: colors.background }} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                          </svg>
+                        )}
+                      </div>
+
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span
+                            className="font-medium"
+                            style={{ color: isSettled ? colors.primary : colors.text }}
+                          >
+                            {item.label}
+                          </span>
+                          {item.quantity > 1 && (
+                            <span
+                              className="text-xs px-1.5 py-0.5 rounded"
+                              style={{ backgroundColor: colors.surfaceBorder, color: colors.textSecondary }}
+                            >
+                              ×{item.quantity}
+                            </span>
+                          )}
+                        </div>
+
+                        {/* Claimer badges */}
+                        {claimers.length > 0 && (
+                          <div className="flex flex-wrap gap-1.5 mt-2">
+                            {claimers.map(claimer => (
+                              <span
+                                key={claimer.id}
+                                className="inline-flex items-center gap-1 px-2 py-1 rounded-lg text-xs"
+                                style={{
+                                  backgroundColor: colors.background,
+                                  borderLeft: `3px solid ${claimer.color_token}`,
+                                }}
+                              >
+                                <span>{claimer.emoji}</span>
+                                <span style={{ color: colors.textSecondary }}>{claimer.display_name}</span>
+                                {claimer.payment_status === 'paid' && (
+                                  <svg className="w-3 h-3 ml-0.5" style={{ color: colors.primary }} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+                                    <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                                  </svg>
+                                )}
+                              </span>
+                            ))}
+                          </div>
                         )}
                       </div>
                     </div>
-                    <div className="flex items-center gap-2 ml-4">
+
+                    <div className="flex items-center gap-2 flex-shrink-0">
                       {isSettled && (
-                        <span className="text-xs font-semibold px-2 py-0.5 rounded" style={{ backgroundColor: `${colors.primary}25`, color: colors.primary }}>
-                          Settled
+                        <span
+                          className="text-xs font-semibold px-2 py-1 rounded-lg"
+                          style={{ backgroundColor: `${colors.primary}20`, color: colors.primary }}
+                        >
+                          Paid
                         </span>
                       )}
-                      <span className="font-semibold" style={{ color: isSettled ? colors.primary : colors.text }}>
-                        {formatCents(item.price_cents * item.quantity)}
+                      <span
+                        className="font-semibold tabular-nums"
+                        style={{ color: isSettled ? colors.primary : colors.text }}
+                      >
+                        {formatCents(item.price_cents)}
                       </span>
                     </div>
                   </div>
-
-                  {claimers.length > 0 && (
-                    <div className="flex flex-wrap gap-1.5 mt-3">
-                      {claimers.map(claimer => (
-                        <span
-                          key={claimer.id}
-                          className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs"
-                          style={{
-                            backgroundColor: colors.surfaceBorder,
-                            borderLeft: `3px solid ${claimer.color_token}`,
-                          }}
-                        >
-                          <span>{claimer.emoji}</span>
-                          <span style={{ color: colors.textSecondary }}>{claimer.display_name}</span>
-                        </span>
-                      ))}
-                    </div>
-                  )}
                 </button>
               );
             })}
           </div>
 
           {/* Participants */}
-          {participants.length > 1 && (
-            <div className="mt-6 p-4 rounded-xl" style={{ backgroundColor: colors.surface, border: `1px solid ${colors.surfaceBorder}` }}>
-              <p className="text-sm font-medium mb-3" style={{ color: colors.textSecondary }}>Splitting with</p>
+          {participants.filter(p => p.id !== currentParticipant.id).length > 0 && (
+            <div
+              className="mt-8 p-5 rounded-2xl"
+              style={{ backgroundColor: colors.surface, border: `1px solid ${colors.surfaceBorder}` }}
+            >
+              <p className="text-sm font-medium mb-4" style={{ color: colors.textSecondary }}>
+                Splitting with
+              </p>
               <div className="flex flex-wrap gap-2">
                 {participants.filter(p => p.id !== currentParticipant.id).map(p => (
                   <span
                     key={p.id}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm"
-                    style={{ backgroundColor: colors.surfaceBorder, color: colors.textSecondary }}
+                    className="inline-flex items-center gap-2 px-3 py-2 rounded-xl text-sm"
+                    style={{ backgroundColor: colors.background, border: `1px solid ${colors.surfaceBorder}` }}
                   >
                     <span>{p.emoji}</span>
-                    <span>{p.display_name}</span>
+                    <span style={{ color: colors.text }}>{p.display_name}</span>
+                    {p.role === 'owner' && (
+                      <span
+                        className="text-xs px-1.5 py-0.5 rounded"
+                        style={{ backgroundColor: colors.surfaceBorder, color: colors.textSecondary }}
+                      >
+                        Host
+                      </span>
+                    )}
                   </span>
                 ))}
               </div>
@@ -616,54 +791,75 @@ export function ClaimPageClient({ receiptId, receipt, items, initialClaims, init
       </main>
 
       {/* Footer with totals and payment */}
-      <footer className="sticky bottom-0 px-4 py-4" style={{ backgroundColor: colors.surface, borderTop: `1px solid ${colors.surfaceBorder}` }}>
+      <footer
+        className="sticky bottom-0 px-4 py-5"
+        style={{
+          backgroundColor: colors.surface,
+          borderTop: `1px solid ${colors.surfaceBorder}`,
+          boxShadow: '0 -10px 40px rgba(0,0,0,0.3)',
+        }}
+      >
         <div className="max-w-lg mx-auto">
+          {/* Totals breakdown */}
           <div className="space-y-2 text-sm">
             <div className="flex justify-between" style={{ color: colors.textSecondary }}>
               <span>Your items</span>
-              <span>{formatCents(myTotal)}</span>
+              <span className="tabular-nums">{formatCents(myTotal)}</span>
             </div>
             {receipt.tax_cents > 0 && (
               <div className="flex justify-between" style={{ color: colors.textSecondary }}>
                 <span>Tax (proportional)</span>
-                <span>{formatCents(myTax)}</span>
+                <span className="tabular-nums">{formatCents(myTax)}</span>
               </div>
             )}
             {receipt.tip_cents > 0 && (
               <div className="flex justify-between" style={{ color: colors.textSecondary }}>
                 <span>Tip (proportional)</span>
-                <span>{formatCents(myTip)}</span>
+                <span className="tabular-nums">{formatCents(myTip)}</span>
               </div>
             )}
-            <div className="flex justify-between text-lg font-semibold pt-3" style={{ color: colors.text, borderTop: `1px solid ${colors.surfaceBorder}` }}>
+            <div
+              className="flex justify-between text-lg font-semibold pt-3 mt-2"
+              style={{ color: colors.text, borderTop: `1px solid ${colors.surfaceBorder}` }}
+            >
               <span>Your total</span>
-              <span style={{ color: colors.primary }}>{formatCents(myGrandTotal)}</span>
+              <span className="tabular-nums" style={{ color: colors.primary }}>{formatCents(myGrandTotal)}</span>
             </div>
           </div>
 
           {/* Payment Button */}
           {myGrandTotal > 0 && (
-            <div className="mt-4 pt-4" style={{ borderTop: `1px solid ${colors.surfaceBorder}` }}>
+            <div className="mt-5">
               {paymentStatus === 'paid' ? (
-                <div className="text-center py-3 rounded-xl" style={{ backgroundColor: `${colors.primary}15` }}>
+                <div
+                  className="text-center py-4 rounded-2xl"
+                  style={{ backgroundColor: `${colors.primary}12`, border: `1px solid ${colors.primary}30` }}
+                >
                   <div className="flex items-center justify-center gap-2">
-                    <svg className="w-5 h-5" style={{ color: colors.primary }} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                    </svg>
+                    <div
+                      className="w-6 h-6 rounded-full flex items-center justify-center"
+                      style={{ backgroundColor: colors.primary }}
+                    >
+                      <svg className="w-4 h-4" style={{ color: colors.background }} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                      </svg>
+                    </div>
                     <span className="font-semibold" style={{ color: colors.primary }}>Payment confirmed!</span>
                   </div>
-                  <p className="text-sm mt-1" style={{ color: colors.textSecondary }}>Thanks for settling up</p>
+                  <p className="text-sm mt-1" style={{ color: colors.textSecondary }}>
+                    Thanks for settling up
+                  </p>
                 </div>
               ) : (
                 <button
                   onClick={() => setShowPaymentModal(true)}
-                  className="w-full py-3.5 rounded-full font-semibold text-base transition-all active:scale-[0.98]"
+                  className="w-full py-4 rounded-full font-semibold text-base transition-all hover:brightness-110 active:scale-[0.98]"
                   style={{
                     backgroundColor: colors.primary,
                     color: colors.background,
                   }}
                 >
-                  Pay {ownerProfile?.display_name || 'Host'}
+                  Pay {ownerProfile?.display_name || 'Host'} {formatCents(myGrandTotal)}
                 </button>
               )}
             </div>
@@ -674,22 +870,32 @@ export function ClaimPageClient({ receiptId, receipt, items, initialClaims, init
       {/* Payment Modal */}
       {showPaymentModal && (
         <div
-          className="fixed inset-0 z-50 flex items-end justify-center"
-          style={{ backgroundColor: 'rgba(0,0,0,0.6)' }}
+          className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4 sm:p-6"
+          style={{ backgroundColor: 'rgba(0,0,0,0.7)' }}
           onClick={() => setShowPaymentModal(false)}
         >
           <div
-            className="w-full max-w-lg rounded-t-3xl p-6 pb-10"
-            style={{ backgroundColor: colors.surface }}
+            className="w-full max-w-md rounded-3xl p-6 sm:p-8 animate-in slide-in-from-bottom duration-300"
+            style={{
+              backgroundColor: colors.surface,
+              border: `1px solid ${colors.surfaceBorder}`,
+              boxShadow: '0 25px 50px -12px rgba(0,0,0,0.5)',
+            }}
             onClick={e => e.stopPropagation()}
           >
-            <div className="flex justify-between items-center mb-6">
-              <h2 className="text-xl font-bold" style={{ color: colors.text }}>
-                Pay {ownerProfile?.display_name || 'Host'}
-              </h2>
+            {/* Modal header */}
+            <div className="flex justify-between items-start mb-6">
+              <div>
+                <h2 className="text-xl font-bold" style={{ color: colors.text }}>
+                  Pay {ownerProfile?.display_name || 'Host'}
+                </h2>
+                <p className="text-sm mt-1" style={{ color: colors.textSecondary }}>
+                  Choose a payment method
+                </p>
+              </div>
               <button
                 onClick={() => setShowPaymentModal(false)}
-                className="p-2 rounded-full"
+                className="p-2 rounded-xl transition-all hover:bg-white/5"
                 style={{ backgroundColor: colors.surfaceBorder }}
               >
                 <svg className="w-5 h-5" style={{ color: colors.text }} fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -698,11 +904,18 @@ export function ClaimPageClient({ receiptId, receipt, items, initialClaims, init
               </button>
             </div>
 
-            <div className="text-center mb-6">
-              <p className="text-sm" style={{ color: colors.textSecondary }}>Amount due</p>
-              <p className="text-3xl font-bold" style={{ color: colors.primary }}>{formatCents(myGrandTotal)}</p>
+            {/* Amount display */}
+            <div
+              className="text-center py-6 rounded-2xl mb-6"
+              style={{ backgroundColor: colors.background, border: `1px solid ${colors.surfaceBorder}` }}
+            >
+              <p className="text-sm mb-1" style={{ color: colors.textSecondary }}>Amount due</p>
+              <p className="text-4xl font-bold tabular-nums" style={{ color: colors.primary }}>
+                {formatCents(myGrandTotal)}
+              </p>
             </div>
 
+            {/* Payment options */}
             {ownerProfile && getPaymentOptions().length > 0 ? (
               <div className="space-y-3">
                 {getPaymentOptions().map(option => (
@@ -712,7 +925,7 @@ export function ClaimPageClient({ receiptId, receipt, items, initialClaims, init
                       href={option.url}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="flex items-center justify-center gap-3 py-4 rounded-xl font-semibold text-base transition-all active:scale-[0.98] w-full"
+                      className="flex items-center justify-center gap-3 py-4 rounded-2xl font-semibold text-base transition-all hover:brightness-110 active:scale-[0.98] w-full"
                       style={{ backgroundColor: option.color, color: '#fff' }}
                     >
                       Pay with {option.name}
@@ -721,35 +934,43 @@ export function ClaimPageClient({ receiptId, receipt, items, initialClaims, init
                     <button
                       key={option.name}
                       onClick={handleCopyZelle}
-                      className="flex items-center justify-center gap-3 py-4 rounded-xl font-semibold text-base transition-all active:scale-[0.98] w-full"
+                      className="flex items-center justify-center gap-3 py-4 rounded-2xl font-semibold text-base transition-all hover:brightness-110 active:scale-[0.98] w-full"
                       style={{ backgroundColor: option.color, color: '#fff' }}
                     >
-                      {copiedZelle ? 'Copied to clipboard!' : `Zelle: ${option.identifier}`}
+                      {copiedZelle ? '✓ Copied to clipboard!' : `Zelle: ${option.identifier}`}
                     </button>
                   )
                 ))}
               </div>
             ) : (
-              <p className="text-center py-4" style={{ color: colors.textSecondary }}>
-                No payment methods available. Contact the host directly.
-              </p>
+              <div
+                className="text-center py-6 rounded-2xl"
+                style={{ backgroundColor: colors.background }}
+              >
+                <p style={{ color: colors.textSecondary }}>
+                  No payment methods available.
+                </p>
+                <p className="text-sm mt-1" style={{ color: colors.muted }}>
+                  Contact the host directly.
+                </p>
+              </div>
             )}
 
-            <div className="mt-6 pt-4" style={{ borderTop: `1px solid ${colors.surfaceBorder}` }}>
+            {/* Mark as paid button */}
+            <div className="mt-6 pt-5" style={{ borderTop: `1px solid ${colors.surfaceBorder}` }}>
               <button
                 onClick={() => {
                   handleMarkPaid('manual');
                   setShowPaymentModal(false);
                 }}
                 disabled={isMarkingPaid}
-                className="w-full py-3 rounded-full font-medium text-base transition-all disabled:opacity-50"
+                className="w-full py-3.5 rounded-full font-medium text-base transition-all disabled:opacity-50 hover:bg-white/5 active:scale-[0.98]"
                 style={{
-                  backgroundColor: 'transparent',
                   color: colors.text,
                   border: `1px solid ${colors.surfaceBorder}`,
                 }}
               >
-                {isMarkingPaid ? 'Confirming...' : "I've paid!"}
+                {isMarkingPaid ? 'Confirming...' : "I've already paid"}
               </button>
             </div>
           </div>

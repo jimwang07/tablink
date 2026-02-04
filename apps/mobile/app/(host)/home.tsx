@@ -59,8 +59,7 @@ function calculateProgress(receipt: ReceiptWithDetails): ProgressData {
   let paidCents = 0;
 
   for (const item of items) {
-    const itemTotal = item.price_cents * item.quantity;
-    totalCents += itemTotal;
+    totalCents += item.price_cents;
 
     for (const claim of item.item_claims || []) {
       claimedCents += claim.amount_cents;

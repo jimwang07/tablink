@@ -348,12 +348,11 @@ export default function ReceiptDetailScreen() {
     setHasChanges(true);
   }, [merchantName, taxInput, tipInput, editableItems]);
 
-  // Computed values
+  // Computed values (price is already the line total, not unit price)
   const subtotal = useMemo(() => {
     return editableItems.reduce((total, item) => {
       const price = parseCurrencyInput(item.price);
-      const qty = parseQuantityInput(item.quantity);
-      return total + price * qty;
+      return total + price;
     }, 0);
   }, [editableItems]);
 
@@ -369,8 +368,15 @@ export default function ReceiptDetailScreen() {
     // If draft, use that
     if (receipt.status === 'draft') return 'draft';
 
-    // Check if fully paid: all items with claims have all claimers paid
-    if (claims.length > 0 && participants.length > 0) {
+    // Check if fully settled: all items are claimed AND all claims are paid
+    const itemKeys = editableItems.map(item => item.key);
+    if (itemKeys.length > 0 && claims.length > 0 && participants.length > 0) {
+      // Check that every item has at least one claim
+      const allItemsClaimed = itemKeys.every(key => claims.some(c => c.item_id === key));
+      if (!allItemsClaimed) {
+        return receipt.status;
+      }
+
       // Build map of participant payment status
       const paidParticipants = new Set(
         participants.filter(p => p.payment_status === 'paid').map(p => p.id)
@@ -386,7 +392,7 @@ export default function ReceiptDetailScreen() {
 
     // Otherwise use DB status
     return receipt.status;
-  }, [receipt, claims, participants]);
+  }, [receipt, claims, participants, editableItems]);
 
   // Trigger confetti when receipt becomes settled
   useEffect(() => {
@@ -675,22 +681,56 @@ export default function ReceiptDetailScreen() {
           .eq('id', existingClaim.id);
 
         if (deleteError) throw deleteError;
-        setClaims(prev => prev.filter(c => c.id !== existingClaim.id));
+
+        // Get remaining claims for this item and update their amounts
+        const remainingClaims = claims.filter(c => c.item_id === itemKey && c.id !== existingClaim.id);
+        if (remainingClaims.length > 0) {
+          const newAmount = Math.round(itemPrice / remainingClaims.length);
+          await supabase
+            .from('item_claims')
+            .update({ amount_cents: newAmount })
+            .eq('item_id', itemKey);
+
+          // Update local state
+          setClaims(prev => prev
+            .filter(c => c.id !== existingClaim.id)
+            .map(c => c.item_id === itemKey ? { ...c, amount_cents: newAmount } : c)
+          );
+        } else {
+          setClaims(prev => prev.filter(c => c.id !== existingClaim.id));
+        }
       } else {
-        // Add a claim
+        // Add a new claim
+        const existingClaimsCount = claims.filter(c => c.item_id === itemKey).length;
+        const newTotalClaimers = existingClaimsCount + 1;
+        const newAmount = Math.round(itemPrice / newTotalClaimers);
+
         const { data, error: insertError } = await supabase
           .from('item_claims')
           .insert({
             item_id: itemKey,
             participant_id: participantId,
             portion: 1,
-            amount_cents: itemPrice,
+            amount_cents: newAmount,
           })
           .select()
           .single();
 
         if (insertError) throw insertError;
-        setClaims(prev => [...prev, data]);
+
+        // Update existing claims for this item with new split amount
+        if (existingClaimsCount > 0) {
+          await supabase
+            .from('item_claims')
+            .update({ amount_cents: newAmount })
+            .eq('item_id', itemKey);
+        }
+
+        // Update local state
+        setClaims(prev => [
+          ...prev.map(c => c.item_id === itemKey ? { ...c, amount_cents: newAmount } : c),
+          data,
+        ]);
       }
     } catch (err) {
       console.error('[ReceiptDetail] Failed to update claim:', err);
@@ -878,6 +918,9 @@ export default function ReceiptDetailScreen() {
                               >
                                 <Text style={styles.claimerEmoji}>{claimer.emoji}</Text>
                                 <Text style={styles.claimerName}>{claimer.display_name}</Text>
+                                {claimer.payment_status === 'paid' && (
+                                  <Ionicons name="checkmark" size={12} color={colors.primary} />
+                                )}
                               </View>
                             ))}
                           </View>
@@ -986,9 +1029,8 @@ export default function ReceiptDetailScreen() {
                 const participantClaims = claims.filter(c => c.participant_id === p.id);
                 const claimsTotal = participantClaims.reduce((sum, c) => sum + c.amount_cents, 0);
                 const itemsTotal = editableItems.reduce((sum, item) => {
-                  const qty = parseQuantityInput(item.quantity);
                   const price = parseCurrencyInput(item.price);
-                  return sum + dollarsToCents(qty * price);
+                  return sum + dollarsToCents(price);
                 }, 0);
                 const share = itemsTotal > 0 ? claimsTotal / itemsTotal : 0;
                 const pTax = Math.round(parseCurrencyInput(taxInput) * 100 * share);
@@ -1140,7 +1182,22 @@ export default function ReceiptDetailScreen() {
               </TouchableOpacity>
             </View>
 
-            {participants.length > 0 ? (
+            {(() => {
+              // Check if this item is already paid for
+              const itemClaimers = assigningItem ? getItemClaimers(assigningItem.key) : [];
+              const isItemSettled = itemClaimers.length > 0 && itemClaimers.every(c => c.payment_status === 'paid');
+
+              if (isItemSettled) {
+                return (
+                  <View style={styles.assignEmptyState}>
+                    <Text style={styles.assignEmptyText}>
+                      This item has already been paid for and cannot be reassigned.
+                    </Text>
+                  </View>
+                );
+              }
+
+              return participants.length > 0 ? (
               <View style={styles.assignParticipantList}>
                 {participants.map(p => {
                   const isAssigned = assigningItem
@@ -1179,7 +1236,8 @@ export default function ReceiptDetailScreen() {
                   Add participants first to assign items
                 </Text>
               </View>
-            )}
+            );
+            })()}
 
             <TouchableOpacity
               style={styles.assignDoneButton}

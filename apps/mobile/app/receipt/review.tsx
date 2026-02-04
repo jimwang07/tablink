@@ -148,12 +148,11 @@ export default function ReceiptReviewScreen() {
     buildEditableItems(parsed?.items ?? [])
   );
 
-  // Computed values
+  // Computed values (price is already the line total, not unit price)
   const subtotal = useMemo(() => {
     return editableItems.reduce((total, item) => {
       const price = parseCurrencyInput(item.price);
-      const qty = parseQuantityInput(item.quantity);
-      return total + price * qty;
+      return total + price;
     }, 0);
   }, [editableItems]);
 
