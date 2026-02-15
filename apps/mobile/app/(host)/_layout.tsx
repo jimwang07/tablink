@@ -3,6 +3,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { colors } from '@/src/theme/colors';
 
 const tabBarOptions = {
+  lazy: false,
   tabBarActiveTintColor: colors.primary,
   tabBarInactiveTintColor: colors.muted,
   tabBarStyle: {

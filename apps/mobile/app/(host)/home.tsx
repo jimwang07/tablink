@@ -221,7 +221,10 @@ export default function HomeScreen() {
     <View style={styles.container}>
       <ScrollView contentInsetAdjustmentBehavior="automatic">
         <View style={styles.header}>
-          <Text style={styles.heading}>Tablink</Text>
+          <View style={styles.headerText}>
+            <Text style={styles.heading}>Tablink</Text>
+            <Text style={styles.subheading}>Scan receipts • Share tablinks</Text>
+          </View>
         </View>
 
         <View style={styles.tabContainer}>
@@ -287,10 +290,18 @@ const styles = StyleSheet.create({
     paddingBottom: 20,
     paddingHorizontal: 20,
   },
+  headerText: {
+    gap: 6,
+  },
   heading: {
     color: colors.text,
     fontSize: 32,
     fontWeight: '700',
+  },
+  subheading: {
+    color: colors.textSecondary,
+    fontSize: 14,
+    letterSpacing: 0.2,
   },
   tabContainer: {
     flexDirection: 'row',
@@ -303,12 +314,21 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingVertical: 10,
     paddingHorizontal: 16,
-    borderRadius: 20,
+    borderRadius: 18,
     backgroundColor: colors.surface,
     gap: 6,
+    borderWidth: 1,
+    borderColor: colors.surfaceBorder,
+    shadowColor: '#000',
+    shadowOpacity: 0.15,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 3,
   },
   tabActive: {
     backgroundColor: colors.primary,
+    borderColor: 'rgba(255,255,255,0.3)',
+    shadowOpacity: 0.25,
   },
   tabText: {
     color: colors.textSecondary,
@@ -327,7 +347,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   tabBadgeActive: {
-    backgroundColor: 'rgba(255,255,255,0.25)',
+    backgroundColor: 'rgba(0,0,0,0.12)',
   },
   tabBadgeText: {
     color: colors.textSecondary,
@@ -347,11 +367,16 @@ const styles = StyleSheet.create({
   },
   receiptCard: {
     backgroundColor: colors.surface,
-    borderRadius: 12,
+    borderRadius: 14,
     padding: 16,
-    marginBottom: 10,
+    marginBottom: 12,
     borderWidth: 1,
     borderColor: colors.surfaceBorder,
+    shadowColor: '#000',
+    shadowOpacity: 0.2,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 5,
   },
   receiptCardHeader: {
     flexDirection: 'row',
@@ -381,12 +406,12 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   progressContainer: {
-    marginBottom: 10,
+    marginBottom: 12,
   },
   progressBar: {
     flexDirection: 'row',
-    height: 6,
-    borderRadius: 3,
+    height: 8,
+    borderRadius: 6,
     backgroundColor: colors.surfaceBorder,
     overflow: 'hidden',
   },
@@ -407,6 +432,7 @@ const styles = StyleSheet.create({
     flexWrap: 'wrap',
     gap: 12,
     marginTop: 8,
+    alignItems: 'center',
   },
   legendItem: {
     flexDirection: 'row',
@@ -414,9 +440,9 @@ const styles = StyleSheet.create({
     gap: 4,
   },
   legendDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
+    width: 10,
+    height: 10,
+    borderRadius: 5,
   },
   legendPaid: {
     backgroundColor: '#4CAF50',

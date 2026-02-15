@@ -45,6 +45,7 @@ export function useReceipts(): UseReceiptsResult {
   const [sharedReceipts, setSharedReceipts] = useState<ReceiptWithDetails[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const hasLoadedRef = useRef(false);
   const channelRef = useRef<RealtimeChannel | null>(null);
 
   const fetchReceipts = useCallback(async () => {
@@ -55,9 +56,12 @@ export function useReceipts(): UseReceiptsResult {
 
     const supabase = getSupabaseClient();
     const userId = session.user.id;
+    const isInitialLoad = !hasLoadedRef.current;
 
     try {
-      setIsLoading(true);
+      if (isInitialLoad) {
+        setIsLoading(true);
+      }
       setError(null);
 
       // Fetch all owned receipts with items, claims, and participants
@@ -122,6 +126,7 @@ export function useReceipts(): UseReceiptsResult {
 
       setYourReceipts((owned as ReceiptWithDetails[]) ?? []);
       setSharedReceipts((shared as ReceiptWithDetails[]) ?? []);
+      hasLoadedRef.current = true;
     } catch (err) {
       console.error('[useReceipts] Error fetching receipts:', err);
       setError(err instanceof Error ? err.message : 'Failed to fetch receipts');
@@ -134,6 +139,12 @@ export function useReceipts(): UseReceiptsResult {
   useEffect(() => {
     fetchReceipts();
   }, [fetchReceipts]);
+
+  // Reset loading state when user changes
+  useEffect(() => {
+    hasLoadedRef.current = false;
+    setIsLoading(true);
+  }, [session?.user?.id]);
 
   // Realtime subscriptions for live updates
   useEffect(() => {

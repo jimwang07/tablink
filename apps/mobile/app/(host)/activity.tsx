@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -105,17 +105,28 @@ export default function ActivityScreen() {
   const [activities, setActivities] = useState<ActivityItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const hasLoadedRef = useRef(false);
 
   const loadActivity = useCallback(async () => {
     if (!user?.id) return;
 
+    const isInitialLoad = !hasLoadedRef.current;
+    if (isInitialLoad) {
+      setIsLoading(true);
+    } else {
+      setIsRefreshing(true);
+    }
+
     try {
       const data = await fetchRecentActivity(user.id);
       setActivities(data);
+      hasLoadedRef.current = true;
     } catch (error) {
       console.error('[ActivityScreen] Failed to load activity:', error);
     } finally {
-      setIsLoading(false);
+      if (isInitialLoad) {
+        setIsLoading(false);
+      }
       setIsRefreshing(false);
     }
   }, [user?.id]);
@@ -178,7 +189,10 @@ export default function ActivityScreen() {
 
   return (
     <View style={styles.container}>
-      <Text style={styles.heading}>Activity</Text>
+      <View style={styles.header}>
+        <Text style={styles.heading}>Activity</Text>
+        <Text style={styles.subheading}>Live claims, joins, and payments</Text>
+      </View>
       <FlatList
         data={activities}
         keyExtractor={(item) => item.id}
@@ -188,7 +202,7 @@ export default function ActivityScreen() {
             onPress={() => handleActivityPress(item)}
           />
         )}
-        contentContainerStyle={activities.length === 0 ? styles.emptyList : undefined}
+        contentContainerStyle={activities.length === 0 ? styles.emptyList : styles.listContent}
         ListEmptyComponent={EmptyState}
         refreshControl={
           <RefreshControl
@@ -216,12 +230,23 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
+  header: {
+    paddingHorizontal: 20,
+    paddingBottom: 12,
+  },
   heading: {
     color: colors.text,
     fontSize: 28,
     fontWeight: '700',
-    paddingHorizontal: 20,
-    marginBottom: 16,
+  },
+  subheading: {
+    marginTop: 4,
+    color: colors.textSecondary,
+    fontSize: 14,
+    letterSpacing: 0.2,
+  },
+  listContent: {
+    paddingHorizontal: 12,
   },
   emptyList: {
     flex: 1,
@@ -254,12 +279,21 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'flex-start',
     paddingVertical: 14,
-    paddingHorizontal: 20,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.surfaceBorder,
+    paddingHorizontal: 16,
+    marginHorizontal: 8,
+    marginVertical: 6,
+    borderRadius: 14,
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.surfaceBorder,
+    shadowColor: '#000',
+    shadowOpacity: 0.15,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 4,
   },
   activityItemPressed: {
-    backgroundColor: colors.surface,
+    backgroundColor: 'rgba(255,255,255,0.02)',
   },
   avatarContainer: {
     width: 40,
