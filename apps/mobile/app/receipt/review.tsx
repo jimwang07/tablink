@@ -8,6 +8,7 @@ import {
   Modal,
   Platform,
   ScrollView,
+  Share,
   StyleSheet,
   Text,
   TextInput,
@@ -21,7 +22,8 @@ import { Ionicons } from '@expo/vector-icons';
 
 import { usePendingReceipt } from '@/src/hooks/usePendingReceipt';
 import { useAuth } from '@/src/hooks/useAuth';
-import { saveReceipt } from '@/src/services/receiptService';
+import { saveReceipt, updateReceipt } from '@/src/services/receiptService';
+import { getSupabaseClient } from '@/src/lib/supabaseClient';
 import { colors } from '@/src/theme';
 import type { ParsedReceiptItem } from '@/src/types/receipt';
 
@@ -93,7 +95,41 @@ export default function ReceiptReviewScreen() {
   const { pendingReceipt, setPendingReceipt } = usePendingReceipt();
   const { session } = useAuth();
   const [isSaving, setIsSaving] = useState(false);
+  const [isSharing, setIsSharing] = useState(false);
   const [isImageExpanded, setIsImageExpanded] = useState(false);
+  const [showShareSuccess, setShowShareSuccess] = useState(false);
+  const [sharedReceiptId, setSharedReceiptId] = useState<string | null>(null);
+  const [hasPaymentMethods, setHasPaymentMethods] = useState<boolean | null>(null);
+
+  // Check if user has payment methods set up
+  useEffect(() => {
+    async function checkPaymentMethods() {
+      if (!session?.user?.id) return;
+
+      const supabase = getSupabaseClient();
+      const { data } = await supabase
+        .from('user_profiles')
+        .select('venmo_handle, cashapp_handle, paypal_handle, zelle_identifier')
+        .eq('user_id', session.user.id)
+        .single();
+
+      if (data) {
+        const hasAny = !!(
+          data.venmo_handle ||
+          data.cashapp_handle ||
+          data.paypal_handle ||
+          data.zelle_identifier
+        );
+        setHasPaymentMethods(hasAny);
+      } else {
+        setHasPaymentMethods(false);
+      }
+    }
+
+    checkPaymentMethods();
+  }, [session?.user?.id]);
+
+  const TABLINK_BASE_URL = process.env.EXPO_PUBLIC_TABLINK_URL || 'http://localhost:3000';
 
   useEffect(() => {
     if (!pendingReceipt) {
@@ -112,12 +148,11 @@ export default function ReceiptReviewScreen() {
     buildEditableItems(parsed?.items ?? [])
   );
 
-  // Computed values
+  // Computed values (price is already the line total, not unit price)
   const subtotal = useMemo(() => {
     return editableItems.reduce((total, item) => {
       const price = parseCurrencyInput(item.price);
-      const qty = parseQuantityInput(item.quantity);
-      return total + price * qty;
+      return total + price;
     }, 0);
   }, [editableItems]);
 
@@ -197,6 +232,104 @@ export default function ReceiptReviewScreen() {
       setIsSaving(false);
     }
   }, [buildUpdatedParsed, pendingReceipt, router, session, setPendingReceipt]);
+
+  const handleShareReceipt = useCallback(async () => {
+    if (!pendingReceipt || !session?.user?.id) {
+      Alert.alert('Error', 'You must be signed in to share a receipt.');
+      return;
+    }
+
+    // Check if user has payment methods set up
+    if (!hasPaymentMethods) {
+      Alert.alert(
+        'Set Up Payment Methods',
+        'Before sharing a receipt, add your payment info (Venmo, CashApp, etc.) so guests can pay you.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Go to Settings',
+            onPress: async () => {
+              // Auto-save receipt as draft before navigating to settings
+              try {
+                const updatedParsed = buildUpdatedParsed();
+                if (updatedParsed) {
+                  const updatedReceipt = { ...pendingReceipt, parsed: updatedParsed };
+                  const result = await saveReceipt(updatedReceipt, session.user.id);
+                  if (result.success) {
+                    setPendingReceipt(null);
+                    Alert.alert(
+                      'Receipt Saved',
+                      'Your receipt has been saved as a draft. You can find it on the home screen after setting up your payment info.',
+                      [{ text: 'OK', onPress: () => router.push('/(host)/settings') }]
+                    );
+                    return;
+                  }
+                }
+              } catch (err) {
+                console.error('[review] Failed to auto-save receipt:', err);
+              }
+              router.push('/(host)/settings');
+            },
+          },
+        ]
+      );
+      return;
+    }
+
+    setIsSharing(true);
+    try {
+      const updatedParsed = buildUpdatedParsed();
+      if (!updatedParsed) return;
+
+      // Save the receipt first
+      const updatedReceipt = { ...pendingReceipt, parsed: updatedParsed };
+      const result = await saveReceipt(updatedReceipt, session.user.id);
+
+      if (!result.success) {
+        Alert.alert('Error', result.error);
+        return;
+      }
+
+      // Update status to shared
+      const updateResult = await updateReceipt(result.receiptId, { status: 'shared' });
+      if (!updateResult.success) {
+        Alert.alert('Error', updateResult.error || 'Failed to share receipt');
+        return;
+      }
+
+      // Generate and share the tablink
+      const tablinkUrl = `${TABLINK_BASE_URL}/claim/${result.receiptId}`;
+      const merchantDisplay = updatedParsed.merchantName ? ` (${updatedParsed.merchantName})` : '';
+
+      await Share.share({
+        message: `Split the bill with me!${merchantDisplay}\n${tablinkUrl}`,
+        url: tablinkUrl,
+        title: 'Share Tablink',
+      });
+
+      // Store the receipt ID and show success modal
+      setSharedReceiptId(result.receiptId);
+      setPendingReceipt(null);
+      setShowShareSuccess(true);
+    } catch (error) {
+      console.error('[review] Failed to share receipt:', error);
+      Alert.alert('Error', 'Failed to share receipt. Please try again.');
+    } finally {
+      setIsSharing(false);
+    }
+  }, [buildUpdatedParsed, pendingReceipt, session, setPendingReceipt, TABLINK_BASE_URL, hasPaymentMethods, router]);
+
+  const handleViewReceipt = useCallback(() => {
+    setShowShareSuccess(false);
+    if (sharedReceiptId) {
+      router.replace(`/receipt/${sharedReceiptId}`);
+    }
+  }, [router, sharedReceiptId]);
+
+  const handleGoHome = useCallback(() => {
+    setShowShareSuccess(false);
+    router.replace('/(host)/home');
+  }, [router]);
 
   const handleDiscard = useCallback(() => {
     Alert.alert(
@@ -376,14 +509,25 @@ export default function ReceiptReviewScreen() {
         {/* Actions */}
         <View style={styles.actions}>
           <TouchableOpacity
-            style={[styles.saveButton, isSaving && styles.buttonDisabled]}
-            onPress={handleSaveDraft}
-            disabled={isSaving}
+            style={[styles.shareButton, isSharing && styles.buttonDisabled]}
+            onPress={handleShareReceipt}
+            disabled={isSharing || isSaving}
           >
-            {isSaving ? (
+            {isSharing ? (
               <ActivityIndicator size="small" color="#fff" />
             ) : (
-              <Text style={styles.saveButtonText}>Save Draft</Text>
+              <Text style={styles.shareButtonText}>Share Receipt</Text>
+            )}
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.saveDraftButton, isSaving && styles.buttonDisabled]}
+            onPress={handleSaveDraft}
+            disabled={isSaving || isSharing}
+          >
+            {isSaving ? (
+              <ActivityIndicator size="small" color={colors.textSecondary} />
+            ) : (
+              <Text style={styles.saveDraftButtonText}>Save as Draft</Text>
             )}
           </TouchableOpacity>
         </View>
@@ -408,6 +552,40 @@ export default function ReceiptReviewScreen() {
             <TouchableOpacity style={styles.modalCloseButton} onPress={() => setIsImageExpanded(false)}>
               <Text style={styles.modalCloseText}>Close</Text>
             </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Share Success Modal */}
+      <Modal
+        visible={showShareSuccess}
+        animationType="fade"
+        transparent
+        onRequestClose={handleGoHome}
+      >
+        <View style={styles.successModalBackdrop}>
+          <View style={styles.successModalContent}>
+            <View style={styles.successIconContainer}>
+              <Ionicons name="checkmark-circle" size={64} color={colors.primary} />
+            </View>
+            <Text style={styles.successTitle}>Receipt Shared!</Text>
+            <Text style={styles.successMessage}>
+              Your tablink has been created. View your receipt to see claims update in real-time as friends claim their items.
+            </Text>
+            <View style={styles.successActions}>
+              <TouchableOpacity
+                style={styles.successPrimaryButton}
+                onPress={handleViewReceipt}
+              >
+                <Text style={styles.successPrimaryButtonText}>View Receipt</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.successSecondaryButton}
+                onPress={handleGoHome}
+              >
+                <Text style={styles.successSecondaryButtonText}>Go Home</Text>
+              </TouchableOpacity>
+            </View>
           </View>
         </View>
       </Modal>
@@ -677,18 +855,91 @@ const styles = StyleSheet.create({
     marginTop: 8,
     gap: 12,
   },
-  saveButton: {
+  shareButton: {
     backgroundColor: colors.primary,
     borderRadius: 999,
     paddingVertical: 14,
     alignItems: 'center',
   },
-  saveButtonText: {
+  shareButtonText: {
     color: colors.background,
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  saveDraftButton: {
+    borderRadius: 999,
+    paddingVertical: 14,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: colors.surfaceBorder,
+  },
+  saveDraftButtonText: {
+    color: colors.textSecondary,
     fontSize: 16,
     fontWeight: '600',
   },
   buttonDisabled: {
     opacity: 0.6,
+  },
+  successModalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.85)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  successModalContent: {
+    width: '100%',
+    maxWidth: 340,
+    backgroundColor: colors.surface,
+    borderRadius: 20,
+    padding: 24,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: colors.surfaceBorder,
+  },
+  successIconContainer: {
+    marginBottom: 16,
+  },
+  successTitle: {
+    color: colors.text,
+    fontSize: 22,
+    fontWeight: '700',
+    marginBottom: 12,
+    textAlign: 'center',
+  },
+  successMessage: {
+    color: colors.textSecondary,
+    fontSize: 15,
+    lineHeight: 22,
+    textAlign: 'center',
+    marginBottom: 24,
+  },
+  successActions: {
+    width: '100%',
+    gap: 12,
+  },
+  successPrimaryButton: {
+    backgroundColor: colors.primary,
+    borderRadius: 999,
+    paddingVertical: 14,
+    alignItems: 'center',
+  },
+  successPrimaryButtonText: {
+    color: colors.background,
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  successSecondaryButton: {
+    borderRadius: 999,
+    paddingVertical: 14,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: colors.surfaceBorder,
+  },
+  successSecondaryButtonText: {
+    color: colors.textSecondary,
+    fontSize: 16,
+    fontWeight: '600',
   },
 });

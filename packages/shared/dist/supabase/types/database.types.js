@@ -1,4 +1,7 @@
 export const Constants = {
+    graphql_public: {
+        Enums: {},
+    },
     public: {
         Enums: {
             claim_status: ["unrequested", "requested", "paid"],
