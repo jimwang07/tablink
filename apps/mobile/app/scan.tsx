@@ -16,6 +16,7 @@ import {
 import { CameraView, useCameraPermissions} from 'expo-camera';
 import { useIsFocused } from '@react-navigation/native';
 import * as ImagePicker from 'expo-image-picker';
+import * as ImageManipulator from 'expo-image-manipulator';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 
@@ -109,6 +110,33 @@ export default function ScanReceiptScreen() {
     }
   }, [mediaPermission, requestMediaPermission]);
 
+  const cropToGuide = useCallback(async (photo: { uri: string; width: number; height: number }) => {
+    const targetAspect = 3 / 4; // width:height to mirror the on-screen guide
+    const maxWidth = photo.width * 0.9;
+    const maxHeight = photo.height * 0.9;
+
+    let cropHeight = maxHeight;
+    let cropWidth = cropHeight * targetAspect;
+
+    if (cropWidth > maxWidth) {
+      cropWidth = maxWidth;
+      cropHeight = cropWidth / targetAspect;
+    }
+
+    const originX = Math.max(0, Math.round((photo.width - cropWidth) / 2));
+    const originY = Math.max(0, Math.round((photo.height - cropHeight) / 2));
+    const width = Math.round(cropWidth);
+    const height = Math.round(cropHeight);
+
+    const cropped = await ImageManipulator.manipulateAsync(
+      photo.uri,
+      [{ crop: { originX, originY, width, height } }],
+      { compress: 0.95, format: ImageManipulator.SaveFormat.JPEG }
+    );
+
+    return { uri: cropped.uri, width: cropped.width ?? width, height: cropped.height ?? height };
+  }, []);
+
   const handleCapture = useCallback(async () => {
     if (!cameraRef.current || isCapturing) {
       return;
@@ -120,7 +148,8 @@ export default function ScanReceiptScreen() {
         quality: 0.7,
         skipProcessing: Platform.OS === 'android',
       });
-      setLastPhoto({ uri: photo.uri, width: photo.width, height: photo.height });
+      const cropped = await cropToGuide({ uri: photo.uri, width: photo.width, height: photo.height });
+      setLastPhoto({ uri: cropped.uri, width: cropped.width, height: cropped.height });
       setImportPreview(null);
       Alert.alert('Receipt captured', 'We will parse the image right after you confirm details.');
       setFlowState('preview');
@@ -130,7 +159,7 @@ export default function ScanReceiptScreen() {
     } finally {
       setIsCapturing(false);
     }
-  }, [isCapturing]);
+  }, [cropToGuide, isCapturing]);
 
   const ensureStageDuration = useCallback(async () => {
     const elapsed = Date.now() - stageStartedAtRef.current;
@@ -243,20 +272,29 @@ export default function ScanReceiptScreen() {
   if (cameraPermission?.granted === false) {
     return (
       <SafeAreaView style={styles.permissionContainer}>
-        <Text style={styles.permissionTitle}>Camera permission required</Text>
-        <Text style={styles.permissionBody}>
-          Tablink uses your camera to scan receipts quickly. Please enable camera access in your device settings.
-        </Text>
-        <TouchableOpacity style={styles.primaryButton} onPress={requestPermissions}>
-          <Text style={styles.primaryButtonText}>Request permission</Text>
-        </TouchableOpacity>
+        <View style={styles.permissionCard}>
+          <View style={styles.permissionIconWrap}>
+            <Ionicons name="camera-outline" size={28} color={colors.primary} />
+          </View>
+          <Text style={styles.permissionTitle}>Enable your camera</Text>
+          <Text style={styles.permissionBody}>
+            We only use the camera to snap your receipt so we can itemize it for you. You stay in control—no photos are
+            saved to your library.
+          </Text>
+          <TouchableOpacity style={styles.primaryButton} onPress={requestPermissions}>
+            <Text style={styles.primaryButtonText}>Allow camera access</Text>
+          </TouchableOpacity>
+          <Text style={styles.permissionFootnote}>
+            You can change this anytime in Settings.
+          </Text>
+        </View>
       </SafeAreaView>
     );
   }
 
   return (
     <View style={styles.container}>
-      <View style={styles.cameraContainer}>
+      <View style={[styles.cameraContainer, { paddingBottom: footerHeight + 16 }]}>
         {!hasCameraPermission ? (
           <View style={styles.permissionLoader}>
             <ActivityIndicator size="large" color={colors.primary} />
@@ -394,7 +432,7 @@ const styles = StyleSheet.create({
     backgroundColor: colors.background,
   },
   camera: {
-    ...StyleSheet.absoluteFillObject,
+    flex: 1,
   },
   permissionLoader: {
     flex: 1,
@@ -630,8 +668,34 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: colors.background,
     padding: 24,
-    gap: 16,
     justifyContent: 'center',
+  },
+  permissionCard: {
+    width: '90%',
+    maxWidth: 420,
+    alignSelf: 'center',
+    marginHorizontal: 12,
+    backgroundColor: colors.surface,
+    borderRadius: 20,
+    padding: 20,
+    gap: 14,
+    borderWidth: 1,
+    borderColor: colors.surfaceBorder,
+    shadowColor: '#000',
+    shadowOpacity: 0.3,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 10,
+  },
+  permissionIconWrap: {
+    width: 52,
+    height: 52,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(45, 211, 111, 0.12)',
+    borderWidth: 1,
+    borderColor: 'rgba(45, 211, 111, 0.3)',
   },
   permissionTitle: {
     color: colors.text,
@@ -642,6 +706,11 @@ const styles = StyleSheet.create({
     color: colors.textSecondary,
     fontSize: 16,
     lineHeight: 22,
+  },
+  permissionFootnote: {
+    color: colors.muted,
+    fontSize: 12,
+    lineHeight: 16,
   },
   primaryButton: {
     backgroundColor: colors.primary,

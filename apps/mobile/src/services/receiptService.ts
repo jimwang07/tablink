@@ -9,15 +9,118 @@ export type ReceiptItem = {
   label: string;
   price_cents: number;
   quantity: number;
-  position: number;
+  position: number | null;
 };
 
 export type ReceiptWithItems = Receipt & {
   items: ReceiptItem[];
 };
 
+const DEFAULT_SHARE_LINK_EXPIRY_DAYS = 30;
+const SHORT_CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789';
+
+function generateShortCode(length = 8): string {
+  let code = '';
+  for (let i = 0; i < length; i += 1) {
+    const index = Math.floor(Math.random() * SHORT_CODE_ALPHABET.length);
+    code += SHORT_CODE_ALPHABET[index];
+  }
+  return code;
+}
+
 function dollarsToCents(amount: number): number {
   return Math.round(amount * 100);
+}
+
+export type ShareLinkResult = {
+  success: true;
+  shortCode: string;
+  expiresAt: string | null;
+} | {
+  success: false;
+  error: string;
+};
+
+export async function getOrCreateShareLink(
+  receiptId: string,
+  options?: {
+    expiresInDays?: number;
+    forceNew?: boolean;
+  }
+): Promise<ShareLinkResult> {
+  const supabase = getSupabaseClient();
+  const now = Date.now();
+
+  // Reuse the most recent active link unless caller requests a new one.
+  if (!options?.forceNew) {
+    const { data: existingLinks, error: existingError } = await supabase
+      .from('receipt_links')
+      .select('short_code, expires_at, revoked_at, created_at')
+      .eq('receipt_id', receiptId)
+      .is('revoked_at', null)
+      .order('created_at', { ascending: false })
+      .limit(10);
+
+    if (existingError) {
+      console.error('[receiptService] Failed to fetch existing share links:', existingError);
+      return {
+        success: false,
+        error: existingError.message,
+      };
+    }
+
+    const activeLink = existingLinks?.find((link) => {
+      if (!link.expires_at) return true;
+      return new Date(link.expires_at).getTime() > now;
+    });
+
+    if (activeLink?.short_code) {
+      return {
+        success: true,
+        shortCode: activeLink.short_code,
+        expiresAt: activeLink.expires_at ?? null,
+      };
+    }
+  }
+
+  const expiresInDays = options?.expiresInDays ?? DEFAULT_SHARE_LINK_EXPIRY_DAYS;
+  const expiresAt = new Date(now + expiresInDays * 24 * 60 * 60 * 1000).toISOString();
+
+  // Retry on short-code collision.
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const shortCode = generateShortCode();
+    const { error } = await supabase
+      .from('receipt_links')
+      .insert({
+        receipt_id: receiptId,
+        short_code: shortCode,
+        expires_at: expiresAt,
+      });
+
+    if (!error) {
+      return {
+        success: true,
+        shortCode,
+        expiresAt,
+      };
+    }
+
+    // Unique-violation on short_code, retry with a new code.
+    if (error.code === '23505') {
+      continue;
+    }
+
+    console.error('[receiptService] Failed to create share link:', error);
+    return {
+      success: false,
+      error: error.message,
+    };
+  }
+
+  return {
+    success: false,
+    error: 'Failed to generate a unique share link. Please try again.',
+  };
 }
 
 export type SaveReceiptResult = {
@@ -74,6 +177,31 @@ export async function saveReceipt(
   }
 
   console.log('[receiptService] Receipt created with id:', receiptId);
+
+  // Get owner's profile for display name
+  const { data: profile } = await supabase
+    .from('user_profiles')
+    .select('display_name')
+    .eq('user_id', userId)
+    .single();
+
+  const ownerDisplayName = profile?.display_name || 'Me';
+
+  // Auto-add owner as participant (their items are auto-paid since they paid the bill)
+  const { error: participantError } = await supabase
+    .from('receipt_participants')
+    .insert({
+      receipt_id: receiptId,
+      display_name: ownerDisplayName,
+      profile_id: userId,
+      role: 'owner',
+      payment_status: 'paid', // Owner doesn't need to pay themselves
+      emoji: '👤',
+    });
+
+  if (participantError) {
+    console.error('[receiptService] Failed to add owner as participant:', participantError);
+  }
 
   // Insert items
   if (parsed.items.length > 0) {
@@ -143,6 +271,10 @@ export async function fetchReceipt(receiptId: string): Promise<FetchReceiptResul
     success: true,
     receipt: {
       ...receipt,
+      celebration_shown:
+        typeof (receipt as { celebration_shown?: unknown }).celebration_shown === 'boolean'
+          ? ((receipt as { celebration_shown?: boolean }).celebration_shown ?? false)
+          : false,
       items: items ?? [],
     },
   };
@@ -151,13 +283,13 @@ export async function fetchReceipt(receiptId: string): Promise<FetchReceiptResul
 export async function updateReceipt(
   receiptId: string,
   updates: {
-    merchant_name?: string;
-    receipt_date?: string;
+    merchant_name?: string | null;
+    receipt_date?: string | null;
     subtotal_cents?: number;
     tax_cents?: number;
     tip_cents?: number;
     total_cents?: number;
-    status?: string;
+    status?: Receipt['status'];
   }
 ): Promise<{ success: boolean; error?: string }> {
   const supabase = getSupabaseClient();

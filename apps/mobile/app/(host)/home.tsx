@@ -1,12 +1,19 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useState, useMemo } from 'react';
 import { View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator } from 'react-native';
 import { Link, useRouter, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { colors } from '@/src/theme';
-import { useReceipts } from '@/src/hooks/useReceipts';
-import type { Receipt, ReceiptStatus } from '@/src/types/receipt';
+import { useReceipts, type ReceiptWithDetails } from '@/src/hooks/useReceipts';
+import type { ReceiptStatus } from '@/src/types/receipt';
 
 type Tab = 'yours' | 'shared';
+
+type ProgressData = {
+  unclaimed: number;
+  claimed: number;
+  paid: number;
+  total: number;
+};
 
 function formatCents(cents: number): string {
   return `$${(cents / 100).toFixed(2)}`;
@@ -19,13 +26,16 @@ function formatDate(dateString: string | null): string {
 }
 
 function StatusBadge({ status }: { status: ReceiptStatus }) {
-  const config = {
+  const config: Record<ReceiptStatus, { label: string; bg: string; text: string }> = {
     draft: { label: 'Draft', bg: colors.surfaceBorder, text: colors.textSecondary },
-    active: { label: 'Active', bg: '#2D5A3D', text: '#6FCF97' },
-    settled: { label: 'Settled', bg: '#3D3D5A', text: '#A0A0CF' },
+    ready: { label: 'Ready', bg: '#5A4D2D', text: '#F2C94C' },
+    shared: { label: 'Shared', bg: '#5A4D2D', text: '#F2C94C' },
+    partially_claimed: { label: 'Partial', bg: '#5A4D2D', text: '#F2C94C' },
+    fully_claimed: { label: 'Claimed', bg: '#2D4A5A', text: '#56CCF2' },
+    settled: { label: 'Settled', bg: '#2D5A3D', text: '#6FCF97' },
   };
 
-  const { label, bg, text } = config[status];
+  const { label, bg, text } = config[status] || config.draft;
 
   return (
     <View style={[styles.badge, { backgroundColor: bg }]}>
@@ -34,8 +44,104 @@ function StatusBadge({ status }: { status: ReceiptStatus }) {
   );
 }
 
-function ReceiptCard({ receipt }: { receipt: Receipt }) {
+function calculateProgress(receipt: ReceiptWithDetails): ProgressData {
+  const items = receipt.receipt_items || [];
+  const participants = receipt.receipt_participants || [];
+
+  // Build a map of participant_id -> payment_status
+  const participantPaymentStatus = new Map<string, string>();
+  for (const p of participants) {
+    participantPaymentStatus.set(p.id, p.payment_status);
+  }
+
+  let totalCents = 0;
+  let claimedCents = 0;
+  let paidCents = 0;
+
+  for (const item of items) {
+    totalCents += item.price_cents;
+
+    for (const claim of item.item_claims || []) {
+      claimedCents += claim.amount_cents;
+      // Check if the participant who made this claim has paid
+      const paymentStatus = participantPaymentStatus.get(claim.participant_id);
+      if (paymentStatus === 'paid') {
+        paidCents += claim.amount_cents;
+      }
+    }
+  }
+
+  return {
+    unclaimed: totalCents - claimedCents,
+    claimed: claimedCents - paidCents,
+    paid: paidCents,
+    total: totalCents,
+  };
+}
+
+function ProgressBar({ data }: { data: ProgressData }) {
+  if (data.total === 0) return null;
+
+  const paidPct = (data.paid / data.total) * 100;
+  const claimedPct = (data.claimed / data.total) * 100;
+  const unclaimedPct = (data.unclaimed / data.total) * 100;
+
+  return (
+    <View style={styles.progressContainer}>
+      <View style={styles.progressBar}>
+        {paidPct > 0 && (
+          <View style={[styles.progressSegment, styles.progressPaid, { width: `${paidPct}%` }]} />
+        )}
+        {claimedPct > 0 && (
+          <View style={[styles.progressSegment, styles.progressClaimed, { width: `${claimedPct}%` }]} />
+        )}
+        {unclaimedPct > 0 && (
+          <View style={[styles.progressSegment, styles.progressUnclaimed, { width: `${unclaimedPct}%` }]} />
+        )}
+      </View>
+      <View style={styles.legendContainer}>
+        {data.paid > 0 && (
+          <View style={styles.legendItem}>
+            <View style={[styles.legendDot, styles.legendPaid]} />
+            <Text style={styles.legendText}>{formatCents(data.paid)} paid</Text>
+          </View>
+        )}
+        {data.claimed > 0 && (
+          <View style={styles.legendItem}>
+            <View style={[styles.legendDot, styles.legendClaimed]} />
+            <Text style={styles.legendText}>{formatCents(data.claimed)} owed</Text>
+          </View>
+        )}
+        {data.unclaimed > 0 && (
+          <View style={styles.legendItem}>
+            <View style={[styles.legendDot, styles.legendUnclaimed]} />
+            <Text style={styles.legendText}>{formatCents(data.unclaimed)} unclaimed</Text>
+          </View>
+        )}
+      </View>
+    </View>
+  );
+}
+
+function ReceiptCard({ receipt }: { receipt: ReceiptWithDetails }) {
   const router = useRouter();
+  const progress = useMemo(() => calculateProgress(receipt), [receipt]);
+
+  const showProgress = receipt.status !== 'draft' && progress.total > 0;
+
+  // Calculate effective status based on payment data
+  const effectiveStatus = useMemo(() => {
+    // If already settled in DB, use that
+    if (receipt.status === 'settled') return 'settled';
+    // If draft, use that
+    if (receipt.status === 'draft') return 'draft';
+    // Check if fully paid (all claimed amount is paid)
+    if (progress.total > 0 && progress.unclaimed === 0 && progress.claimed === 0 && progress.paid > 0) {
+      return 'settled';
+    }
+    // Otherwise use DB status
+    return receipt.status;
+  }, [receipt.status, progress]);
 
   return (
     <Pressable
@@ -46,8 +152,11 @@ function ReceiptCard({ receipt }: { receipt: Receipt }) {
         <Text style={styles.receiptMerchant} numberOfLines={1}>
           {receipt.merchant_name || 'Unknown merchant'}
         </Text>
-        <StatusBadge status={receipt.status} />
+        <StatusBadge status={effectiveStatus} />
       </View>
+
+      {showProgress && <ProgressBar data={progress} />}
+
       <View style={styles.receiptCardFooter}>
         <Text style={styles.receiptDate}>
           {receipt.receipt_date ? formatDate(receipt.receipt_date) : 'No date'}
@@ -82,7 +191,7 @@ function EmptyState({ tab }: { tab: Tab }) {
   );
 }
 
-function ReceiptList({ receipts, tab }: { receipts: Receipt[]; tab: Tab }) {
+function ReceiptList({ receipts, tab }: { receipts: ReceiptWithDetails[]; tab: Tab }) {
   if (receipts.length === 0) {
     return <EmptyState tab={tab} />;
   }
@@ -112,7 +221,10 @@ export default function HomeScreen() {
     <View style={styles.container}>
       <ScrollView contentInsetAdjustmentBehavior="automatic">
         <View style={styles.header}>
-          <Text style={styles.heading}>Tablink</Text>
+          <View style={styles.headerText}>
+            <Text style={styles.heading}>Tablink</Text>
+            <Text style={styles.subheading}>Scan receipts • Share tablinks</Text>
+          </View>
         </View>
 
         <View style={styles.tabContainer}>
@@ -178,10 +290,18 @@ const styles = StyleSheet.create({
     paddingBottom: 20,
     paddingHorizontal: 20,
   },
+  headerText: {
+    gap: 6,
+  },
   heading: {
     color: colors.text,
     fontSize: 32,
     fontWeight: '700',
+  },
+  subheading: {
+    color: colors.textSecondary,
+    fontSize: 14,
+    letterSpacing: 0.2,
   },
   tabContainer: {
     flexDirection: 'row',
@@ -194,12 +314,21 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingVertical: 10,
     paddingHorizontal: 16,
-    borderRadius: 20,
+    borderRadius: 18,
     backgroundColor: colors.surface,
     gap: 6,
+    borderWidth: 1,
+    borderColor: colors.surfaceBorder,
+    shadowColor: '#000',
+    shadowOpacity: 0.15,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 3,
   },
   tabActive: {
     backgroundColor: colors.primary,
+    borderColor: 'rgba(255,255,255,0.3)',
+    shadowOpacity: 0.25,
   },
   tabText: {
     color: colors.textSecondary,
@@ -218,7 +347,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   tabBadgeActive: {
-    backgroundColor: 'rgba(255,255,255,0.25)',
+    backgroundColor: 'rgba(0,0,0,0.12)',
   },
   tabBadgeText: {
     color: colors.textSecondary,
@@ -238,11 +367,16 @@ const styles = StyleSheet.create({
   },
   receiptCard: {
     backgroundColor: colors.surface,
-    borderRadius: 12,
+    borderRadius: 14,
     padding: 16,
-    marginBottom: 10,
+    marginBottom: 12,
     borderWidth: 1,
     borderColor: colors.surfaceBorder,
+    shadowColor: '#000',
+    shadowOpacity: 0.2,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 5,
   },
   receiptCardHeader: {
     flexDirection: 'row',
@@ -270,6 +404,58 @@ const styles = StyleSheet.create({
     color: colors.text,
     fontSize: 16,
     fontWeight: '600',
+  },
+  progressContainer: {
+    marginBottom: 12,
+  },
+  progressBar: {
+    flexDirection: 'row',
+    height: 8,
+    borderRadius: 6,
+    backgroundColor: colors.surfaceBorder,
+    overflow: 'hidden',
+  },
+  progressSegment: {
+    height: '100%',
+  },
+  progressPaid: {
+    backgroundColor: '#4CAF50',
+  },
+  progressClaimed: {
+    backgroundColor: '#F2C94C',
+  },
+  progressUnclaimed: {
+    backgroundColor: '#F44336',
+  },
+  legendContainer: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 12,
+    marginTop: 8,
+    alignItems: 'center',
+  },
+  legendItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  legendDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+  },
+  legendPaid: {
+    backgroundColor: '#4CAF50',
+  },
+  legendClaimed: {
+    backgroundColor: '#F2C94C',
+  },
+  legendUnclaimed: {
+    backgroundColor: '#F44336',
+  },
+  legendText: {
+    color: colors.textSecondary,
+    fontSize: 12,
   },
   badge: {
     paddingHorizontal: 8,

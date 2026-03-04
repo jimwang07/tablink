@@ -12,6 +12,31 @@ export type Database = {
   __InternalSupabase: {
     PostgrestVersion: "13.0.5"
   }
+  graphql_public: {
+    Tables: {
+      [_ in never]: never
+    }
+    Views: {
+      [_ in never]: never
+    }
+    Functions: {
+      graphql: {
+        Args: {
+          extensions?: Json
+          operationName?: string
+          query?: string
+          variables?: Json
+        }
+        Returns: Json
+      }
+    }
+    Enums: {
+      [_ in never]: never
+    }
+    CompositeTypes: {
+      [_ in never]: never
+    }
+  }
   public: {
     Tables: {
       item_claims: {
@@ -270,6 +295,10 @@ export type Database = {
           email: string | null
           emoji: string | null
           id: string
+          paid_at: string | null
+          payment_amount_cents: number | null
+          payment_method: string | null
+          payment_status: string
           phone: string | null
           profile_id: string | null
           receipt_id: string
@@ -286,6 +315,10 @@ export type Database = {
           email?: string | null
           emoji?: string | null
           id?: string
+          paid_at?: string | null
+          payment_amount_cents?: number | null
+          payment_method?: string | null
+          payment_status?: string
           phone?: string | null
           profile_id?: string | null
           receipt_id: string
@@ -302,6 +335,10 @@ export type Database = {
           email?: string | null
           emoji?: string | null
           id?: string
+          paid_at?: string | null
+          payment_amount_cents?: number | null
+          payment_method?: string | null
+          payment_status?: string
           phone?: string | null
           profile_id?: string | null
           receipt_id?: string
@@ -394,6 +431,7 @@ export type Database = {
           created_at: string
           display_name: string | null
           onboarding_completed_at: string | null
+          paypal_handle: string | null
           updated_at: string
           user_id: string
           venmo_handle: string | null
@@ -405,6 +443,7 @@ export type Database = {
           created_at?: string
           display_name?: string | null
           onboarding_completed_at?: string | null
+          paypal_handle?: string | null
           updated_at?: string
           user_id: string
           venmo_handle?: string | null
@@ -416,6 +455,7 @@ export type Database = {
           created_at?: string
           display_name?: string | null
           onboarding_completed_at?: string | null
+          paypal_handle?: string | null
           updated_at?: string
           user_id?: string
           venmo_handle?: string | null
@@ -428,14 +468,27 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
+      create_receipt: {
+        Args: {
+          p_image_path?: string
+          p_merchant_name?: string
+          p_owner_id: string
+          p_raw_payload?: Json
+          p_receipt_date?: string
+          p_status?: Database["public"]["Enums"]["receipt_status"]
+          p_subtotal_cents?: number
+          p_tax_cents?: number
+          p_tip_cents?: number
+          p_total_cents?: number
+        }
+        Returns: string
+      }
+      get_my_uid: { Args: never; Returns: string }
       is_receipt_participant: {
         Args: { p_receipt_id: string }
         Returns: boolean
       }
-      owns_receipt: {
-        Args: { p_receipt_id: string }
-        Returns: boolean
-      }
+      owns_receipt: { Args: { p_receipt_id: string }; Returns: boolean }
     }
     Enums: {
       claim_status: "unrequested" | "requested" | "paid"
@@ -583,6 +636,9 @@ export type CompositeTypes<
     : never
 
 export const Constants = {
+  graphql_public: {
+    Enums: {},
+  },
   public: {
     Enums: {
       claim_status: ["unrequested", "requested", "paid"],
