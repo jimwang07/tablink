@@ -22,7 +22,7 @@ import { Ionicons } from '@expo/vector-icons';
 
 import { usePendingReceipt } from '@/src/hooks/usePendingReceipt';
 import { useAuth } from '@/src/hooks/useAuth';
-import { saveReceipt, updateReceipt } from '@/src/services/receiptService';
+import { getOrCreateShareLink, saveReceipt, updateReceipt } from '@/src/services/receiptService';
 import { getSupabaseClient } from '@/src/lib/supabaseClient';
 import { colors } from '@/src/theme';
 import type { ParsedReceiptItem } from '@/src/types/receipt';
@@ -297,8 +297,14 @@ export default function ReceiptReviewScreen() {
         return;
       }
 
+      const linkResult = await getOrCreateShareLink(result.receiptId);
+      if (!linkResult.success) {
+        Alert.alert('Error', linkResult.error || 'Failed to generate share link');
+        return;
+      }
+
       // Generate and share the tablink
-      const tablinkUrl = `${TABLINK_BASE_URL}/claim/${result.receiptId}`;
+      const tablinkUrl = `${TABLINK_BASE_URL}/claim/${linkResult.shortCode}`;
       const merchantDisplay = updatedParsed.merchantName ? ` (${updatedParsed.merchantName})` : '';
 
       await Share.share({

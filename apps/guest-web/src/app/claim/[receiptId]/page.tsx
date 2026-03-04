@@ -45,6 +45,41 @@ type Participant = {
   role?: 'owner' | 'guest';
 };
 
+async function resolveReceiptIdFromShortCode(shortCode: string) {
+  const supabase = getSupabaseClient();
+
+  const { data: link, error } = await supabase
+    .from('receipt_links')
+    .select('receipt_id, expires_at, revoked_at')
+    .eq('short_code', shortCode)
+    .maybeSingle();
+
+  if (error) {
+    console.error('[claim] Failed to resolve short code', {
+      shortCode,
+      code: error.code,
+      message: error.message,
+      details: error.details,
+      hint: error.hint,
+    });
+    return { error: 'Unable to resolve this link right now. Please try again.' };
+  }
+
+  if (!link) {
+    return { error: 'This link is invalid or has expired.' };
+  }
+
+  if (link.revoked_at) {
+    return { error: 'This link has been revoked.' };
+  }
+
+  if (link.expires_at && new Date(link.expires_at).getTime() <= Date.now()) {
+    return { error: 'This link has expired.' };
+  }
+
+  return { receiptId: link.receipt_id };
+}
+
 async function getReceiptData(receiptId: string) {
   const supabase = getSupabaseClient();
 
@@ -108,8 +143,21 @@ export default async function ClaimPage({
 }: {
   params: Promise<{ receiptId: string }>;
 }) {
-  const { receiptId } = await params;
-  const data = await getReceiptData(receiptId);
+  const { receiptId: linkCode } = await params;
+  const linkResult = await resolveReceiptIdFromShortCode(linkCode);
+
+  if ('error' in linkResult) {
+    return (
+      <div className="min-h-screen bg-gray-900 flex items-center justify-center p-4">
+        <div className="bg-gray-800 rounded-lg p-6 max-w-md w-full text-center">
+          <div className="text-red-400 text-lg mb-2">Oops!</div>
+          <p className="text-gray-300">{linkResult.error}</p>
+        </div>
+      </div>
+    );
+  }
+
+  const data = await getReceiptData(linkResult.receiptId);
 
   if ('error' in data) {
     return (
@@ -124,7 +172,7 @@ export default async function ClaimPage({
 
   return (
     <ClaimPageClient
-      receiptId={receiptId}
+      receiptId={linkResult.receiptId}
       receipt={data.receipt}
       items={data.items}
       initialClaims={data.claims}

@@ -27,6 +27,7 @@ import { colors } from '@/src/theme';
 import { useAuth } from '@/src/hooks/useAuth';
 import {
   fetchReceipt,
+  getOrCreateShareLink,
   updateReceipt,
   updateReceiptItems,
   deleteReceipt,
@@ -404,7 +405,7 @@ export default function ReceiptDetailScreen() {
       const supabase = getSupabaseClient();
       await supabase
         .from('receipts')
-        .update({ celebration_shown: true })
+        .update({ celebration_shown: true } as any)
         .eq('id', id);
     };
 
@@ -563,8 +564,14 @@ export default function ReceiptDetailScreen() {
         setReceipt({ ...receipt, status: 'shared' as any });
       }
 
+      const linkResult = await getOrCreateShareLink(id);
+      if (!linkResult.success) {
+        Alert.alert('Error', linkResult.error || 'Failed to generate share link');
+        return;
+      }
+
       // Generate the tablink URL
-      const tablinkUrl = `${TABLINK_BASE_URL}/claim/${id}`;
+      const tablinkUrl = `${TABLINK_BASE_URL}/claim/${linkResult.shortCode}`;
 
       // Open native share sheet
       const result = await Share.share({
