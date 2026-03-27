@@ -120,6 +120,13 @@ export function ClaimPageClient({ receiptId, receipt, items, initialClaims, init
                 return [...prev, newClaim];
               });
             }
+          } else if (payload.eventType === 'UPDATE') {
+            const updated = payload.new as ItemClaim;
+            if (itemIds.includes(updated.item_id)) {
+              setClaims(prev =>
+                prev.map(c => c.id === updated.id ? { ...c, ...updated } : c)
+              );
+            }
           } else if (payload.eventType === 'DELETE') {
             const oldClaim = payload.old as { id: string };
             setClaims(prev => prev.filter(c => c.id !== oldClaim.id));
@@ -140,6 +147,21 @@ export function ClaimPageClient({ receiptId, receipt, items, initialClaims, init
             if (prev.some(p => p.id === newParticipant.id)) return prev;
             return [...prev, newParticipant];
           });
+        }
+      )
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'receipt_participants',
+          filter: `receipt_id=eq.${receiptId}`,
+        },
+        (payload: RealtimePostgresChangesPayload<Participant>) => {
+          const updated = payload.new as Participant;
+          setParticipants(prev =>
+            prev.map(p => p.id === updated.id ? { ...p, ...updated } : p)
+          );
         }
       )
       .subscribe();
@@ -178,7 +200,10 @@ export function ClaimPageClient({ receiptId, receipt, items, initialClaims, init
       if (insertError) throw insertError;
 
       setCurrentParticipant(data);
-      setParticipants(prev => [...prev, data]);
+      setParticipants(prev => {
+        if (prev.some(p => p.id === data.id)) return prev;
+        return [...prev, data];
+      });
     } catch (err) {
       console.error('Failed to join:', err);
       setError('Failed to join. Please try again.');
@@ -192,6 +217,17 @@ export function ClaimPageClient({ receiptId, receipt, items, initialClaims, init
 
     const item = items.find(i => i.id === itemId);
     if (!item) return;
+
+    // Block claiming/unclaiming if any claimer on this item has already paid
+    const itemClaims = claims.filter(c => c.item_id === itemId);
+    const claimerIds = itemClaims.map(c => c.participant_id);
+    const hasAnyPaid = participants.some(
+      p => claimerIds.includes(p.id) && p.payment_status === 'paid'
+    );
+    if (hasAnyPaid) {
+      setError('This item has already been paid for and can no longer be changed.');
+      return;
+    }
 
     setClaimingItemId(itemId);
     setError(null);
@@ -256,11 +292,12 @@ export function ClaimPageClient({ receiptId, receipt, items, initialClaims, init
             .eq('item_id', itemId);
         }
 
-        // Update local state
-        setClaims(prev => [
-          ...prev.map(c => c.item_id === itemId ? { ...c, amount_cents: newAmount } : c),
-          data,
-        ]);
+        // Update local state (dedup: realtime INSERT may have already added it)
+        setClaims(prev => {
+          const updated = prev.map(c => c.item_id === itemId ? { ...c, amount_cents: newAmount } : c);
+          if (updated.some(c => c.id === data.id)) return updated;
+          return [...updated, data];
+        });
       }
     } catch (err) {
       console.error('Failed to update claim:', err);
@@ -644,6 +681,7 @@ export function ClaimPageClient({ receiptId, receipt, items, initialClaims, init
               const claimers = getItemClaimers(item.id);
               const isMine = isClaimedByMe(item.id);
               const isLoading = claimingItemId === item.id;
+              const hasAnyPaid = claimers.some(c => c.payment_status === 'paid');
               const isSettled = claimers.length > 0 && claimers.every(c => c.payment_status === 'paid');
               const isClaimed = claimers.length > 0 && !isSettled;
 
@@ -651,7 +689,7 @@ export function ClaimPageClient({ receiptId, receipt, items, initialClaims, init
                 <button
                   key={item.id}
                   onClick={() => handleClaimItem(item.id)}
-                  disabled={isLoading || paymentStatus === 'paid' || isSettled}
+                  disabled={isLoading || paymentStatus === 'paid' || hasAnyPaid}
                   className="w-full text-left p-4 rounded-2xl transition-all duration-200 hover:scale-[1.01] active:scale-[0.99]"
                   style={{
                     backgroundColor: isSettled

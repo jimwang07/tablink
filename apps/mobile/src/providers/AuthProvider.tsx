@@ -1,14 +1,16 @@
 import { PropsWithChildren, createContext, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Platform } from 'react-native';
 import type { Session, User, AuthError } from '@supabase/supabase-js';
 import * as WebBrowser from 'expo-web-browser';
 import * as Linking from 'expo-linking';
+import * as AppleAuthentication from 'expo-apple-authentication';
 import { makeRedirectUri } from 'expo-auth-session';
 
 import { getSupabaseClient } from '@/src/lib/supabaseClient';
 
 WebBrowser.maybeCompleteAuthSession();
 
-type OAuthProvider = 'google' | 'apple';
+type OAuthProvider = 'google';
 
 interface AuthContextValue {
   session: Session | null;
@@ -326,6 +328,53 @@ export function AuthProvider({ children }: PropsWithChildren) {
     }
   }, []);
 
+  const handleAppleSignIn = useCallback(async () => {
+    const client = clientRef.current;
+    if (!client) {
+      throw new Error('Supabase client is not ready');
+    }
+
+    if (Platform.OS !== 'ios') {
+      throw new Error('Apple Sign In is only available on iOS');
+    }
+
+    try {
+      setLastAuthError(null);
+      setIsAuthenticating(true);
+
+      const credential = await AppleAuthentication.signInAsync({
+        requestedScopes: [
+          AppleAuthentication.AppleAuthenticationScope.FULL_NAME,
+          AppleAuthentication.AppleAuthenticationScope.EMAIL,
+        ],
+      });
+
+      if (!credential.identityToken) {
+        throw new Error('No identity token returned from Apple');
+      }
+
+      const { error } = await client.auth.signInWithIdToken({
+        provider: 'apple',
+        token: credential.identityToken,
+      });
+
+      if (error) {
+        throw error;
+      }
+    } catch (error: any) {
+      if (error?.code === 'ERR_REQUEST_CANCELED') {
+        throw new Error('Authentication was cancelled');
+      }
+      if (__DEV__) {
+        console.warn('Apple sign-in failed', error);
+      }
+      setLastAuthError(error as AuthError | Error);
+      throw error;
+    } finally {
+      setIsAuthenticating(false);
+    }
+  }, []);
+
   const value = useMemo<AuthContextValue>(
     () => ({
       session,
@@ -334,11 +383,11 @@ export function AuthProvider({ children }: PropsWithChildren) {
       isAuthenticating,
       lastAuthError,
       signInWithGoogle: () => handleOAuthSignIn('google'),
-      signInWithApple: () => handleOAuthSignIn('apple'),
+      signInWithApple: handleAppleSignIn,
       signInWithEmail,
       signOut,
     }),
-    [handleOAuthSignIn, isAuthenticating, isLoading, lastAuthError, session, signInWithEmail, signOut]
+    [handleAppleSignIn, handleOAuthSignIn, isAuthenticating, isLoading, lastAuthError, session, signInWithEmail, signOut]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

@@ -1,0 +1,15 @@
+{
+  "expo": {
+    "extra": {
+      "eas": {
+        "projectId": "07b02699-0896-4111-b50d-14a902608eb3"
+      }
+    },
+    "ios": {
+      "bundleIdentifier": "com.jiw510.tablinkmonorepo",
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      }
+    }
+  }
+}
