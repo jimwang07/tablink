@@ -2,6 +2,7 @@ import { useCallback, useState, useMemo } from 'react';
 import { View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator } from 'react-native';
 import { Link, useRouter, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
+import Animated, { FadeInDown } from 'react-native-reanimated';
 import { colors } from '@/src/theme';
 import { useReceipts, type ReceiptWithDetails } from '@/src/hooks/useReceipts';
 import type { ReceiptStatus } from '@/src/types/receipt';
@@ -15,6 +16,28 @@ type ProgressData = {
   total: number;
 };
 
+/* ── Status config ─────────────────────────────────────────── */
+
+const STATUS_COLOR: Record<ReceiptStatus, string> = {
+  draft: '#6B7280',
+  ready: '#FBBF24',
+  shared: '#FBBF24',
+  partially_claimed: '#60A5FA',
+  fully_claimed: '#60A5FA',
+  settled: '#34D399',
+};
+
+const STATUS_LABEL: Record<ReceiptStatus, string> = {
+  draft: 'Draft',
+  ready: 'Ready',
+  shared: 'Shared',
+  partially_claimed: 'In Progress',
+  fully_claimed: 'Claimed',
+  settled: 'Settled',
+};
+
+/* ── Helpers (logic unchanged) ─────────────────────────────── */
+
 function formatCents(cents: number): string {
   return `$${(cents / 100).toFixed(2)}`;
 }
@@ -25,30 +48,10 @@ function formatDate(dateString: string | null): string {
   return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
 
-function StatusBadge({ status }: { status: ReceiptStatus }) {
-  const config: Record<ReceiptStatus, { label: string; bg: string; text: string }> = {
-    draft: { label: 'Draft', bg: colors.surfaceBorder, text: colors.textSecondary },
-    ready: { label: 'Ready', bg: '#5A4D2D', text: '#F2C94C' },
-    shared: { label: 'Shared', bg: '#5A4D2D', text: '#F2C94C' },
-    partially_claimed: { label: 'Partial', bg: '#5A4D2D', text: '#F2C94C' },
-    fully_claimed: { label: 'Claimed', bg: '#2D4A5A', text: '#56CCF2' },
-    settled: { label: 'Settled', bg: '#2D5A3D', text: '#6FCF97' },
-  };
-
-  const { label, bg, text } = config[status] || config.draft;
-
-  return (
-    <View style={[styles.badge, { backgroundColor: bg }]}>
-      <Text style={[styles.badgeText, { color: text }]}>{label}</Text>
-    </View>
-  );
-}
-
 function calculateProgress(receipt: ReceiptWithDetails): ProgressData {
   const items = receipt.receipt_items || [];
   const participants = receipt.receipt_participants || [];
 
-  // Build a map of participant_id -> payment_status
   const participantPaymentStatus = new Map<string, string>();
   for (const p of participants) {
     participantPaymentStatus.set(p.id, p.payment_status);
@@ -60,10 +63,8 @@ function calculateProgress(receipt: ReceiptWithDetails): ProgressData {
 
   for (const item of items) {
     totalCents += item.price_cents;
-
     for (const claim of item.item_claims || []) {
       claimedCents += claim.amount_cents;
-      // Check if the participant who made this claim has paid
       const paymentStatus = participantPaymentStatus.get(claim.participant_id);
       if (paymentStatus === 'paid') {
         paidCents += claim.amount_cents;
@@ -79,131 +80,169 @@ function calculateProgress(receipt: ReceiptWithDetails): ProgressData {
   };
 }
 
+function getEffectiveStatus(receipt: ReceiptWithDetails, progress: ProgressData): ReceiptStatus {
+  if (receipt.status === 'settled') return 'settled';
+  if (receipt.status === 'draft') return 'draft';
+  if (progress.total > 0 && progress.unclaimed === 0 && progress.claimed === 0 && progress.paid > 0) {
+    return 'settled';
+  }
+  return receipt.status;
+}
+
+/* ── Components ────────────────────────────────────────────── */
+
+const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
+
 function ProgressBar({ data }: { data: ProgressData }) {
   if (data.total === 0) return null;
 
   const paidPct = (data.paid / data.total) * 100;
   const claimedPct = (data.claimed / data.total) * 100;
-  const unclaimedPct = (data.unclaimed / data.total) * 100;
 
   return (
-    <View style={styles.progressContainer}>
-      <View style={styles.progressBar}>
+    <View style={s.progressContainer}>
+      <View style={s.progressTrack}>
         {paidPct > 0 && (
-          <View style={[styles.progressSegment, styles.progressPaid, { width: `${paidPct}%` }]} />
+          <View style={[s.progressFill, { width: `${paidPct}%`, backgroundColor: '#34D399' }]} />
         )}
         {claimedPct > 0 && (
-          <View style={[styles.progressSegment, styles.progressClaimed, { width: `${claimedPct}%` }]} />
-        )}
-        {unclaimedPct > 0 && (
-          <View style={[styles.progressSegment, styles.progressUnclaimed, { width: `${unclaimedPct}%` }]} />
+          <View style={[s.progressFill, { width: `${claimedPct}%`, backgroundColor: '#FBBF24' }]} />
         )}
       </View>
-      <View style={styles.legendContainer}>
+      <View style={s.progressLabels}>
         {data.paid > 0 && (
-          <View style={styles.legendItem}>
-            <View style={[styles.legendDot, styles.legendPaid]} />
-            <Text style={styles.legendText}>{formatCents(data.paid)} paid</Text>
-          </View>
+          <Text style={[s.progressLabelText, { color: '#34D399' }]}>
+            {formatCents(data.paid)} paid
+          </Text>
         )}
         {data.claimed > 0 && (
-          <View style={styles.legendItem}>
-            <View style={[styles.legendDot, styles.legendClaimed]} />
-            <Text style={styles.legendText}>{formatCents(data.claimed)} owed</Text>
-          </View>
+          <Text style={[s.progressLabelText, { color: '#FBBF24' }]}>
+            {formatCents(data.claimed)} owed
+          </Text>
         )}
         {data.unclaimed > 0 && (
-          <View style={styles.legendItem}>
-            <View style={[styles.legendDot, styles.legendUnclaimed]} />
-            <Text style={styles.legendText}>{formatCents(data.unclaimed)} unclaimed</Text>
-          </View>
+          <Text style={[s.progressLabelText, { color: '#6B7280' }]}>
+            {formatCents(data.unclaimed)} unclaimed
+          </Text>
         )}
       </View>
     </View>
   );
 }
 
-function ReceiptCard({ receipt }: { receipt: ReceiptWithDetails }) {
+function ReceiptCard({ receipt, index }: { receipt: ReceiptWithDetails; index: number }) {
   const router = useRouter();
   const progress = useMemo(() => calculateProgress(receipt), [receipt]);
-
   const showProgress = receipt.status !== 'draft' && progress.total > 0;
-
-  // Calculate effective status based on payment data
-  const effectiveStatus = useMemo(() => {
-    // If already settled in DB, use that
-    if (receipt.status === 'settled') return 'settled';
-    // If draft, use that
-    if (receipt.status === 'draft') return 'draft';
-    // Check if fully paid (all claimed amount is paid)
-    if (progress.total > 0 && progress.unclaimed === 0 && progress.claimed === 0 && progress.paid > 0) {
-      return 'settled';
-    }
-    // Otherwise use DB status
-    return receipt.status;
-  }, [receipt.status, progress]);
+  const effectiveStatus = useMemo(() => getEffectiveStatus(receipt, progress), [receipt, progress]);
+  const accent = STATUS_COLOR[effectiveStatus] || STATUS_COLOR.draft;
 
   return (
-    <Pressable
-      style={styles.receiptCard}
+    <AnimatedPressable
+      entering={FadeInDown.delay(index * 60).duration(400).springify()}
+      style={({ pressed }) => [
+        s.receiptCard,
+        { borderLeftColor: accent },
+        pressed && s.receiptCardPressed,
+      ]}
       onPress={() => router.push(`/receipt/${receipt.id}`)}
     >
-      <View style={styles.receiptCardHeader}>
-        <Text style={styles.receiptMerchant} numberOfLines={1}>
-          {receipt.merchant_name || 'Unknown merchant'}
+      <View style={s.cardHeader}>
+        <Text style={s.merchantName} numberOfLines={1}>
+          {receipt.merchant_name || 'Unknown'}
         </Text>
-        <StatusBadge status={effectiveStatus} />
+        <Text style={s.totalAmount}>{formatCents(receipt.total_cents)}</Text>
       </View>
 
       {showProgress && <ProgressBar data={progress} />}
 
-      <View style={styles.receiptCardFooter}>
-        <Text style={styles.receiptDate}>
-          {receipt.receipt_date ? formatDate(receipt.receipt_date) : 'No date'}
+      <View style={s.cardFooter}>
+        <Text style={s.dateText}>
+          {receipt.receipt_date ? formatDate(receipt.receipt_date) : ''}
         </Text>
-        <Text style={styles.receiptTotal}>{formatCents(receipt.total_cents)}</Text>
+        <Text style={[s.statusText, { color: accent }]}>
+          {STATUS_LABEL[effectiveStatus]}
+        </Text>
       </View>
-    </Pressable>
+    </AnimatedPressable>
   );
 }
 
 function EmptyState({ tab }: { tab: Tab }) {
-  const message = tab === 'yours'
-    ? "You haven't created any receipts yet.\nScan or import a receipt to get started."
-    : "No one has shared any receipts with you yet.";
-
+  const isYours = tab === 'yours';
   return (
-    <View style={styles.emptyState}>
-      <Ionicons
-        name={tab === 'yours' ? 'receipt-outline' : 'people-outline'}
-        size={48}
-        color={colors.textSecondary}
-      />
-      <Text style={styles.emptyStateText}>{message}</Text>
-      {tab === 'yours' && (
+    <Animated.View entering={FadeInDown.duration(500)} style={s.emptyState}>
+      <View style={s.emptyIcon}>
+        <Ionicons
+          name={isYours ? 'receipt-outline' : 'people-outline'}
+          size={24}
+          color={colors.muted}
+        />
+      </View>
+      <Text style={s.emptyTitle}>
+        {isYours ? 'No receipts yet' : 'Nothing shared with you'}
+      </Text>
+      <Text style={s.emptyDescription}>
+        {isYours
+          ? 'Scan or upload a receipt to start splitting with friends.'
+          : 'When someone shares a receipt with you, it will appear here.'}
+      </Text>
+      {isYours && (
         <Link href="/scan" asChild>
-          <Pressable style={styles.emptyStateButton}>
-            <Text style={styles.emptyStateButtonText}>Scan Receipt</Text>
+          <Pressable style={s.emptyButton}>
+            <Text style={s.emptyButtonText}>Scan Receipt</Text>
           </Pressable>
         </Link>
       )}
-    </View>
+    </Animated.View>
   );
 }
 
 function ReceiptList({ receipts, tab }: { receipts: ReceiptWithDetails[]; tab: Tab }) {
-  if (receipts.length === 0) {
-    return <EmptyState tab={tab} />;
-  }
+  if (receipts.length === 0) return <EmptyState tab={tab} />;
 
   return (
-    <View style={styles.receiptList}>
-      {receipts.map((receipt) => (
-        <ReceiptCard key={receipt.id} receipt={receipt} />
+    <View style={s.receiptList}>
+      {receipts.map((receipt, i) => (
+        <ReceiptCard key={receipt.id} receipt={receipt} index={i} />
       ))}
     </View>
   );
 }
+
+function OwedSummary({ receipts }: { receipts: ReceiptWithDetails[] }) {
+  const summary = useMemo(() => {
+    let totalOwed = 0;
+    let activeCount = 0;
+
+    for (const r of receipts) {
+      if (r.status === 'draft' || r.status === 'settled') continue;
+      const progress = calculateProgress(r);
+      if (progress.claimed > 0) {
+        totalOwed += progress.claimed;
+        activeCount++;
+      }
+    }
+
+    return { totalOwed, activeCount };
+  }, [receipts]);
+
+  if (summary.totalOwed === 0) return null;
+
+  return (
+    <Animated.View entering={FadeInDown.duration(500)} style={s.summaryContainer}>
+      <View style={s.summaryCard}>
+        <Text style={s.summaryLabel}>Owed to you</Text>
+        <Text style={s.summaryAmount}>{formatCents(summary.totalOwed)}</Text>
+        <Text style={s.summaryDetail}>
+          across {summary.activeCount} active {summary.activeCount === 1 ? 'receipt' : 'receipts'}
+        </Text>
+      </View>
+    </Animated.View>
+  );
+}
+
+/* ── Main screen ───────────────────────────────────────────── */
 
 export default function HomeScreen() {
   const [activeTab, setActiveTab] = useState<Tab>('yours');
@@ -218,50 +257,38 @@ export default function HomeScreen() {
   const receipts = activeTab === 'yours' ? yourReceipts : sharedReceipts;
 
   return (
-    <View style={styles.container}>
+    <View style={s.container}>
       <ScrollView contentInsetAdjustmentBehavior="automatic">
-        <View style={styles.header}>
-          <View style={styles.headerText}>
-            <Text style={styles.heading}>Tablink</Text>
-            <Text style={styles.subheading}>Scan receipts • Share tablinks</Text>
-          </View>
+        {/* Header */}
+        <View style={s.header}>
+          <Text style={s.heading}>Tablink</Text>
         </View>
 
-        <View style={styles.tabContainer}>
-          <Pressable
-            style={[styles.tab, activeTab === 'yours' && styles.tabActive]}
-            onPress={() => setActiveTab('yours')}
-          >
-            <Text style={[styles.tabText, activeTab === 'yours' && styles.tabTextActive]}>
-              Yours
-            </Text>
-            {yourReceipts.length > 0 && (
-              <View style={[styles.tabBadge, activeTab === 'yours' && styles.tabBadgeActive]}>
-                <Text style={[styles.tabBadgeText, activeTab === 'yours' && styles.tabBadgeTextActive]}>
-                  {yourReceipts.length}
+        {/* Summary (only when money is owed) */}
+        <OwedSummary receipts={yourReceipts} />
+
+        {/* Tabs */}
+        <View style={s.tabBar}>
+          {(['yours', 'shared'] as const).map((tab) => {
+            const isActive = activeTab === tab;
+            const count = tab === 'yours' ? yourReceipts.length : sharedReceipts.length;
+            return (
+              <Pressable key={tab} style={s.tab} onPress={() => setActiveTab(tab)}>
+                <Text style={[s.tabText, isActive && s.tabTextActive]}>
+                  {tab === 'yours' ? 'Yours' : 'Shared'}
+                  {count > 0 && (
+                    <Text style={[s.tabCount, isActive && s.tabCountActive]}> {count}</Text>
+                  )}
                 </Text>
-              </View>
-            )}
-          </Pressable>
-          <Pressable
-            style={[styles.tab, activeTab === 'shared' && styles.tabActive]}
-            onPress={() => setActiveTab('shared')}
-          >
-            <Text style={[styles.tabText, activeTab === 'shared' && styles.tabTextActive]}>
-              Shared
-            </Text>
-            {sharedReceipts.length > 0 && (
-              <View style={[styles.tabBadge, activeTab === 'shared' && styles.tabBadgeActive]}>
-                <Text style={[styles.tabBadgeText, activeTab === 'shared' && styles.tabBadgeTextActive]}>
-                  {sharedReceipts.length}
-                </Text>
-              </View>
-            )}
-          </Pressable>
+                {isActive && <View style={s.tabIndicator} />}
+              </Pressable>
+            );
+          })}
         </View>
 
+        {/* Content */}
         {isLoading ? (
-          <View style={styles.loadingContainer}>
+          <View style={s.loadingContainer}>
             <ActivityIndicator size="large" color={colors.primary} />
           </View>
         ) : (
@@ -269,10 +296,11 @@ export default function HomeScreen() {
         )}
       </ScrollView>
 
-      <View style={styles.fabContainer}>
+      {/* FAB */}
+      <View style={s.fabContainer}>
         <Link href="/scan" asChild>
-          <Pressable style={styles.fab}>
-            <Ionicons name="add" size={28} color="#fff" />
+          <Pressable style={({ pressed }) => [s.fab, pressed && s.fabPressed]}>
+            <Ionicons name="add" size={28} color="#000" />
           </Pressable>
         </Link>
       </View>
@@ -280,232 +308,249 @@ export default function HomeScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+/* ── Styles ────────────────────────────────────────────────── */
+
+const s = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: colors.background,
   },
+
+  /* Header */
   header: {
     paddingTop: 60,
-    paddingBottom: 20,
-    paddingHorizontal: 20,
-  },
-  headerText: {
-    gap: 6,
+    paddingBottom: 4,
+    paddingHorizontal: 24,
   },
   heading: {
     color: colors.text,
+    fontSize: 30,
+    fontWeight: '800',
+    letterSpacing: -0.5,
+  },
+
+  /* Summary */
+  summaryContainer: {
+    paddingHorizontal: 24,
+    paddingTop: 18,
+    paddingBottom: 8,
+  },
+  summaryCard: {
+    backgroundColor: 'rgba(52, 211, 153, 0.06)',
+    borderRadius: 14,
+    padding: 18,
+    borderWidth: 1,
+    borderColor: 'rgba(52, 211, 153, 0.10)',
+  },
+  summaryLabel: {
+    color: '#34D399',
+    fontSize: 12,
+    fontWeight: '700',
+    letterSpacing: 0.8,
+    textTransform: 'uppercase',
+    marginBottom: 6,
+  },
+  summaryAmount: {
+    color: colors.text,
     fontSize: 32,
     fontWeight: '700',
+    letterSpacing: -1,
+    fontVariant: ['tabular-nums'],
   },
-  subheading: {
-    color: colors.textSecondary,
-    fontSize: 14,
-    letterSpacing: 0.2,
+  summaryDetail: {
+    color: colors.muted,
+    fontSize: 13,
+    marginTop: 4,
   },
-  tabContainer: {
+
+  /* Tabs */
+  tabBar: {
     flexDirection: 'row',
-    paddingHorizontal: 20,
-    gap: 8,
+    paddingHorizontal: 24,
+    gap: 28,
+    marginTop: 18,
     marginBottom: 20,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255, 255, 255, 0.06)',
   },
   tab: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 10,
-    paddingHorizontal: 16,
-    borderRadius: 18,
-    backgroundColor: colors.surface,
-    gap: 6,
-    borderWidth: 1,
-    borderColor: colors.surfaceBorder,
-    shadowColor: '#000',
-    shadowOpacity: 0.15,
-    shadowRadius: 6,
-    shadowOffset: { width: 0, height: 4 },
-    elevation: 3,
-  },
-  tabActive: {
-    backgroundColor: colors.primary,
-    borderColor: 'rgba(255,255,255,0.3)',
-    shadowOpacity: 0.25,
+    paddingBottom: 12,
+    position: 'relative',
   },
   tabText: {
-    color: colors.textSecondary,
+    color: colors.muted,
     fontSize: 15,
-    fontWeight: '600',
+    fontWeight: '500',
   },
   tabTextActive: {
-    color: '#fff',
-  },
-  tabBadge: {
-    backgroundColor: colors.surfaceBorder,
-    borderRadius: 10,
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    minWidth: 20,
-    alignItems: 'center',
-  },
-  tabBadgeActive: {
-    backgroundColor: 'rgba(0,0,0,0.12)',
-  },
-  tabBadgeText: {
-    color: colors.textSecondary,
-    fontSize: 12,
+    color: colors.text,
     fontWeight: '600',
   },
-  tabBadgeTextActive: {
-    color: '#fff',
+  tabCount: {
+    fontSize: 13,
+    fontWeight: '500',
+    color: colors.muted,
   },
+  tabCountActive: {
+    color: colors.textSecondary,
+  },
+  tabIndicator: {
+    position: 'absolute',
+    bottom: -1,
+    left: 0,
+    right: 0,
+    height: 2,
+    backgroundColor: colors.primary,
+    borderRadius: 1,
+  },
+
+  /* Loading */
   loadingContainer: {
-    paddingVertical: 60,
+    paddingVertical: 80,
     alignItems: 'center',
   },
+
+  /* Receipt list */
   receiptList: {
-    paddingHorizontal: 20,
-    paddingBottom: 100,
+    paddingHorizontal: 24,
+    paddingBottom: 120,
   },
+
+  /* Receipt card */
   receiptCard: {
     backgroundColor: colors.surface,
-    borderRadius: 14,
-    padding: 16,
-    marginBottom: 12,
+    borderRadius: 12,
+    padding: 18,
+    marginBottom: 10,
     borderWidth: 1,
-    borderColor: colors.surfaceBorder,
-    shadowColor: '#000',
-    shadowOpacity: 0.2,
-    shadowRadius: 10,
-    shadowOffset: { width: 0, height: 6 },
-    elevation: 5,
+    borderColor: 'rgba(255, 255, 255, 0.05)',
+    borderLeftWidth: 3,
   },
-  receiptCardHeader: {
+  receiptCardPressed: {
+    opacity: 0.7,
+  },
+  cardHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 8,
+    alignItems: 'baseline',
   },
-  receiptMerchant: {
+  merchantName: {
     color: colors.text,
-    fontSize: 16,
+    fontSize: 17,
     fontWeight: '600',
     flex: 1,
-    marginRight: 12,
+    marginRight: 16,
   },
-  receiptCardFooter: {
+  totalAmount: {
+    color: colors.text,
+    fontSize: 17,
+    fontWeight: '700',
+    fontVariant: ['tabular-nums'],
+  },
+  cardFooter: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
+    marginTop: 4,
   },
-  receiptDate: {
-    color: colors.textSecondary,
-    fontSize: 14,
+  dateText: {
+    color: colors.muted,
+    fontSize: 13,
   },
-  receiptTotal: {
-    color: colors.text,
-    fontSize: 16,
-    fontWeight: '600',
+  statusText: {
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
   },
+
+  /* Progress */
   progressContainer: {
-    marginBottom: 12,
+    marginTop: 14,
+    marginBottom: 10,
   },
-  progressBar: {
+  progressTrack: {
     flexDirection: 'row',
-    height: 8,
-    borderRadius: 6,
-    backgroundColor: colors.surfaceBorder,
+    height: 3,
+    borderRadius: 2,
+    backgroundColor: 'rgba(255, 255, 255, 0.06)',
     overflow: 'hidden',
   },
-  progressSegment: {
+  progressFill: {
     height: '100%',
+    borderRadius: 2,
   },
-  progressPaid: {
-    backgroundColor: '#4CAF50',
-  },
-  progressClaimed: {
-    backgroundColor: '#F2C94C',
-  },
-  progressUnclaimed: {
-    backgroundColor: '#F44336',
-  },
-  legendContainer: {
+  progressLabels: {
     flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 12,
-    marginTop: 8,
-    alignItems: 'center',
+    gap: 14,
+    marginTop: 10,
   },
-  legendItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-  },
-  legendDot: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-  },
-  legendPaid: {
-    backgroundColor: '#4CAF50',
-  },
-  legendClaimed: {
-    backgroundColor: '#F2C94C',
-  },
-  legendUnclaimed: {
-    backgroundColor: '#F44336',
-  },
-  legendText: {
-    color: colors.textSecondary,
+  progressLabelText: {
     fontSize: 12,
+    fontWeight: '500',
   },
-  badge: {
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 6,
-  },
-  badgeText: {
-    fontSize: 12,
-    fontWeight: '600',
-  },
+
+  /* Empty state */
   emptyState: {
     alignItems: 'center',
-    paddingVertical: 60,
-    paddingHorizontal: 40,
+    paddingVertical: 80,
+    paddingHorizontal: 48,
   },
-  emptyStateText: {
+  emptyIcon: {
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    backgroundColor: 'rgba(255, 255, 255, 0.04)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 20,
+  },
+  emptyTitle: {
     color: colors.textSecondary,
-    fontSize: 15,
-    textAlign: 'center',
-    marginTop: 16,
-    lineHeight: 22,
-  },
-  emptyStateButton: {
-    marginTop: 20,
-    backgroundColor: colors.primary,
-    paddingVertical: 12,
-    paddingHorizontal: 24,
-    borderRadius: 10,
-  },
-  emptyStateButtonText: {
-    color: '#fff',
-    fontSize: 15,
+    fontSize: 17,
     fontWeight: '600',
+    marginBottom: 8,
   },
+  emptyDescription: {
+    color: colors.muted,
+    fontSize: 14,
+    textAlign: 'center',
+    lineHeight: 21,
+  },
+  emptyButton: {
+    marginTop: 28,
+    backgroundColor: colors.primary,
+    paddingVertical: 14,
+    paddingHorizontal: 32,
+    borderRadius: 12,
+  },
+  emptyButtonText: {
+    color: '#000',
+    fontSize: 15,
+    fontWeight: '700',
+  },
+
+  /* FAB */
   fabContainer: {
     position: 'absolute',
-    bottom: 30,
-    right: 20,
+    bottom: 36,
+    right: 24,
   },
   fab: {
     backgroundColor: colors.primary,
-    width: 56,
-    height: 56,
-    borderRadius: 28,
+    width: 60,
+    height: 60,
+    borderRadius: 30,
     alignItems: 'center',
     justifyContent: 'center',
-    shadowColor: '#000',
+    shadowColor: colors.primary,
     shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 6,
+    shadowOpacity: 0.4,
+    shadowRadius: 16,
     elevation: 8,
+  },
+  fabPressed: {
+    opacity: 0.85,
+    transform: [{ scale: 0.95 }],
   },
 });

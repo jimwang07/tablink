@@ -1,0 +1,2 @@
+- [Project Overview](project_overview.md) — Tablink: receipt-splitting monorepo (Expo mobile + Next.js guest web + Supabase backend)
+- [Design System Consistency](feedback_design_system.md) — All UI redesigns must use the same visual tokens; no per-screen deviations

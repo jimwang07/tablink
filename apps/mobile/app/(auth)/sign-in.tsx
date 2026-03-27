@@ -1,18 +1,19 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
-  SafeAreaView,
   ScrollView,
   StyleSheet,
   Text,
   TextInput,
-  TouchableOpacity,
+  Pressable,
   View,
   Platform,
   Alert,
+  KeyboardAvoidingView,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-
+import { SafeAreaView } from 'react-native-safe-area-context';
+import Animated, { FadeInDown } from 'react-native-reanimated';
 import { colors } from '@/src/theme';
 import { useAuth } from '@/src/hooks/useAuth';
 
@@ -70,223 +71,282 @@ export default function SignInScreen() {
   };
 
   return (
-    <SafeAreaView style={styles.safeArea}>
-      <ScrollView contentContainerStyle={styles.container} bounces={false}>
-        <View style={styles.hero}>
-          <Text style={styles.kicker}>Welcome to Tablink</Text>
-          <Text style={styles.heading}>Settle group tabs without friction.</Text>
-          <Text style={styles.body}>
-            Scan receipts, generate share links, and let friends claim what they owe—no app required on their end.
-          </Text>
-        </View>
-
-        <View style={styles.authCard}>
-          <Text style={styles.sectionLabel}>Continue with</Text>
-          <TouchableOpacity style={styles.authButton} onPress={handleGoogle} disabled={isAuthenticating}>
-            <Ionicons name="logo-google" size={20} color={colors.text} style={styles.buttonIcon} />
-            <Text style={styles.buttonText}>Continue with Google</Text>
-            {isAuthenticating && <ActivityIndicator size="small" color={colors.primary} style={styles.buttonSpinner} />}
-          </TouchableOpacity>
-
-          {Platform.OS === 'ios' && (
-            <TouchableOpacity style={styles.authButton} onPress={handleApple} disabled={isAuthenticating}>
-              <Ionicons name="logo-apple" size={20} color={colors.text} style={styles.buttonIcon} />
-              <Text style={styles.buttonText}>Continue with Apple</Text>
-              {isAuthenticating && <ActivityIndicator size="small" color={colors.primary} style={styles.buttonSpinner} />}
-            </TouchableOpacity>
-          )}
-
-          <View style={styles.divider}>
-            <View style={styles.line} />
-            <Text style={styles.dividerText}>or use email</Text>
-            <View style={styles.line} />
-          </View>
-
-          <View style={styles.emailBlock}>
-            <Text style={styles.emailLabel}>Email address</Text>
-            <TextInput
-              placeholder="you@example.com"
-              placeholderTextColor={colors.muted}
-              autoCapitalize="none"
-              autoCorrect={false}
-              keyboardType="email-address"
-              style={styles.input}
-              value={email}
-              onChangeText={setEmail}
-            />
-            <TouchableOpacity
-              style={[styles.primaryButton, !emailIsValid && styles.primaryButtonDisabled]}
-              onPress={handleEmail}
-              disabled={!emailIsValid || isAuthenticating}
-            >
-              {isAuthenticating ? (
-                <ActivityIndicator size="small" color={colors.background} />
-              ) : (
-                <Text style={styles.primaryButtonText}>Send magic link</Text>
-              )}
-            </TouchableOpacity>
-            {magicLinkSent && (
-              <Text style={styles.successMessage}>
-                Magic link sent! Open the link on this device to finish signing in.
-              </Text>
-            )}
-          </View>
-        </View>
-
-        {(message || lastAuthError) && (
-          <View style={styles.messageArea}>
-            <Text style={styles.messageText}>
-              {message || lastAuthError?.message}
+    <SafeAreaView style={s.safeArea}>
+      <KeyboardAvoidingView
+        style={s.keyboardView}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      >
+        <ScrollView
+          contentContainerStyle={s.scroll}
+          bounces={false}
+          keyboardShouldPersistTaps="handled"
+        >
+          {/* ── Brand ── */}
+          <Animated.View entering={FadeInDown.duration(600)} style={s.hero}>
+            <Text style={s.brandName}>Tablink</Text>
+            <View style={s.accent} />
+            <Text style={s.tagline}>
+              Split receipts.{'\n'}
+              Share a link.{'\n'}
+              Settle up.
             </Text>
-          </View>
-        )}
+          </Animated.View>
 
-        <View style={styles.footer}>
-          <Text style={styles.footerText}>
-            By continuing you agree to keep things fair and transparent with your friends. We never handle funds—only
-            the tab math.
-          </Text>
-        </View>
-      </ScrollView>
+          {/* ── Auth section ── */}
+          <Animated.View entering={FadeInDown.delay(200).duration(600)} style={s.authSection}>
+            {/* OAuth buttons */}
+            <Pressable
+              style={({ pressed }) => [s.oauthButton, pressed && s.pressed]}
+              onPress={handleGoogle}
+              disabled={isAuthenticating}
+            >
+              <Ionicons name="logo-google" size={18} color={colors.text} />
+              <Text style={s.oauthText}>Continue with Google</Text>
+              {isAuthenticating && (
+                <ActivityIndicator size="small" color={colors.muted} />
+              )}
+            </Pressable>
+
+            {Platform.OS === 'ios' && (
+              <Pressable
+                style={({ pressed }) => [s.oauthButton, pressed && s.pressed]}
+                onPress={handleApple}
+                disabled={isAuthenticating}
+              >
+                <Ionicons name="logo-apple" size={18} color={colors.text} />
+                <Text style={s.oauthText}>Continue with Apple</Text>
+                {isAuthenticating && (
+                  <ActivityIndicator size="small" color={colors.muted} />
+                )}
+              </Pressable>
+            )}
+
+            {/* Divider */}
+            <View style={s.divider}>
+              <View style={s.dividerLine} />
+              <Text style={s.dividerLabel}>or</Text>
+              <View style={s.dividerLine} />
+            </View>
+
+            {/* Email */}
+            <View style={s.emailGroup}>
+              <TextInput
+                placeholder="Email address"
+                placeholderTextColor={colors.muted}
+                autoCapitalize="none"
+                autoCorrect={false}
+                keyboardType="email-address"
+                style={s.input}
+                value={email}
+                onChangeText={setEmail}
+              />
+              <Pressable
+                style={({ pressed }) => [
+                  s.ctaButton,
+                  !emailIsValid && s.ctaButtonDisabled,
+                  pressed && emailIsValid && s.ctaButtonPressed,
+                ]}
+                onPress={handleEmail}
+                disabled={!emailIsValid || isAuthenticating}
+              >
+                {isAuthenticating ? (
+                  <ActivityIndicator size="small" color="#000" />
+                ) : (
+                  <Text style={[s.ctaText, !emailIsValid && s.ctaTextDisabled]}>
+                    Send magic link
+                  </Text>
+                )}
+              </Pressable>
+            </View>
+
+            {/* Success state */}
+            {magicLinkSent && (
+              <Animated.View entering={FadeInDown.duration(400)} style={s.successRow}>
+                <Ionicons name="checkmark-circle" size={16} color={colors.primary} />
+                <Text style={s.successText}>
+                  Check your inbox — open the link on this device to finish signing in.
+                </Text>
+              </Animated.View>
+            )}
+
+            {/* Error state */}
+            {message && !magicLinkSent && (
+              <Animated.View entering={FadeInDown.duration(400)} style={s.errorRow}>
+                <Text style={s.errorText}>{message}</Text>
+              </Animated.View>
+            )}
+          </Animated.View>
+
+          {/* ── Footer ── */}
+          <Animated.View entering={FadeInDown.delay(400).duration(600)} style={s.footer}>
+            <Text style={s.footerText}>
+              By continuing you agree to keep things fair and transparent with your friends.
+              We never handle funds — only the tab math.
+            </Text>
+          </Animated.View>
+        </ScrollView>
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }
 
-const styles = StyleSheet.create({
+/* ── Styles ────────────────────────────────────────────────── */
+
+const s = StyleSheet.create({
   safeArea: {
     flex: 1,
     backgroundColor: colors.background,
   },
-  container: {
+  keyboardView: {
+    flex: 1,
+  },
+  scroll: {
+    flexGrow: 1,
     paddingHorizontal: 24,
-    paddingTop: 48,
-    paddingBottom: 32,
-    gap: 32,
+    paddingTop: 72,
+    paddingBottom: 40,
+    justifyContent: 'space-between',
   },
+
+  /* Hero / Brand */
   hero: {
-    gap: 12,
+    marginBottom: 48,
   },
-  kicker: {
-    color: colors.primary,
-    fontSize: 14,
-    fontWeight: '600',
-    letterSpacing: 1,
-    textTransform: 'uppercase',
-  },
-  heading: {
+  brandName: {
     color: colors.text,
-    fontSize: 28,
-    fontWeight: '700',
-    lineHeight: 34,
+    fontSize: 42,
+    fontWeight: '800',
+    letterSpacing: -1,
   },
-  body: {
+  accent: {
+    width: 32,
+    height: 3,
+    backgroundColor: colors.primary,
+    borderRadius: 2,
+    marginTop: 16,
+    marginBottom: 20,
+  },
+  tagline: {
     color: colors.textSecondary,
-    fontSize: 16,
-    lineHeight: 22,
+    fontSize: 20,
+    fontWeight: '400',
+    lineHeight: 30,
+    letterSpacing: -0.2,
   },
-  authCard: {
-    backgroundColor: colors.surface,
-    borderRadius: 16,
-    padding: 20,
-    gap: 16,
-    borderWidth: 1,
-    borderColor: colors.surfaceBorder,
+
+  /* Auth section */
+  authSection: {
+    gap: 12,
+    marginBottom: 48,
   },
-  sectionLabel: {
-    color: colors.textSecondary,
-    fontSize: 13,
-    textTransform: 'uppercase',
-    letterSpacing: 1,
-  },
-  authButton: {
+
+  /* OAuth buttons — same surface treatment as receipt cards */
+  oauthButton: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: colors.surface,
+    gap: 14,
+    paddingVertical: 16,
+    paddingHorizontal: 18,
     borderRadius: 12,
     borderWidth: 1,
-    borderColor: colors.surfaceBorder,
-    paddingVertical: 14,
-    paddingHorizontal: 16,
+    borderColor: 'rgba(255, 255, 255, 0.05)',
+    backgroundColor: colors.surface,
   },
-  buttonIcon: {
-    marginRight: 12,
+  pressed: {
+    opacity: 0.7,
   },
-  buttonText: {
+  oauthText: {
     color: colors.text,
     fontSize: 16,
     fontWeight: '600',
     flex: 1,
   },
-  buttonSpinner: {
-    marginLeft: 8,
-  },
+
+  /* Divider — same 0.06 opacity as home tab bar and bottom bar */
   divider: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
-    marginTop: 4,
+    gap: 14,
+    marginVertical: 8,
   },
-  line: {
+  dividerLine: {
     flex: 1,
-    height: StyleSheet.hairlineWidth,
-    backgroundColor: colors.surfaceBorder,
+    height: 1,
+    backgroundColor: 'rgba(255, 255, 255, 0.06)',
   },
-  dividerText: {
+  dividerLabel: {
     color: colors.muted,
-    fontSize: 12,
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.5,
     textTransform: 'uppercase',
-    letterSpacing: 1,
   },
-  emailBlock: {
-    gap: 12,
-  },
-  emailLabel: {
-    color: colors.textSecondary,
-    fontSize: 14,
+
+  /* Email — input matches surface treatment */
+  emailGroup: {
+    gap: 10,
   },
   input: {
-    backgroundColor: colors.background,
     color: colors.text,
-    borderRadius: 12,
-    paddingHorizontal: 16,
-    paddingVertical: 14,
-    borderWidth: 1,
-    borderColor: colors.surfaceBorder,
     fontSize: 16,
+    paddingHorizontal: 18,
+    paddingVertical: 16,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.05)',
+    backgroundColor: colors.surface,
   },
-  primaryButton: {
+
+  /* CTA — matches home FAB / empty state button */
+  ctaButton: {
     backgroundColor: colors.primary,
     borderRadius: 12,
-    paddingVertical: 14,
+    paddingVertical: 16,
     alignItems: 'center',
+    justifyContent: 'center',
   },
-  primaryButtonDisabled: {
-    backgroundColor: colors.surfaceBorder,
+  ctaButtonDisabled: {
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.05)',
   },
-  primaryButtonText: {
-    color: colors.background,
-    fontSize: 16,
+  ctaButtonPressed: {
+    opacity: 0.85,
+  },
+  ctaText: {
+    color: '#000',
+    fontSize: 15,
     fontWeight: '700',
   },
-  successMessage: {
+  ctaTextDisabled: {
+    color: colors.muted,
+  },
+
+  /* Feedback states */
+  successRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 10,
+    paddingTop: 4,
+  },
+  successText: {
     color: colors.primary,
-    fontSize: 13,
-    lineHeight: 18,
+    fontSize: 14,
+    lineHeight: 20,
+    flex: 1,
   },
-  messageArea: {
-    backgroundColor: colors.surface,
-    borderRadius: 12,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: colors.surfaceBorder,
+  errorRow: {
+    paddingTop: 4,
   },
-  messageText: {
+  errorText: {
     color: colors.warning,
     fontSize: 14,
     lineHeight: 20,
   },
+
+  /* Footer */
   footer: {
-    paddingBottom: 24,
+    paddingTop: 24,
   },
   footerText: {
     color: colors.muted,
