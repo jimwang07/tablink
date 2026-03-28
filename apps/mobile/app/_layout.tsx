@@ -1,11 +1,12 @@
 import { useEffect } from 'react';
-import { ActivityIndicator, StyleSheet, View } from 'react-native';
+import { StyleSheet } from 'react-native';
 import { Stack, useRootNavigationState, useRouter, useSegments } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import 'react-native-reanimated';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 
 import { TablinkDarkTheme, colors } from '@/src/theme';
+import { ScreenPlaceholder } from '@/src/components/Skeleton';
 import { AuthProvider } from '@/src/providers/AuthProvider';
 import { PendingReceiptProvider } from '@/src/providers/PendingReceiptProvider';
 import { useAuth } from '@/src/hooks/useAuth';
@@ -37,11 +38,7 @@ function AuthAwareStack() {
   }, [currentTopSegment, isLoading, navigationReady, router, session]);
 
   if (isLoading) {
-    return (
-      <View style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color={colors.primary} />
-      </View>
-    );
+    return <ScreenPlaceholder />;
   }
 
   if (!session) {
@@ -105,11 +102,5 @@ export default function RootLayout() {
 const styles = StyleSheet.create({
   root: {
     flex: 1,
-  },
-  loadingContainer: {
-    flex: 1,
-    backgroundColor: colors.background,
-    justifyContent: 'center',
-    alignItems: 'center',
   },
 });

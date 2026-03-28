@@ -111,13 +111,13 @@ async function getReceiptData(receiptId: string) {
   }
 
   // Fetch existing claims
-  const { data: claims, error: claimsError } = await supabase
+  const { data: claims } = await supabase
     .from('item_claims')
     .select('id, item_id, participant_id, portion, amount_cents')
     .in('item_id', items?.map(i => i.id) || []);
 
   // Fetch participants
-  const { data: participants, error: participantsError } = await supabase
+  const { data: participants } = await supabase
     .from('receipt_participants')
     .select('id, display_name, emoji, color_token, role, payment_status')
     .eq('receipt_id', receiptId);
@@ -148,10 +148,11 @@ export default async function ClaimPage({
 
   if ('error' in linkResult) {
     return (
-      <div className="min-h-screen bg-gray-900 flex items-center justify-center p-4">
-        <div className="bg-gray-800 rounded-lg p-6 max-w-md w-full text-center">
-          <div className="text-red-400 text-lg mb-2">Oops!</div>
-          <p className="text-gray-300">{linkResult.error}</p>
+      <div className="tablink-guest-shell flex min-h-screen items-center justify-center px-4">
+        <div className="tablink-card w-full max-w-md text-center">
+          <div className="tablink-overline mb-3">Tablink</div>
+          <div className="tablink-section-title mb-3">This link can&apos;t be opened</div>
+          <p className="tablink-section-body">{linkResult.error}</p>
         </div>
       </div>
     );
@@ -161,10 +162,11 @@ export default async function ClaimPage({
 
   if ('error' in data) {
     return (
-      <div className="min-h-screen bg-gray-900 flex items-center justify-center p-4">
-        <div className="bg-gray-800 rounded-lg p-6 max-w-md w-full text-center">
-          <div className="text-red-400 text-lg mb-2">Oops!</div>
-          <p className="text-gray-300">{data.error}</p>
+      <div className="tablink-guest-shell flex min-h-screen items-center justify-center px-4">
+        <div className="tablink-card w-full max-w-md text-center">
+          <div className="tablink-overline mb-3">Tablink</div>
+          <div className="tablink-section-title mb-3">Receipt unavailable</div>
+          <p className="tablink-section-body">{data.error}</p>
         </div>
       </div>
     );

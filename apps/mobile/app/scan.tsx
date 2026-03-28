@@ -1,13 +1,11 @@
 import { useCallback, useMemo, useRef, useState, useEffect } from 'react';
 import {
-  ActivityIndicator,
   Alert,
   Platform,
   SafeAreaView,
-  ScrollView,
   StyleSheet,
   Text,
-  TouchableOpacity,
+  Pressable,
   View,
   Image,
   Animated,
@@ -176,7 +174,7 @@ export default function ScanReceiptScreen() {
         setErrorMessage(null);
         setProcessingStage('upload');
         stageStartedAtRef.current = Date.now();
-  
+
         // 1. Upload downsized-only image (this is now the canonical receipt image)
         let uploadResult;
         try {
@@ -190,8 +188,7 @@ export default function ScanReceiptScreen() {
           return;
         }
         await ensureStageDuration();
-        // uploadResult = { storagePath, publicUrl, localPreviewUri }
-  
+
         if (!uploadResult?.storagePath) {
           logFlowTiming('upload failed');
           setErrorMessage('Failed to upload receipt.');
@@ -199,11 +196,11 @@ export default function ScanReceiptScreen() {
           setProcessingStage('upload');
           return;
         }
-  
+
         // 2. Move to parsing stage
         setProcessingStage('extract');
         stageStartedAtRef.current = Date.now();
-  
+
         // 3. Call parse edge fn with that storagePath
         let receipt: ParsedReceipt | null = null;
         try {
@@ -232,9 +229,8 @@ export default function ScanReceiptScreen() {
         setProcessingStage('finalize');
         stageStartedAtRef.current = Date.now();
         await new Promise((resolve) => setTimeout(resolve, 450));
-  
+
         // 4. Put it in PendingReceipt so /receipt/review can render
-        // NOTE: We'll store localPreviewUri so the review screen can show the image instantly.
         setPendingReceipt({
           localUri: uploadResult.localPreviewUri || localUri,
           storagePath: uploadResult.storagePath ?? null,
@@ -248,7 +244,7 @@ export default function ScanReceiptScreen() {
         setImportPreview(null);
         setProcessingStage('upload');
         logFlowTiming('navigating to review');
-        router.replace('/receipt/review');
+        router.push('/receipt/review');
       } catch (error: any) {
         logFlowTiming('flow error');
         setErrorMessage(error?.message || 'Failed to process receipt');
@@ -272,18 +268,23 @@ export default function ScanReceiptScreen() {
   if (cameraPermission?.granted === false) {
     return (
       <SafeAreaView style={styles.permissionContainer}>
-        <View style={styles.permissionCard}>
+        <View style={styles.permissionContent}>
           <View style={styles.permissionIconWrap}>
-            <Ionicons name="camera-outline" size={28} color={colors.primary} />
+            <Ionicons name="camera-outline" size={24} color={colors.primary} />
           </View>
           <Text style={styles.permissionTitle}>Enable your camera</Text>
           <Text style={styles.permissionBody}>
             We only use the camera to snap your receipt so we can itemize it for you. You stay in control—no photos are
             saved to your library.
           </Text>
-          <TouchableOpacity style={styles.primaryButton} onPress={requestPermissions}>
+          <Pressable
+            style={({ pressed }) => [styles.primaryButton, pressed && styles.pressed]}
+            onPress={requestPermissions}
+          >
+            <Ionicons name="scan-outline" size={16} color="#04110D" />
             <Text style={styles.primaryButtonText}>Allow camera access</Text>
-          </TouchableOpacity>
+            <Ionicons name="arrow-forward" size={16} color="#04110D" />
+          </Pressable>
           <Text style={styles.permissionFootnote}>
             You can change this anytime in Settings.
           </Text>
@@ -297,10 +298,12 @@ export default function ScanReceiptScreen() {
       <View style={[styles.cameraContainer, { paddingBottom: footerHeight + 16 }]}>
         {!hasCameraPermission ? (
           <View style={styles.permissionLoader}>
-            <ActivityIndicator size="large" color={colors.primary} />
-            <TouchableOpacity style={styles.permissionLink} onPress={requestPermissions}>
+            <Pressable
+              style={({ pressed }) => [styles.permissionLink, pressed && styles.pressed]}
+              onPress={requestPermissions}
+            >
               <Text style={styles.permissionLinkText}>Tap to enable camera access</Text>
-            </TouchableOpacity>
+            </Pressable>
           </View>
         ) : isPreviewActive ? (
           <View style={styles.cameraPlaceholder} />
@@ -343,8 +346,8 @@ export default function ScanReceiptScreen() {
             <Text style={styles.previewHint}>
               Looks good? We'll parse the receipt on the next screen when you continue.
             </Text>
-            <TouchableOpacity
-              style={styles.retakeButton}
+            <Pressable
+              style={({ pressed }) => [styles.retakeButton, pressed && styles.pressed]}
               onPress={() => {
                 setLastPhoto(null);
                 setImportPreview(null);
@@ -353,9 +356,9 @@ export default function ScanReceiptScreen() {
             >
               <Ionicons name="refresh" size={18} color={colors.text} />
               <Text style={styles.retakeButtonText}>Retake</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={styles.continueButton}
+            </Pressable>
+            <Pressable
+              style={({ pressed }) => [styles.continueButton, pressed && styles.pressed]}
               onPress={() => {
                 if (!session?.user?.id) {
                   Alert.alert('Sign in required', 'You must be signed in to process receipts.');
@@ -373,43 +376,51 @@ export default function ScanReceiptScreen() {
                 beginUploadAndParse(sourceUri, session.user.id);
               }}
             >
+              <Ionicons name="arrow-forward" size={16} color="#04110D" />
               <Text style={styles.continueButtonText}>Continue</Text>
-            </TouchableOpacity>
+            </Pressable>
           </View>
         ) : flowState === 'processing' ? (
           <ProcessingStatus stage={processingStage} />
         ) : flowState === 'error' && errorMessage ? (
           <View style={styles.statusContainer}>
+            <View style={styles.errorIconWrap}>
+              <Ionicons name="alert-circle-outline" size={24} color={colors.danger} />
+            </View>
             <Text style={styles.errorTitle}>Something went wrong</Text>
             <Text style={styles.errorMessage}>{errorMessage}</Text>
-            <TouchableOpacity
-              style={styles.retryButton}
+            <Pressable
+              style={({ pressed }) => [styles.retryButton, pressed && styles.pressed]}
               onPress={() => {
                 setErrorMessage(null);
                 setFlowState('idle');
               }}
             >
+              <Ionicons name="refresh" size={16} color={colors.text} />
               <Text style={styles.retryButtonText}>Try again</Text>
-            </TouchableOpacity>
+            </Pressable>
           </View>
         ) : (
           <View style={styles.footerButtons}>
-            <TouchableOpacity
-              style={[styles.captureButton, isCapturing && styles.captureButtonDisabled]}
+            <Pressable
+              style={({ pressed }) => [
+                styles.captureButton,
+                isCapturing && styles.captureButtonDisabled,
+                pressed && styles.pressed,
+              ]}
               onPress={handleCapture}
               disabled={isCapturing || !hasCameraPermission}
             >
-              {isCapturing ? (
-                <ActivityIndicator color={colors.background} />
-              ) : (
-                <Ionicons name="camera" size={28} color={colors.background} />
-              )}
-            </TouchableOpacity>
+              <Ionicons name="camera" size={28} color="#000" />
+            </Pressable>
 
-            <TouchableOpacity style={styles.importButton} onPress={handleImport}>
-              <Ionicons name="images-outline" size={22} color={colors.text} />
+            <Pressable
+              style={({ pressed }) => [styles.importButton, pressed && styles.pressed]}
+              onPress={handleImport}
+            >
+              <Ionicons name="images-outline" size={20} color={colors.text} />
               <Text style={styles.importButtonText}>Import photo</Text>
-            </TouchableOpacity>
+            </Pressable>
           </View>
         )}
       </SafeAreaView>
@@ -444,13 +455,15 @@ const styles = StyleSheet.create({
   permissionLink: {
     paddingHorizontal: 16,
     paddingVertical: 12,
-    borderRadius: 999,
+    borderRadius: 12,
     borderWidth: 1,
-    borderColor: colors.surfaceBorder,
+    borderColor: 'rgba(255, 255, 255, 0.05)',
+    backgroundColor: colors.surface,
   },
   permissionLinkText: {
     color: colors.text,
     fontSize: 14,
+    fontWeight: '500',
   },
   overlayContainer: {
     ...StyleSheet.absoluteFillObject,
@@ -475,8 +488,6 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.35)',
     backgroundColor: 'rgba(8,10,12,0.18)',
-  },
-  overlayBottomMask: {
   },
   cornerTopLeft: {
     position: 'absolute',
@@ -544,10 +555,9 @@ const styles = StyleSheet.create({
     backgroundColor: colors.primary,
     alignItems: 'center',
     justifyContent: 'center',
-    elevation: 4,
   },
   captureButtonDisabled: {
-    opacity: 0.6,
+    opacity: 0.5,
   },
   importButton: {
     flexDirection: 'row',
@@ -555,9 +565,9 @@ const styles = StyleSheet.create({
     gap: 8,
     paddingHorizontal: 16,
     paddingVertical: 12,
-    borderRadius: 999,
+    borderRadius: 12,
     borderWidth: 1,
-    borderColor: colors.surfaceBorder,
+    borderColor: 'rgba(255, 255, 255, 0.05)',
     backgroundColor: colors.surface,
   },
   importButtonText: {
@@ -584,11 +594,6 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     paddingBottom: 16,
   },
-  previewLabel: {
-    color: colors.text,
-    fontSize: 15,
-    fontWeight: '600',
-  },
   previewImage: {
     width: '100%',
     maxWidth: 360,
@@ -609,10 +614,10 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 8,
     paddingHorizontal: 16,
-    paddingVertical: 10,
-    borderRadius: 999,
+    paddingVertical: 12,
+    borderRadius: 12,
     borderWidth: 1,
-    borderColor: colors.surfaceBorder,
+    borderColor: 'rgba(255, 255, 255, 0.05)',
     backgroundColor: colors.surface,
   },
   retakeButtonText: {
@@ -623,88 +628,105 @@ const styles = StyleSheet.create({
   continueButton: {
     marginTop: 12,
     marginBottom: 24,
-    backgroundColor: colors.primary,
-    paddingVertical: 14,
-    paddingHorizontal: 32,
-    borderRadius: 999,
+    backgroundColor: '#57E6AE',
+    paddingVertical: 13,
+    paddingHorizontal: 18,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(87, 230, 174, 0.55)',
     alignItems: 'center',
+    flexDirection: 'row',
+    gap: 10,
+    shadowColor: '#57E6AE',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.18,
+    shadowRadius: 20,
+    elevation: 6,
   },
   continueButtonText: {
-    color: colors.background,
-    fontSize: 16,
-    fontWeight: '600',
+    color: '#04110D',
+    fontSize: 13,
+    fontWeight: '700',
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
+  },
+  pressed: {
+    opacity: 0.7,
   },
   statusContainer: {
     alignItems: 'center',
-    gap: 16,
+    gap: 12,
   },
-  statusText: {
-    color: colors.textSecondary,
-    fontSize: 14,
+  errorIconWrap: {
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    backgroundColor: 'rgba(255, 92, 92, 0.1)',
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   errorTitle: {
     color: colors.text,
-    fontSize: 18,
-    fontWeight: '700',
+    fontSize: 17,
+    fontWeight: '600',
   },
   errorMessage: {
     color: colors.textSecondary,
     fontSize: 14,
     textAlign: 'center',
+    lineHeight: 20,
+    paddingHorizontal: 24,
   },
   retryButton: {
-    paddingHorizontal: 18,
+    paddingHorizontal: 24,
     paddingVertical: 12,
-    borderRadius: 999,
+    borderRadius: 10,
+    backgroundColor: colors.surface,
     borderWidth: 1,
-    borderColor: colors.primary,
+    borderColor: 'rgba(255, 255, 255, 0.05)',
+    marginTop: 4,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
   },
   retryButtonText: {
-    color: colors.primary,
-    fontWeight: '600',
-    fontSize: 14,
+    color: colors.text,
+    fontWeight: '700',
+    fontSize: 12,
+    letterSpacing: 0.4,
+    textTransform: 'uppercase',
   },
+
+  /* Permission screen */
   permissionContainer: {
     flex: 1,
     backgroundColor: colors.background,
     padding: 24,
     justifyContent: 'center',
   },
-  permissionCard: {
-    width: '90%',
+  permissionContent: {
+    width: '100%',
     maxWidth: 420,
     alignSelf: 'center',
-    marginHorizontal: 12,
-    backgroundColor: colors.surface,
-    borderRadius: 20,
-    padding: 20,
     gap: 14,
-    borderWidth: 1,
-    borderColor: colors.surfaceBorder,
-    shadowColor: '#000',
-    shadowOpacity: 0.3,
-    shadowRadius: 12,
-    shadowOffset: { width: 0, height: 8 },
-    elevation: 10,
   },
   permissionIconWrap: {
     width: 52,
     height: 52,
-    borderRadius: 14,
+    borderRadius: 26,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: 'rgba(45, 211, 111, 0.12)',
-    borderWidth: 1,
-    borderColor: 'rgba(45, 211, 111, 0.3)',
+    backgroundColor: 'rgba(52, 211, 153, 0.1)',
   },
   permissionTitle: {
     color: colors.text,
-    fontSize: 24,
-    fontWeight: '700',
+    fontSize: 22,
+    fontWeight: '800',
+    letterSpacing: -0.3,
   },
   permissionBody: {
     color: colors.textSecondary,
-    fontSize: 16,
+    fontSize: 15,
     lineHeight: 22,
   },
   permissionFootnote: {
@@ -713,26 +735,36 @@ const styles = StyleSheet.create({
     lineHeight: 16,
   },
   primaryButton: {
-    backgroundColor: colors.primary,
-    paddingVertical: 16,
-    borderRadius: 12,
+    backgroundColor: '#57E6AE',
+    paddingVertical: 13,
+    paddingHorizontal: 16,
+    borderRadius: 10,
     alignItems: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(87, 230, 174, 0.55)',
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: 10,
+    shadowColor: '#57E6AE',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.18,
+    shadowRadius: 20,
+    elevation: 6,
   },
   primaryButtonText: {
-    color: colors.background,
-    fontSize: 16,
+    color: '#04110D',
+    fontSize: 13,
     fontWeight: '700',
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
   },
+
+  /* Processing */
   processingWrapper: {
     width: '100%',
     paddingHorizontal: 12,
   },
   processingCard: {
-    backgroundColor: colors.surface,
-    borderRadius: 18,
-    padding: 20,
-    borderWidth: 1,
-    borderColor: colors.surfaceBorder,
     gap: 20,
   },
   processingHero: {
@@ -740,12 +772,10 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   processingHeroCircle: {
-    width: 92,
-    height: 92,
-    borderRadius: 46,
-    backgroundColor: 'rgba(45, 211, 111, 0.12)',
-    borderWidth: 1,
-    borderColor: 'rgba(45, 211, 111, 0.3)',
+    width: 80,
+    height: 80,
+    borderRadius: 40,
+    backgroundColor: 'rgba(52, 211, 153, 0.1)',
     justifyContent: 'center',
     alignItems: 'center',
     overflow: 'hidden',
@@ -755,62 +785,58 @@ const styles = StyleSheet.create({
     width: '160%',
     height: 2,
     top: '48%',
-    backgroundColor: 'rgba(45, 211, 111, 0.65)',
+    backgroundColor: 'rgba(52, 211, 153, 0.5)',
   },
   processingTitle: {
     color: colors.text,
-    fontSize: 18,
+    fontSize: 17,
     fontWeight: '600',
   },
   processingSubtitle: {
     color: colors.textSecondary,
     fontSize: 14,
     textAlign: 'center',
+    lineHeight: 20,
   },
   processingProgressTrack: {
-    height: 4,
-    borderRadius: 999,
-    backgroundColor: 'rgba(45, 211, 111, 0.12)',
+    height: 3,
+    borderRadius: 2,
+    backgroundColor: 'rgba(52, 211, 153, 0.1)',
     overflow: 'hidden',
   },
   processingProgressFill: {
     height: '100%',
-    borderRadius: 999,
+    borderRadius: 2,
     backgroundColor: colors.primary,
   },
   processingStepsList: {
-    gap: 12,
+    gap: 0,
   },
   processingStepRow: {
     flexDirection: 'row',
     alignItems: 'flex-start',
-    paddingVertical: 12,
-    paddingHorizontal: 14,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: 'rgba(45, 211, 111, 0.08)',
-    backgroundColor: 'rgba(17, 20, 24, 0.85)',
+    paddingVertical: 14,
+    paddingHorizontal: 4,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255, 255, 255, 0.06)',
   },
   processingStepRowActive: {
-    borderColor: 'rgba(45, 211, 111, 0.4)',
-    backgroundColor: 'rgba(45, 211, 111, 0.18)',
+    backgroundColor: 'rgba(52, 211, 153, 0.04)',
   },
-  processingStepRowDone: {
-    borderColor: 'rgba(45, 211, 111, 0.3)',
-  },
+  processingStepRowDone: {},
   processingStepIndicator: {
     width: 28,
     height: 28,
     borderRadius: 14,
     borderWidth: 2,
-    borderColor: 'rgba(45, 211, 111, 0.25)',
+    borderColor: 'rgba(255, 255, 255, 0.08)',
     justifyContent: 'center',
     alignItems: 'center',
     marginRight: 12,
   },
   processingStepIndicatorActive: {
     borderColor: colors.primary,
-    backgroundColor: 'rgba(45, 211, 111, 0.18)',
+    backgroundColor: 'rgba(52, 211, 153, 0.12)',
   },
   processingStepIndicatorDone: {
     borderColor: colors.primary,
@@ -823,13 +849,13 @@ const styles = StyleSheet.create({
     backgroundColor: colors.primary,
   },
   processingStepIndexText: {
-    color: colors.textSecondary,
+    color: colors.muted,
     fontSize: 12,
     fontWeight: '600',
   },
   processingStepCopy: {
     flex: 1,
-    gap: 4,
+    gap: 2,
   },
   processingStepTitle: {
     color: colors.text,
@@ -842,9 +868,9 @@ const styles = StyleSheet.create({
     lineHeight: 18,
   },
   processingFooterNote: {
-    marginTop: 12,
+    marginTop: 16,
     textAlign: 'center',
-    color: colors.textSecondary,
+    color: colors.muted,
     fontSize: 12,
   },
 });
@@ -874,7 +900,7 @@ const PROCESSING_STEPS: {
 const STAGE_COPY: Record<ProcessingStage, { headline: string; helper: string }> = {
   upload: {
     headline: 'Uploading your receipt',
-    helper: 'Hang tight—we’re securing a crystal clear copy.',
+    helper: 'Hang tight\u2014we\u2019re securing a crystal clear copy.',
   },
   extract: {
     headline: 'Extracting items',
@@ -959,7 +985,7 @@ function ProcessingStatus({ stage }: { stage: ProcessingStage }) {
       <View style={styles.processingCard}>
         <View style={styles.processingHero}>
           <Animated.View style={[styles.processingHeroCircle, { transform: [{ scale: pulseAnim }] }]}>
-            <Ionicons name="receipt-outline" size={36} color={colors.primary} />
+            <Ionicons name="receipt-outline" size={32} color={colors.primary} />
             <Animated.View
               style={[
                 styles.processingHeroScan,
@@ -993,7 +1019,7 @@ function ProcessingStatus({ stage }: { stage: ProcessingStage }) {
                   ]}
                 >
                   {status === 'done' ? (
-                    <Ionicons name="checkmark" size={16} color={colors.background} />
+                    <Ionicons name="checkmark" size={16} color="#000" />
                   ) : status === 'active' ? (
                     <View style={styles.processingStepDot} />
                   ) : (

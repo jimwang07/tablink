@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, useRef } from 'react';
 import {
-  ActivityIndicator,
   Alert,
   Image,
   Keyboard,
@@ -13,14 +12,20 @@ import {
   StyleSheet,
   Text,
   TextInput,
-  TouchableOpacity,
   View,
 } from 'react-native';
 import { Confetti } from '@/src/components/Confetti';
 import { getSupabaseClient } from '@/src/lib/supabaseClient';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Swipeable } from 'react-native-gesture-handler';
-import Animated, { FadeOut, LinearTransition } from 'react-native-reanimated';
+import Animated, {
+  FadeOut,
+  LinearTransition,
+  useSharedValue,
+  useAnimatedStyle,
+  withRepeat,
+  withTiming,
+} from 'react-native-reanimated';
 import { Ionicons } from '@expo/vector-icons';
 
 import { colors } from '@/src/theme';
@@ -28,6 +33,7 @@ import { useAuth } from '@/src/hooks/useAuth';
 import {
   fetchReceipt,
   getOrCreateShareLink,
+  pickUniqueParticipantEmoji,
   updateReceipt,
   updateReceiptItems,
   deleteReceipt,
@@ -35,6 +41,8 @@ import {
   type ReceiptItem,
 } from '@/src/services/receiptService';
 import type { RealtimePostgresChangesPayload } from '@supabase/supabase-js';
+
+/* ── Types ─────────────────────────────────────────────────── */
 
 type ItemClaim = {
   id: string;
@@ -62,6 +70,30 @@ type EditableItem = {
   price: string;
   quantity: string;
 };
+
+/* ── Status config (matches home screen) ───────────────────── */
+
+type ReceiptStatus = 'draft' | 'ready' | 'shared' | 'partially_claimed' | 'fully_claimed' | 'settled';
+
+const STATUS_COLOR: Record<ReceiptStatus, string> = {
+  draft: '#6B7280',
+  ready: '#FBBF24',
+  shared: '#FBBF24',
+  partially_claimed: '#60A5FA',
+  fully_claimed: '#60A5FA',
+  settled: '#34D399',
+};
+
+const STATUS_LABEL: Record<ReceiptStatus, string> = {
+  draft: 'Draft',
+  ready: 'Ready',
+  shared: 'Shared',
+  partially_claimed: 'In Progress',
+  fully_claimed: 'Claimed',
+  settled: 'Settled',
+};
+
+/* ── Helpers (logic unchanged) ─────────────────────────────── */
 
 function createItemKey() {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
@@ -127,10 +159,117 @@ function buildEditableItems(items: ReceiptItem[]): EditableItem[] {
   }));
 }
 
+/* ── Skeleton loading ──────────────────────────────────────── */
+
+function SkeletonPulse({ children }: { children: React.ReactNode }) {
+  const opacity = useSharedValue(0.4);
+
+  useEffect(() => {
+    opacity.value = withRepeat(
+      withTiming(0.8, { duration: 900 }),
+      -1,
+      true
+    );
+  }, []);
+
+  const style = useAnimatedStyle(() => ({ opacity: opacity.value }));
+
+  return <Animated.View style={style}>{children}</Animated.View>;
+}
+
+function SkeletonBar({ width, height = 14 }: { width: number | `${number}%`; height?: number }) {
+  return (
+    <View style={{ width, height, borderRadius: 6, backgroundColor: 'rgba(255, 255, 255, 0.06)' }} />
+  );
+}
+
+function ReceiptSkeleton({ hasImage }: { hasImage: boolean }) {
+  return (
+    <SkeletonPulse>
+      {/* Image placeholder */}
+      {hasImage && (
+        <View style={{ borderRadius: 12, overflow: 'hidden', marginBottom: 4 }}>
+          <SkeletonBar width="100%" height={200} />
+        </View>
+      )}
+      {/* Merchant section */}
+      <View style={skeletonStyles.section}>
+        <SkeletonBar width={80} height={12} />
+        <SkeletonBar width="100%" height={44} />
+      </View>
+      {/* Items section */}
+      <View style={skeletonStyles.section}>
+        <SkeletonBar width={50} height={12} />
+        <SkeletonBar width="100%" height={40} />
+        <SkeletonBar width="100%" height={40} />
+        <SkeletonBar width="85%" height={40} />
+      </View>
+      {/* Totals section */}
+      <View style={skeletonStyles.section}>
+        <SkeletonBar width={60} height={12} />
+        <View style={skeletonStyles.row}>
+          <SkeletonBar width={100} />
+          <SkeletonBar width={60} />
+        </View>
+        <View style={skeletonStyles.row}>
+          <SkeletonBar width={40} />
+          <SkeletonBar width={60} />
+        </View>
+        <View style={skeletonStyles.row}>
+          <SkeletonBar width={40} />
+          <SkeletonBar width={60} />
+        </View>
+      </View>
+      {/* Participants section */}
+      <View style={skeletonStyles.section}>
+        <SkeletonBar width={100} height={12} />
+        <SkeletonBar width="100%" height={44} />
+        <View style={skeletonStyles.row}>
+          <SkeletonBar width={28} height={28} />
+          <SkeletonBar width={120} />
+        </View>
+      </View>
+    </SkeletonPulse>
+  );
+}
+
+const skeletonStyles = StyleSheet.create({
+  section: {
+    paddingVertical: 20,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255, 255, 255, 0.06)',
+    gap: 12,
+  },
+  row: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+});
+
+/* ── Main component ────────────────────────────────────────── */
+
 export default function ReceiptDetailScreen() {
-  const { id } = useLocalSearchParams<{ id: string }>();
+  const params = useLocalSearchParams<{
+    id: string;
+    merchant?: string;
+    date?: string;
+    total?: string;
+    status?: string;
+    hasImage?: string;
+  }>();
+  const { id } = params;
   const router = useRouter();
   const { user } = useAuth();
+
+  // Preview data passed from home screen for instant header render
+  const preview = {
+    merchant: params.merchant || '',
+    date: params.date || '',
+    total: params.total ? Number(params.total) : 0,
+    status: (params.status as ReceiptStatus) || 'draft',
+    hasImage: params.hasImage === '1',
+  };
 
   const [receipt, setReceipt] = useState<ReceiptWithItems | null>(null);
   const [hasPaymentMethods, setHasPaymentMethods] = useState<boolean | null>(null);
@@ -142,7 +281,6 @@ export default function ReceiptDetailScreen() {
   const [imageUrl, setImageUrl] = useState<string | null>(null);
   const [isImageExpanded, setIsImageExpanded] = useState(false);
 
-  // Base URL for tablinks - in production this would come from env
   const TABLINK_BASE_URL = process.env.EXPO_PUBLIC_TABLINK_URL || 'http://localhost:3000';
 
   // Editable state
@@ -213,12 +351,11 @@ export default function ReceiptDetailScreen() {
         setTipInput(toCurrencyString(centsToDollars(r.tip_cents)));
         setEditableItems(buildEditableItems(r.items));
 
-        // Get image URL if available (use signed URL for private bucket)
         if (r.image_path) {
           const supabase = getSupabaseClient();
           const { data, error } = await supabase.storage
             .from('receipts')
-            .createSignedUrl(r.image_path, 3600); // 1 hour expiry
+            .createSignedUrl(r.image_path, 3600);
           if (error) {
             console.error('[ReceiptDetail] Failed to get signed URL:', error);
           } else if (data?.signedUrl) {
@@ -241,9 +378,7 @@ export default function ReceiptDetailScreen() {
     const supabase = getSupabaseClient();
     const itemIds = receipt.items.map(i => i.id);
 
-    // Initial fetch of claims and participants
     async function fetchClaimsAndParticipants() {
-      // Fetch claims for items on this receipt
       if (itemIds.length > 0) {
         const { data: claimsData } = await supabase
           .from('item_claims')
@@ -252,7 +387,6 @@ export default function ReceiptDetailScreen() {
         if (claimsData) setClaims(claimsData);
       }
 
-      // Fetch participants
       const { data: participantsData } = await supabase
         .from('receipt_participants')
         .select('id, display_name, emoji, color_token, role, payment_status, paid_at, payment_method, payment_amount_cents')
@@ -262,7 +396,6 @@ export default function ReceiptDetailScreen() {
 
     fetchClaimsAndParticipants();
 
-    // Subscribe to realtime updates
     const channel = supabase
       .channel(`receipt:${id}`)
       .on(
@@ -325,9 +458,7 @@ export default function ReceiptDetailScreen() {
     };
   }, [id, receipt]);
 
-  // Helper to get claimers for an item (deduplicated by participant)
   const getItemClaimers = useCallback((itemKey: string) => {
-    // itemKey is the item.id (original) or a generated key for new items
     const itemClaims = claims.filter(c => c.item_id === itemKey);
     const seenIds = new Set<string>();
     const claimers: Participant[] = [];
@@ -349,7 +480,7 @@ export default function ReceiptDetailScreen() {
     setHasChanges(true);
   }, [merchantName, taxInput, tipInput, editableItems]);
 
-  // Computed values (price is already the line total, not unit price)
+  // Computed values
   const subtotal = useMemo(() => {
     return editableItems.reduce((total, item) => {
       const price = parseCurrencyInput(item.price);
@@ -361,29 +492,22 @@ export default function ReceiptDetailScreen() {
   const tipAmount = useMemo(() => parseCurrencyInput(tipInput), [tipInput]);
   const grandTotal = useMemo(() => subtotal + taxAmount + tipAmount, [subtotal, taxAmount, tipAmount]);
 
-  // Calculate effective status based on payment data
-  const effectiveStatus = useMemo(() => {
+  const effectiveStatus = useMemo((): ReceiptStatus => {
     if (!receipt) return 'draft';
-    // If already settled in DB, use that
     if (receipt.status === 'settled') return 'settled';
-    // If draft, use that
     if (receipt.status === 'draft') return 'draft';
 
-    // Check if fully settled: all items are claimed AND all claims are paid
     const itemKeys = editableItems.map(item => item.key);
     if (itemKeys.length > 0 && claims.length > 0 && participants.length > 0) {
-      // Check that every item has at least one claim
       const allItemsClaimed = itemKeys.every(key => claims.some(c => c.item_id === key));
       if (!allItemsClaimed) {
-        return receipt.status;
+        return receipt.status as ReceiptStatus;
       }
 
-      // Build map of participant payment status
       const paidParticipants = new Set(
         participants.filter(p => p.payment_status === 'paid').map(p => p.id)
       );
 
-      // Check if all claims are from paid participants
       const allClaimsPaid = claims.every(c => paidParticipants.has(c.participant_id));
 
       if (allClaimsPaid) {
@@ -391,8 +515,7 @@ export default function ReceiptDetailScreen() {
       }
     }
 
-    // Otherwise use DB status
-    return receipt.status;
+    return receipt.status as ReceiptStatus;
   }, [receipt, claims, participants, editableItems]);
 
   // Trigger confetti when receipt becomes settled
@@ -409,13 +532,11 @@ export default function ReceiptDetailScreen() {
         .eq('id', id);
     };
 
-    // Handle initial check (first time viewing this receipt)
     if (!initialCheckDoneRef.current) {
       initialCheckDoneRef.current = true;
       wasSettledRef.current = isSettled;
 
       if (isSettled && receipt.celebration_shown !== true) {
-        // Show confetti and mark as shown in database
         setShowConfetti(true);
         setShowSettledModal(true);
         markCelebrationShown();
@@ -423,8 +544,6 @@ export default function ReceiptDetailScreen() {
       return;
     }
 
-    // Handle real-time updates: status changed to settled while viewing
-    // Only show if celebration hasn't been shown before
     if (isSettled && !wasSettledRef.current && receipt.celebration_shown !== true) {
       wasSettledRef.current = true;
       setShowConfetti(true);
@@ -432,7 +551,6 @@ export default function ReceiptDetailScreen() {
       markCelebrationShown();
     }
 
-    // Update tracking ref
     wasSettledRef.current = isSettled;
   }, [id, effectiveStatus, receipt]);
 
@@ -461,7 +579,6 @@ export default function ReceiptDetailScreen() {
 
     setIsSaving(true);
     try {
-      // Update receipt metadata
       const receiptResult = await updateReceipt(id, {
         merchant_name: merchantName.trim() || null,
         subtotal_cents: dollarsToCents(subtotal),
@@ -475,7 +592,6 @@ export default function ReceiptDetailScreen() {
         return;
       }
 
-      // Update items
       const itemsToSave = editableItems.map((item, index) => ({
         label: item.name.trim() || 'Untitled item',
         price_cents: dollarsToCents(parseCurrencyInput(item.price)),
@@ -535,7 +651,6 @@ export default function ReceiptDetailScreen() {
   const handleShare = useCallback(async () => {
     if (!id || !receipt) return;
 
-    // Check if user has payment methods set up
     if (!hasPaymentMethods) {
       Alert.alert(
         'Set Up Payment Methods',
@@ -544,7 +659,12 @@ export default function ReceiptDetailScreen() {
           { text: 'Cancel', style: 'cancel' },
           {
             text: 'Go to Settings',
-            onPress: () => router.push('/(host)/settings'),
+            onPress: () => {
+              router.dismiss();
+              setTimeout(() => {
+                router.push('/(host)/settings');
+              }, 50);
+            },
           },
         ]
       );
@@ -553,14 +673,12 @@ export default function ReceiptDetailScreen() {
 
     setIsSharing(true);
     try {
-      // Update status to shared when creating tablink
       if (receipt.status === 'draft') {
         const result = await updateReceipt(id, { status: 'shared' });
         if (!result.success) {
           Alert.alert('Error', result.error || 'Failed to activate receipt');
           return;
         }
-        // Update local state
         setReceipt({ ...receipt, status: 'shared' as any });
       }
 
@@ -570,13 +688,11 @@ export default function ReceiptDetailScreen() {
         return;
       }
 
-      // Generate the tablink URL
       const tablinkUrl = `${TABLINK_BASE_URL}/claim/${linkResult.shortCode}`;
 
-      // Open native share sheet
       const result = await Share.share({
         message: `Split the bill with me! ${receipt.merchant_name ? `(${receipt.merchant_name})` : ''}\n${tablinkUrl}`,
-        url: tablinkUrl, // iOS only
+        url: tablinkUrl,
         title: 'Share Tablink',
       });
 
@@ -591,7 +707,6 @@ export default function ReceiptDetailScreen() {
     }
   }, [id, receipt, TABLINK_BASE_URL, hasPaymentMethods, router]);
 
-  const EMOJIS = ['😀', '🎉', '🍕', '🌟', '🎸', '🌈', '🚀', '🎨', '🍦', '🎯', '🦊', '🐱', '🦁', '🐸'];
   const COLORS = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FFEAA7', '#DDA0DD', '#98D8C8', '#F7DC6F', '#74b9ff', '#fd79a8'];
 
   const handleAddParticipant = useCallback(async () => {
@@ -600,7 +715,11 @@ export default function ReceiptDetailScreen() {
     setIsAddingParticipant(true);
     try {
       const supabase = getSupabaseClient();
-      const emoji = EMOJIS[Math.floor(Math.random() * EMOJIS.length)];
+      const emoji = pickUniqueParticipantEmoji(
+        participants
+          .map((participant) => participant.emoji)
+          .filter((value): value is string => Boolean(value))
+      );
       const color = COLORS[Math.floor(Math.random() * COLORS.length)];
 
       const { data, error: insertError } = await supabase
@@ -626,13 +745,12 @@ export default function ReceiptDetailScreen() {
     } finally {
       setIsAddingParticipant(false);
     }
-  }, [id, newParticipantName]);
+  }, [id, newParticipantName, participants]);
 
   const handleRemoveParticipant = useCallback(async (participantId: string) => {
     const participant = participants.find(p => p.id === participantId);
     if (!participant) return;
 
-    // Check if participant has any claims
     const hasClaims = claims.some(c => c.participant_id === participantId);
     if (hasClaims) {
       Alert.alert('Cannot Remove', 'This participant has claimed items. Remove their claims first.');
@@ -681,7 +799,6 @@ export default function ReceiptDetailScreen() {
       const supabase = getSupabaseClient();
 
       if (existingClaim) {
-        // Remove the claim
         const { error: deleteError } = await supabase
           .from('item_claims')
           .delete()
@@ -689,7 +806,6 @@ export default function ReceiptDetailScreen() {
 
         if (deleteError) throw deleteError;
 
-        // Get remaining claims for this item and update their amounts
         const remainingClaims = claims.filter(c => c.item_id === itemKey && c.id !== existingClaim.id);
         if (remainingClaims.length > 0) {
           const newAmount = Math.round(itemPrice / remainingClaims.length);
@@ -698,7 +814,6 @@ export default function ReceiptDetailScreen() {
             .update({ amount_cents: newAmount })
             .eq('item_id', itemKey);
 
-          // Update local state
           setClaims(prev => prev
             .filter(c => c.id !== existingClaim.id)
             .map(c => c.item_id === itemKey ? { ...c, amount_cents: newAmount } : c)
@@ -707,7 +822,6 @@ export default function ReceiptDetailScreen() {
           setClaims(prev => prev.filter(c => c.id !== existingClaim.id));
         }
       } else {
-        // Add a new claim
         const existingClaimsCount = claims.filter(c => c.item_id === itemKey).length;
         const newTotalClaimers = existingClaimsCount + 1;
         const newAmount = Math.round(itemPrice / newTotalClaimers);
@@ -725,7 +839,6 @@ export default function ReceiptDetailScreen() {
 
         if (insertError) throw insertError;
 
-        // Update existing claims for this item with new split amount
         if (existingClaimsCount > 0) {
           await supabase
             .from('item_claims')
@@ -733,7 +846,6 @@ export default function ReceiptDetailScreen() {
             .eq('item_id', itemKey);
         }
 
-        // Update local state
         setClaims(prev => [
           ...prev.map(c => c.item_id === itemKey ? { ...c, amount_cents: newAmount } : c),
           data,
@@ -752,118 +864,128 @@ export default function ReceiptDetailScreen() {
     setAssigningItem(item);
   }, []);
 
-  const placeholderColor = 'rgba(195,200,212,0.5)';
+  /* ── Render ──────────────────────────────────────────────── */
+
+  const statusColor = STATUS_COLOR[effectiveStatus] || STATUS_COLOR.draft;
+  const anyBusy = isSaving || isDeleting || isSharing;
 
   if (isLoading) {
+    const previewColor = STATUS_COLOR[preview.status] || STATUS_COLOR.draft;
     return (
-      <View style={styles.centered}>
-        <ActivityIndicator size="large" color={colors.primary} />
+      <View style={s.container}>
+        <ScrollView contentContainerStyle={s.content} contentInsetAdjustmentBehavior="automatic">
+          <View style={s.header}>
+            <Pressable onPress={() => router.back()} style={s.backArrow}>
+              <Ionicons name="arrow-back" size={24} color={colors.text} />
+            </Pressable>
+            <View style={s.headerContent}>
+              <Text style={s.title} numberOfLines={1}>
+                {preview.merchant || 'Receipt'}
+              </Text>
+              {preview.date ? (
+                <Text style={s.subtitle}>{formatDate(preview.date)}</Text>
+              ) : null}
+            </View>
+            <Text style={[s.statusLabel, { color: previewColor }]}>
+              {STATUS_LABEL[preview.status]}
+            </Text>
+          </View>
+          <ReceiptSkeleton hasImage={preview.hasImage} />
+        </ScrollView>
       </View>
     );
   }
 
   if (error || !receipt) {
     return (
-      <View style={styles.centered}>
-        <Text style={styles.errorText}>{error || 'Receipt not found'}</Text>
-        <TouchableOpacity style={styles.backButton} onPress={() => router.back()}>
-          <Text style={styles.backButtonText}>Go Back</Text>
-        </TouchableOpacity>
+      <View style={s.centered}>
+        <Text style={s.errorText}>{error || 'Receipt not found'}</Text>
+        <Pressable style={({ pressed }) => [s.backButton, pressed && s.pressed]} onPress={() => router.back()}>
+          <Text style={s.backButtonText}>Go Back</Text>
+        </Pressable>
       </View>
     );
   }
 
   return (
     <KeyboardAvoidingView
-      style={styles.container}
+      style={s.container}
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
     >
       <ScrollView
-        contentContainerStyle={styles.content}
+        contentContainerStyle={s.content}
         keyboardShouldPersistTaps="handled"
         contentInsetAdjustmentBehavior="automatic"
       >
-        {/* Header */}
-        <View style={styles.header}>
-          <TouchableOpacity onPress={() => router.back()} style={styles.backArrow}>
+        {/* ── Header ── */}
+        <View style={s.header}>
+          <Pressable onPress={() => router.back()} style={({ pressed }) => [s.backArrow, pressed && s.pressed]}>
             <Ionicons name="arrow-back" size={24} color={colors.text} />
-          </TouchableOpacity>
-          <View style={styles.headerContent}>
-            <Text style={styles.title} numberOfLines={1}>
+          </Pressable>
+          <View style={s.headerContent}>
+            <Text style={s.title} numberOfLines={1}>
               {receipt.merchant_name || 'Receipt'}
             </Text>
-            <Text style={styles.subtitle}>{formatDate(receipt.receipt_date)}</Text>
+            <Text style={s.subtitle}>{formatDate(receipt.receipt_date)}</Text>
           </View>
-          <View style={[
-            styles.statusBadge,
-            effectiveStatus === 'draft' && { backgroundColor: colors.surfaceBorder },
-            (effectiveStatus === 'ready' || effectiveStatus === 'shared' || effectiveStatus === 'partially_claimed') && { backgroundColor: '#5A4D2D' },
-            effectiveStatus === 'fully_claimed' && { backgroundColor: '#2D4A5A' },
-            effectiveStatus === 'settled' && { backgroundColor: '#2D5A3D' },
-          ]}>
-            <Text style={[
-              styles.statusText,
-              effectiveStatus === 'draft' && { color: colors.textSecondary },
-              (effectiveStatus === 'ready' || effectiveStatus === 'shared' || effectiveStatus === 'partially_claimed') && { color: '#F2C94C' },
-              effectiveStatus === 'fully_claimed' && { color: '#56CCF2' },
-              effectiveStatus === 'settled' && { color: '#6FCF97' },
-            ]}>
-              {effectiveStatus === 'partially_claimed' ? 'Partial' :
-               effectiveStatus === 'fully_claimed' ? 'Claimed' :
-               effectiveStatus.charAt(0).toUpperCase() + effectiveStatus.slice(1)}
-            </Text>
-          </View>
+          <Text style={[s.statusLabel, { color: statusColor }]}>
+            {STATUS_LABEL[effectiveStatus]}
+          </Text>
         </View>
 
-        {/* Receipt Image */}
+        {/* ── Receipt image ── */}
         {receipt.image_path && (
-          <View style={styles.imageCard}>
+          <View style={s.imageCard}>
             {imageUrl ? (
-              <Image source={{ uri: imageUrl }} style={styles.receiptImage} resizeMode="cover" />
+              <Image source={{ uri: imageUrl }} style={s.receiptImage} resizeMode="cover" />
             ) : (
-              <View style={[styles.receiptImage, styles.imagePlaceholder]}>
-                <ActivityIndicator size="small" color={colors.textSecondary} />
+              <View style={[s.receiptImage, s.imagePlaceholder]}>
+                <SkeletonPulse>
+                  <SkeletonBar width="100%" height={200} />
+                </SkeletonPulse>
               </View>
             )}
-            <TouchableOpacity
-              style={styles.expandButton}
+            <Pressable
+              style={({ pressed }) => [s.expandButton, pressed && s.pressed]}
               onPress={() => setIsImageExpanded(true)}
               disabled={!imageUrl}
             >
-              <Text style={styles.expandButtonText}>View full receipt</Text>
-            </TouchableOpacity>
+              <Text style={s.expandButtonText}>View full receipt</Text>
+            </Pressable>
           </View>
         )}
 
-        {/* Merchant */}
-        <View style={styles.card}>
-          <Text style={styles.inputLabel}>Merchant Name</Text>
+        {/* ── Merchant ── */}
+        <View style={s.section}>
+          <Text style={s.sectionLabel}>Merchant</Text>
           <TextInput
             value={merchantName}
             onChangeText={setMerchantName}
             placeholder="Add merchant name"
-            placeholderTextColor={placeholderColor}
-            style={styles.textInput}
+            placeholderTextColor={colors.muted}
+            style={s.textInput}
           />
         </View>
 
-        {/* Items */}
-        <View style={styles.card}>
-          <View style={styles.cardHeader}>
-            <Text style={styles.cardTitle}>Items</Text>
-            <TouchableOpacity style={styles.addButton} onPress={addItem}>
-              <Text style={styles.addButtonText}>+ Add item</Text>
-            </TouchableOpacity>
+        {/* ── Items ── */}
+        <View style={s.section}>
+          <View style={s.cardHeader}>
+            <Text style={s.sectionLabel}>Items</Text>
+            <Pressable style={({ pressed }) => [pressed && s.pressed]} onPress={addItem}>
+              <Text style={s.addButtonText}>+ Add item</Text>
+            </Pressable>
           </View>
-          <Text style={styles.hint}>Tap <Ionicons name="person-add-outline" size={12} color={colors.textSecondary} /> to assign. Tap fields to edit. Swipe left to delete.</Text>
+          <Text style={s.hint}>
+            Tap <Ionicons name="person-add-outline" size={12} color={colors.muted} /> to assign. Swipe left to delete.
+          </Text>
           {editableItems.map((item) => (
             <Animated.View
               key={item.key}
-              style={styles.itemWrapper}
+              style={s.itemWrapper}
               exiting={FadeOut.duration(200)}
               layout={LinearTransition.duration(200)}
             >
-              <View style={styles.swipeDeleteBehind} />
+              <View style={s.swipeDeleteBehind} />
               <Swipeable
                 overshootRight={false}
                 rightThreshold={60}
@@ -877,7 +999,7 @@ export default function ReceiptDetailScreen() {
                   }
                 }}
                 renderRightActions={() => (
-                  <View style={styles.swipeDeleteButton}>
+                  <View style={s.swipeDeleteButton}>
                     <Ionicons name="trash" size={22} color="#fff" />
                   </View>
                 )}
@@ -888,43 +1010,40 @@ export default function ReceiptDetailScreen() {
                   const isClaimed = itemClaimers.length > 0 && !isPaid;
 
                   return (
-                    <View style={[styles.itemRow, isClaimed && styles.itemRowClaimed, isPaid && styles.itemRowPaid]}>
-                      <TouchableOpacity
-                        style={styles.assignButton}
+                    <View style={[s.itemRow, isClaimed && s.itemRowClaimed, isPaid && s.itemRowPaid]}>
+                      <Pressable
+                        style={s.assignButton}
                         onPress={() => handleItemLongPress(item)}
                         hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                       >
                         <Ionicons
-                          name={isPaid ? "checkmark-circle" : itemClaimers.length > 0 ? "people" : "person-add-outline"}
+                          name={isPaid ? 'checkmark-circle' : itemClaimers.length > 0 ? 'people' : 'person-add-outline'}
                           size={18}
-                          color={isPaid ? colors.primary : isClaimed ? '#F2C94C' : colors.muted}
+                          color={isPaid ? colors.primary : isClaimed ? '#FBBF24' : colors.muted}
                         />
-                      </TouchableOpacity>
-                      <View style={styles.itemMainContent}>
-                        <View style={styles.itemNameRow}>
+                      </Pressable>
+                      <View style={s.itemMainContent}>
+                        <View style={s.itemNameRow}>
                           <TextInput
                             value={item.name}
                             onChangeText={(value) => updateItemField(item.key, 'name', value)}
                             placeholder="Item name"
-                            placeholderTextColor={placeholderColor}
-                            style={[styles.itemNameInput, { color: '#F5F7FA', flex: 1 }]}
+                            placeholderTextColor={colors.muted}
+                            style={s.itemNameInput}
                           />
                           {isPaid && (
-                            <View style={styles.paidBadge}>
-                              <Text style={styles.paidBadgeText}>Paid</Text>
-                            </View>
+                            <Text style={s.paidTag}>Paid</Text>
                           )}
                         </View>
-                        {/* Claimer badges */}
                         {itemClaimers.length > 0 && (
-                          <View style={styles.claimerBadges}>
+                          <View style={s.claimerBadges}>
                             {itemClaimers.map(claimer => (
                               <View
                                 key={claimer.id}
-                                style={[styles.claimerBadge, { borderLeftColor: claimer.color_token ?? colors.primary }]}
+                                style={[s.claimerBadge, { borderLeftColor: claimer.color_token ?? colors.primary }]}
                               >
-                                <Text style={styles.claimerEmoji}>{claimer.emoji}</Text>
-                                <Text style={styles.claimerName}>{claimer.display_name}</Text>
+                                <Text style={s.claimerEmoji}>{claimer.emoji}</Text>
+                                <Text style={s.claimerName}>{claimer.display_name}</Text>
                                 {claimer.payment_status === 'paid' && (
                                   <Ionicons name="checkmark" size={12} color={colors.primary} />
                                 )}
@@ -933,24 +1052,24 @@ export default function ReceiptDetailScreen() {
                           </View>
                         )}
                       </View>
-                      <View style={styles.itemRightSection}>
-                        <View style={styles.itemRightFields}>
+                      <View style={s.itemRightSection}>
+                        <View style={s.itemRightFields}>
                           <TextInput
                             value={item.quantity}
                             onChangeText={(value) => updateItemField(item.key, 'quantity', value)}
                             placeholder="1"
-                            placeholderTextColor={placeholderColor}
+                            placeholderTextColor={colors.muted}
                             keyboardType="decimal-pad"
-                            style={styles.itemQtyInput}
+                            style={s.itemQtyInput}
                           />
-                          <Text style={styles.itemTimesSymbol}>×</Text>
+                          <Text style={s.itemTimesSymbol}>×</Text>
                           <TextInput
                             value={item.price}
                             onChangeText={(value) => updateItemField(item.key, 'price', value)}
                             placeholder="0.00"
-                            placeholderTextColor={placeholderColor}
+                            placeholderTextColor={colors.muted}
                             keyboardType="decimal-pad"
-                            style={styles.itemPriceInput}
+                            style={s.itemPriceInput}
                           />
                         </View>
                       </View>
@@ -962,77 +1081,78 @@ export default function ReceiptDetailScreen() {
           ))}
         </View>
 
-        {/* Totals */}
-        <View style={styles.card}>
-          <Text style={styles.cardTitle}>Totals</Text>
-          <View style={styles.summaryRow}>
-            <Text style={styles.summaryLabel}>Items subtotal</Text>
-            <Text style={styles.summaryValue}>{formatCurrency(subtotal)}</Text>
+        {/* ── Totals ── */}
+        <View style={s.section}>
+          <Text style={s.sectionLabel}>Totals</Text>
+          <View style={s.summaryRow}>
+            <Text style={s.summaryLabel}>Items subtotal</Text>
+            <Text style={s.summaryValue}>{formatCurrency(subtotal)}</Text>
           </View>
-          <View style={styles.summaryRow}>
-            <Text style={styles.summaryLabel}>Tax</Text>
+          <View style={s.summaryRow}>
+            <Text style={s.summaryLabel}>Tax</Text>
             <TextInput
               value={taxInput}
               onChangeText={setTaxInput}
               placeholder="0.00"
-              placeholderTextColor={placeholderColor}
+              placeholderTextColor={colors.muted}
               keyboardType="decimal-pad"
-              style={[styles.textInput, styles.summaryInput]}
+              style={[s.textInput, s.summaryInput]}
             />
           </View>
-          <View style={styles.summaryRow}>
-            <Text style={styles.summaryLabel}>Tip</Text>
+          <View style={s.summaryRow}>
+            <Text style={s.summaryLabel}>Tip</Text>
             <TextInput
               value={tipInput}
               onChangeText={setTipInput}
               placeholder="0.00"
-              placeholderTextColor={placeholderColor}
+              placeholderTextColor={colors.muted}
               keyboardType="decimal-pad"
-              style={[styles.textInput, styles.summaryInput]}
+              style={[s.textInput, s.summaryInput]}
             />
           </View>
-          <View style={[styles.summaryRow, styles.totalRow]}>
-            <Text style={styles.totalLabel}>Total</Text>
-            <Text style={styles.totalValue}>{formatCurrency(grandTotal)}</Text>
+          <View style={[s.summaryRow, s.totalRow]}>
+            <Text style={s.totalLabel}>Total</Text>
+            <Text style={s.totalValue}>{formatCurrency(grandTotal)}</Text>
           </View>
         </View>
 
-        {/* Participants */}
-        <View style={styles.card}>
-          <View style={styles.cardHeader}>
-            <Text style={styles.cardTitle}>Participants</Text>
-            <Text style={styles.participantCount}>{participants.length} people</Text>
+        {/* ── Participants ── */}
+        <View style={s.section}>
+          <View style={s.cardHeader}>
+            <Text style={s.sectionLabel}>Participants</Text>
+            <Text style={s.participantCount}>{participants.length}</Text>
           </View>
 
-          {/* Add participant form */}
-          <View style={styles.addParticipantRow}>
+          <View style={s.addParticipantRow}>
             <TextInput
               value={newParticipantName}
               onChangeText={setNewParticipantName}
               onSubmitEditing={handleAddParticipant}
               placeholder="Add a name..."
-              placeholderTextColor={placeholderColor}
-              style={styles.addParticipantInput}
+              placeholderTextColor={colors.muted}
+              style={[s.textInput, { flex: 1 }]}
               returnKeyType="done"
             />
-            <TouchableOpacity
-              style={[styles.addParticipantButton, (!newParticipantName.trim() || isAddingParticipant) && styles.addParticipantButtonDisabled]}
+            <Pressable
+              style={({ pressed }) => [
+                s.addParticipantButton,
+                (!newParticipantName.trim() || isAddingParticipant) && s.buttonDisabled,
+                pressed && s.pressed,
+              ]}
               onPress={handleAddParticipant}
               disabled={!newParticipantName.trim() || isAddingParticipant}
             >
               {isAddingParticipant ? (
-                <ActivityIndicator size="small" color={colors.background} />
+                <Text style={s.addParticipantLoadingText}>Adding...</Text>
               ) : (
-                <Ionicons name="add" size={20} color={colors.background} />
+                <Ionicons name="add" size={20} color={colors.primary} />
               )}
-            </TouchableOpacity>
+            </Pressable>
           </View>
 
-          {/* Participant list */}
           {participants.length > 0 ? (
-            <View style={styles.participantList}>
+            <View style={s.participantList}>
               {participants.map(p => {
-                // Calculate this participant's total
                 const participantClaims = claims.filter(c => c.participant_id === p.id);
                 const claimsTotal = participantClaims.reduce((sum, c) => sum + c.amount_cents, 0);
                 const itemsTotal = editableItems.reduce((sum, item) => {
@@ -1043,46 +1163,42 @@ export default function ReceiptDetailScreen() {
                 const pTax = Math.round(parseCurrencyInput(taxInput) * 100 * share);
                 const pTip = Math.round(parseCurrencyInput(tipInput) * 100 * share);
                 const participantTotal = claimsTotal + pTax + pTip;
-                const isShared = receipt.status === 'shared' || receipt.status === 'partially_claimed' || receipt.status === 'fully_claimed';
 
                 const isOwner = p.role === 'owner';
 
                 return (
-                  <View key={p.id} style={styles.participantRow}>
-                    <View style={styles.participantInfo}>
-                      <Text style={styles.participantEmoji}>{p.emoji || '👤'}</Text>
-                      <View style={styles.participantNameAndAmount}>
-                        <View style={styles.participantNameRow}>
-                          <Text style={styles.participantName}>{p.display_name}</Text>
-                          {isOwner && <Text style={styles.participantYouLabel}>(You)</Text>}
+                  <View key={p.id} style={s.participantRow}>
+                    <View style={s.participantInfo}>
+                      <Text style={s.participantEmoji}>{p.emoji || '👤'}</Text>
+                      <View style={s.participantNameAndAmount}>
+                        <View style={s.participantNameRow}>
+                          <Text style={s.participantName}>{p.display_name}</Text>
+                          {isOwner && <Text style={s.participantYouLabel}>(You)</Text>}
                         </View>
                         {participantTotal > 0 && (
-                          <Text style={styles.participantAmount}>{formatCurrency(participantTotal / 100)}</Text>
+                          <Text style={s.participantAmount}>
+                            {formatCurrency(participantTotal / 100)}
+                          </Text>
                         )}
                       </View>
                     </View>
-                    <View style={styles.participantActions}>
+                    <View style={s.participantActions}>
                       {participantTotal > 0 && (
-                        <View style={[
-                          styles.paymentBadge,
-                          p.payment_status === 'paid' ? styles.paymentBadgePaid : styles.paymentBadgePending,
+                        <Text style={[
+                          s.paymentTag,
+                          { color: p.payment_status === 'paid' ? '#34D399' : '#FBBF24' },
                         ]}>
-                          <Text style={[
-                            styles.paymentBadgeText,
-                            p.payment_status === 'paid' ? styles.paymentBadgeTextPaid : styles.paymentBadgeTextPending,
-                          ]}>
-                            {p.payment_status === 'paid' ? '✓ Paid' : 'Pending'}
-                          </Text>
-                        </View>
+                          {p.payment_status === 'paid' ? 'Paid' : 'Pending'}
+                        </Text>
                       )}
                       {!isOwner && (
-                        <TouchableOpacity
+                        <Pressable
                           onPress={() => handleRemoveParticipant(p.id)}
-                          style={styles.removeParticipantButton}
+                          style={({ pressed }) => [s.removeParticipantButton, pressed && s.pressed]}
                           hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
                         >
                           <Ionicons name="close-circle" size={22} color={colors.muted} />
-                        </TouchableOpacity>
+                        </Pressable>
                       )}
                     </View>
                   </View>
@@ -1090,79 +1206,85 @@ export default function ReceiptDetailScreen() {
               })}
             </View>
           ) : (
-            <Text style={styles.noParticipantsText}>
+            <Text style={s.noParticipantsText}>
               Add names of people splitting this bill. They can select their name when they open the tablink.
             </Text>
           )}
         </View>
 
-        {/* Actions */}
-        <View style={styles.actions}>
-          <TouchableOpacity
-            style={[styles.shareButton, (isSaving || isDeleting || isSharing) && styles.buttonDisabled]}
+        {/* ── Actions ── */}
+        <View style={s.actions}>
+          <Pressable
+            style={({ pressed }) => [s.shareButton, anyBusy && s.buttonDisabled, pressed && s.ctaPressed]}
             onPress={handleShare}
-            disabled={isSaving || isDeleting || isSharing}
+            disabled={anyBusy}
           >
             {isSharing ? (
-              <ActivityIndicator size="small" color="#fff" />
+              <>
+                <Ionicons name="share-outline" size={16} color="#04110D" />
+                <Text style={s.shareButtonText}>Sharing...</Text>
+                <Ionicons name="arrow-forward" size={16} color="#04110D" />
+              </>
             ) : (
               <>
-                <Ionicons name="share-outline" size={20} color="#fff" style={{ marginRight: 8 }} />
-                <Text style={styles.shareButtonText}>
-                  Share Receipt
-                </Text>
+                <Ionicons name="share-outline" size={16} color="#04110D" />
+                <Text style={s.shareButtonText}>Share Receipt</Text>
+                <Ionicons name="arrow-forward" size={16} color="#04110D" />
               </>
             )}
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.saveButton, (isSaving || isDeleting || isSharing) && styles.buttonDisabled]}
+          </Pressable>
+          <Pressable
+            style={({ pressed }) => [s.saveButton, anyBusy && s.buttonDisabled, pressed && s.pressed]}
             onPress={handleSave}
-            disabled={isSaving || isDeleting || isSharing}
+            disabled={anyBusy}
           >
             {isSaving ? (
-              <ActivityIndicator size="small" color={colors.primary} />
+              <Text style={s.saveButtonText}>Saving...</Text>
             ) : (
-              <Text style={styles.saveButtonText}>Save Changes</Text>
+              <Text style={s.saveButtonText}>Save Changes</Text>
             )}
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.deleteButton, (isSaving || isDeleting || isSharing) && styles.buttonDisabled]}
+          </Pressable>
+          <Pressable
+            style={({ pressed }) => [s.deleteAction, anyBusy && s.buttonDisabled, pressed && s.pressed]}
             onPress={handleDelete}
-            disabled={isSaving || isDeleting || isSharing}
+            disabled={anyBusy}
           >
             {isDeleting ? (
-              <ActivityIndicator size="small" color={colors.danger} />
+              <Text style={s.deleteText}>Deleting...</Text>
             ) : (
-              <Text style={styles.deleteButtonText}>Delete Receipt</Text>
+              <Text style={s.deleteText}>Delete Receipt</Text>
             )}
-          </TouchableOpacity>
+          </Pressable>
         </View>
       </ScrollView>
 
-      {/* Full Image Modal */}
+      {/* ── Full image modal ── */}
       <Modal
         visible={isImageExpanded}
         animationType="fade"
         transparent
         onRequestClose={() => setIsImageExpanded(false)}
       >
-        <View style={styles.modalBackdrop}>
-          <View style={styles.modalContent}>
+        <View style={s.modalBackdrop}>
+          <View style={s.modalContent}>
             {imageUrl && (
               <Image
                 source={{ uri: imageUrl }}
                 resizeMode="contain"
-                style={styles.modalImage}
+                style={s.modalImage}
               />
             )}
-            <TouchableOpacity style={styles.modalCloseButton} onPress={() => setIsImageExpanded(false)}>
-              <Text style={styles.modalCloseText}>Close</Text>
-            </TouchableOpacity>
+            <Pressable
+              style={({ pressed }) => [s.modalCloseButton, pressed && s.pressed]}
+              onPress={() => setIsImageExpanded(false)}
+            >
+              <Text style={s.modalCloseText}>Close</Text>
+            </Pressable>
           </View>
         </View>
       </Modal>
 
-      {/* Assignment Modal */}
+      {/* ── Assignment modal ── */}
       <Modal
         visible={assigningItem !== null}
         animationType="slide"
@@ -1170,34 +1292,33 @@ export default function ReceiptDetailScreen() {
         onRequestClose={() => setAssigningItem(null)}
       >
         <Pressable
-          style={styles.assignModalBackdrop}
+          style={s.assignModalBackdrop}
           onPress={() => setAssigningItem(null)}
         >
-          <Pressable style={styles.assignModalContent} onPress={(e) => e.stopPropagation()}>
-            <View style={styles.assignModalHeader}>
+          <Pressable style={s.assignModalContent} onPress={(e) => e.stopPropagation()}>
+            <View style={s.assignModalHeader}>
               <View>
-                <Text style={styles.assignModalTitle}>Assign Item</Text>
-                <Text style={styles.assignModalItemName} numberOfLines={1}>
+                <Text style={s.assignModalTitle}>Assign Item</Text>
+                <Text style={s.assignModalItemName} numberOfLines={1}>
                   {assigningItem?.name || 'Untitled item'}
                 </Text>
               </View>
-              <TouchableOpacity
+              <Pressable
                 onPress={() => setAssigningItem(null)}
-                style={styles.assignModalCloseButton}
+                style={({ pressed }) => [s.assignModalCloseButton, pressed && s.pressed]}
               >
                 <Ionicons name="close" size={24} color={colors.text} />
-              </TouchableOpacity>
+              </Pressable>
             </View>
 
             {(() => {
-              // Check if this item is already paid for
               const itemClaimers = assigningItem ? getItemClaimers(assigningItem.key) : [];
               const isItemSettled = itemClaimers.length > 0 && itemClaimers.every(c => c.payment_status === 'paid');
 
               if (isItemSettled) {
                 return (
-                  <View style={styles.assignEmptyState}>
-                    <Text style={styles.assignEmptyText}>
+                  <View style={s.assignEmptyState}>
+                    <Text style={s.assignEmptyText}>
                       This item has already been paid for and cannot be reassigned.
                     </Text>
                   </View>
@@ -1205,58 +1326,58 @@ export default function ReceiptDetailScreen() {
               }
 
               return participants.length > 0 ? (
-              <View style={styles.assignParticipantList}>
-                {participants.map(p => {
-                  const isAssigned = assigningItem
-                    ? claims.some(c => c.item_id === assigningItem.key && c.participant_id === p.id)
-                    : false;
+                <View style={s.assignParticipantList}>
+                  {participants.map(p => {
+                    const isAssigned = assigningItem
+                      ? claims.some(c => c.item_id === assigningItem.key && c.participant_id === p.id)
+                      : false;
 
-                  return (
-                    <TouchableOpacity
-                      key={p.id}
-                      style={[
-                        styles.assignParticipantRow,
-                        isAssigned && styles.assignParticipantRowSelected,
-                      ]}
-                      onPress={() => handleToggleClaim(p.id)}
-                      disabled={isUpdatingClaim}
-                    >
-                      <View style={styles.assignParticipantInfo}>
-                        <Text style={styles.assignParticipantEmoji}>{p.emoji || '👤'}</Text>
-                        <Text style={styles.assignParticipantName}>{p.display_name}</Text>
-                      </View>
-                      <View style={[
-                        styles.assignCheckbox,
-                        isAssigned && styles.assignCheckboxChecked,
-                      ]}>
-                        {isAssigned && (
-                          <Ionicons name="checkmark" size={16} color={colors.background} />
-                        )}
-                      </View>
-                    </TouchableOpacity>
-                  );
-                })}
-              </View>
-            ) : (
-              <View style={styles.assignEmptyState}>
-                <Text style={styles.assignEmptyText}>
-                  Add participants first to assign items
-                </Text>
-              </View>
-            );
+                    return (
+                      <Pressable
+                        key={p.id}
+                        style={[
+                          s.assignParticipantRow,
+                          isAssigned && s.assignParticipantRowSelected,
+                        ]}
+                        onPress={() => handleToggleClaim(p.id)}
+                        disabled={isUpdatingClaim}
+                      >
+                        <View style={s.assignParticipantInfo}>
+                          <Text style={s.assignParticipantEmoji}>{p.emoji || '👤'}</Text>
+                          <Text style={s.assignParticipantName}>{p.display_name}</Text>
+                        </View>
+                        <View style={[
+                          s.assignCheckbox,
+                          isAssigned && s.assignCheckboxChecked,
+                        ]}>
+                          {isAssigned && (
+                            <Ionicons name="checkmark" size={16} color="#000" />
+                          )}
+                        </View>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+              ) : (
+                <View style={s.assignEmptyState}>
+                  <Text style={s.assignEmptyText}>
+                    Add participants first to assign items
+                  </Text>
+                </View>
+              );
             })()}
 
-            <TouchableOpacity
-              style={styles.assignDoneButton}
+            <Pressable
+              style={({ pressed }) => [s.assignDoneButton, pressed && s.ctaPressed]}
               onPress={() => setAssigningItem(null)}
             >
-              <Text style={styles.assignDoneButtonText}>Done</Text>
-            </TouchableOpacity>
+              <Text style={s.assignDoneButtonText}>Done</Text>
+            </Pressable>
           </Pressable>
         </Pressable>
       </Modal>
 
-      {/* Settled celebration modal */}
+      {/* ── Settled celebration modal ── */}
       <Modal
         visible={showSettledModal}
         animationType="fade"
@@ -1264,25 +1385,24 @@ export default function ReceiptDetailScreen() {
         onRequestClose={() => setShowSettledModal(false)}
       >
         <Pressable
-          style={styles.settledModalBackdrop}
+          style={s.settledModalBackdrop}
           onPress={() => setShowSettledModal(false)}
         >
-          <View style={styles.settledModalContent}>
-            <Text style={styles.settledModalEmoji}>🎉</Text>
-            <Text style={styles.settledModalTitle}>All Settled!</Text>
-            <Text style={styles.settledModalMessage}>
+          <View style={s.settledModalContent}>
+            <Text style={s.settledModalEmoji}>🎉</Text>
+            <Text style={s.settledModalTitle}>All Settled!</Text>
+            <Text style={s.settledModalMessage}>
               Everyone has paid their share for this receipt. Nice work!
             </Text>
-            <TouchableOpacity
-              style={styles.settledModalButton}
+            <Pressable
+              style={({ pressed }) => [s.settledModalButton, pressed && s.ctaPressed]}
               onPress={() => setShowSettledModal(false)}
             >
-              <Text style={styles.settledModalButtonText}>Awesome!</Text>
-            </TouchableOpacity>
+              <Text style={s.settledModalButtonText}>Awesome!</Text>
+            </Pressable>
           </View>
         </Pressable>
 
-        {/* Confetti raining from top */}
         {showConfetti && (
           <Confetti
             count={50}
@@ -1296,7 +1416,9 @@ export default function ReceiptDetailScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+/* ── Styles ────────────────────────────────────────────────── */
+
+const s = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: colors.background,
@@ -1306,7 +1428,7 @@ const styles = StyleSheet.create({
     backgroundColor: colors.background,
     justifyContent: 'center',
     alignItems: 'center',
-    padding: 20,
+    padding: 24,
   },
   errorText: {
     color: colors.textSecondary,
@@ -1315,26 +1437,35 @@ const styles = StyleSheet.create({
     marginBottom: 20,
   },
   backButton: {
-    paddingHorizontal: 20,
-    paddingVertical: 12,
+    paddingHorizontal: 24,
+    paddingVertical: 14,
     backgroundColor: colors.surface,
-    borderRadius: 10,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.05)',
   },
   backButtonText: {
     color: colors.text,
     fontSize: 15,
     fontWeight: '600',
   },
+  pressed: {
+    opacity: 0.7,
+  },
+  ctaPressed: {
+    opacity: 0.85,
+  },
   content: {
-    padding: 20,
+    paddingHorizontal: 24,
     paddingTop: 60,
-    gap: 16,
     paddingBottom: 40,
   },
+
+  /* Header */
   header: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
+    gap: 14,
     marginBottom: 8,
   },
   backArrow: {
@@ -1346,31 +1477,28 @@ const styles = StyleSheet.create({
   title: {
     color: colors.text,
     fontSize: 22,
-    fontWeight: '700',
+    fontWeight: '800',
+    letterSpacing: -0.3,
   },
   subtitle: {
-    color: colors.textSecondary,
-    fontSize: 14,
+    color: colors.muted,
+    fontSize: 13,
     marginTop: 2,
   },
-  statusBadge: {
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 6,
-    backgroundColor: colors.surfaceBorder,
+  statusLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
   },
-  statusText: {
-    color: colors.textSecondary,
-    fontSize: 12,
-    fontWeight: '600',
-    textTransform: 'capitalize',
-  },
+
+  /* Image */
   imageCard: {
     backgroundColor: colors.surface,
-    borderRadius: 16,
+    borderRadius: 12,
     overflow: 'hidden',
     borderWidth: 1,
-    borderColor: colors.surfaceBorder,
+    borderColor: 'rgba(255, 255, 255, 0.05)',
   },
   receiptImage: {
     width: '100%',
@@ -1387,95 +1515,59 @@ const styles = StyleSheet.create({
     alignSelf: 'center',
     paddingHorizontal: 16,
     paddingVertical: 8,
-    borderRadius: 999,
+    borderRadius: 12,
     backgroundColor: 'rgba(8, 10, 12, 0.9)',
     borderWidth: 1,
-    borderColor: 'rgba(45, 211, 111, 0.6)',
+    borderColor: 'rgba(255, 255, 255, 0.05)',
   },
   expandButtonText: {
     color: colors.primary,
     fontSize: 13,
     fontWeight: '600',
-    letterSpacing: 0.3,
   },
-  modalBackdrop: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.85)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: 20,
-  },
-  modalContent: {
-    width: '100%',
-    maxWidth: 420,
-    gap: 16,
-  },
-  modalImage: {
-    width: '100%',
-    aspectRatio: 3 / 4,
-    borderRadius: 18,
-    backgroundColor: colors.surfaceBorder,
-  },
-  modalCloseButton: {
-    alignSelf: 'center',
-    paddingHorizontal: 24,
-    paddingVertical: 12,
-    borderRadius: 999,
-    backgroundColor: 'rgba(17,20,24,0.9)',
-    borderWidth: 1,
-    borderColor: colors.surfaceBorder,
-  },
-  modalCloseText: {
-    color: colors.text,
-    fontSize: 15,
-    fontWeight: '600',
-  },
-  card: {
-    backgroundColor: colors.surface,
-    borderRadius: 16,
-    padding: 16,
+
+  /* Sections */
+  section: {
+    paddingVertical: 20,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255, 255, 255, 0.06)',
     gap: 12,
-    borderWidth: 1,
-    borderColor: colors.surfaceBorder,
   },
   cardHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
   },
-  cardTitle: {
-    color: colors.text,
-    fontSize: 16,
-    fontWeight: '600',
-  },
-  addButton: {
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: colors.surfaceBorder,
-    backgroundColor: 'rgba(17,20,24,0.9)',
+  sectionLabel: {
+    color: colors.muted,
+    fontSize: 12,
+    fontWeight: '700',
+    letterSpacing: 0.8,
+    textTransform: 'uppercase',
   },
   addButtonText: {
     color: colors.primary,
     fontSize: 14,
     fontWeight: '600',
   },
-  inputLabel: {
-    color: colors.textSecondary,
-    fontSize: 12,
-    textTransform: 'uppercase',
-    letterSpacing: 0.8,
-  },
+
+  /* Inputs */
   textInput: {
-    backgroundColor: 'rgba(17,20,24,0.75)',
+    backgroundColor: colors.surface,
     borderRadius: 12,
     paddingHorizontal: 14,
     paddingVertical: 12,
     borderWidth: 1,
-    borderColor: colors.surfaceBorder,
+    borderColor: 'rgba(255, 255, 255, 0.05)',
     color: colors.text,
     fontSize: 15,
+  },
+
+  /* Items */
+  hint: {
+    color: colors.muted,
+    fontSize: 12,
+    marginBottom: 4,
   },
   itemWrapper: {
     position: 'relative',
@@ -1487,7 +1579,6 @@ const styles = StyleSheet.create({
     bottom: 0,
     width: 80,
     backgroundColor: colors.danger,
-    borderRadius: 8,
   },
   swipeDeleteButton: {
     width: 80,
@@ -1501,14 +1592,26 @@ const styles = StyleSheet.create({
     alignItems: 'flex-start',
     paddingHorizontal: 12,
     gap: 8,
-    backgroundColor: colors.surface,
-    borderRadius: 8,
+    backgroundColor: colors.background,
+    borderLeftWidth: 3,
+    borderLeftColor: 'transparent',
   },
   itemRowClaimed: {
-    backgroundColor: '#2e2a1a', // yellow tint for claimed items
+    borderLeftColor: '#FBBF24',
+    backgroundColor: '#1F1E19',
   },
   itemRowPaid: {
-    backgroundColor: '#1a2e1f', // green tint for paid items
+    borderLeftColor: '#34D399',
+    backgroundColor: '#131F20',
+  },
+  assignButton: {
+    width: 32,
+    height: 32,
+    borderRadius: 8,
+    backgroundColor: 'rgba(255, 255, 255, 0.06)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginTop: 12,
   },
   itemMainContent: {
     flex: 1,
@@ -1519,26 +1622,20 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 8,
   },
-  paidBadge: {
-    backgroundColor: `${colors.primary}20`,
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 4,
-  },
-  paidBadgeText: {
-    color: colors.primary,
-    fontSize: 11,
-    fontWeight: '600',
-  },
-  itemRightSection: {
-    alignItems: 'flex-end',
-    paddingVertical: 12,
-  },
   itemNameInput: {
+    color: colors.text,
     fontSize: 15,
     paddingVertical: 4,
     paddingHorizontal: 0,
     backgroundColor: 'transparent',
+    flex: 1,
+  },
+  paidTag: {
+    color: colors.primary,
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
   },
   claimerBadges: {
     flexDirection: 'row',
@@ -1549,7 +1646,7 @@ const styles = StyleSheet.create({
   claimerBadge: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: colors.surfaceBorder,
+    backgroundColor: 'rgba(255, 255, 255, 0.04)',
     paddingHorizontal: 8,
     paddingVertical: 3,
     borderRadius: 4,
@@ -1560,8 +1657,12 @@ const styles = StyleSheet.create({
     fontSize: 12,
   },
   claimerName: {
-    color: colors.textSecondary,
+    color: colors.muted,
     fontSize: 11,
+  },
+  itemRightSection: {
+    alignItems: 'flex-end',
+    paddingVertical: 12,
   },
   itemRightFields: {
     flexDirection: 'row',
@@ -1578,33 +1679,22 @@ const styles = StyleSheet.create({
     backgroundColor: 'transparent',
   },
   itemTimesSymbol: {
-    color: colors.textSecondary,
+    color: colors.muted,
     fontSize: 13,
   },
   itemPriceInput: {
     color: colors.text,
     fontSize: 15,
     fontWeight: '600',
+    fontVariant: ['tabular-nums'],
     width: 70,
     textAlign: 'right',
     paddingVertical: 4,
     paddingHorizontal: 0,
     backgroundColor: 'transparent',
   },
-  hint: {
-    color: colors.textSecondary,
-    fontSize: 12,
-    marginBottom: 8,
-  },
-  assignButton: {
-    width: 32,
-    height: 32,
-    borderRadius: 8,
-    backgroundColor: colors.surfaceBorder,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginTop: 12,
-  },
+
+  /* Totals */
   summaryRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1619,17 +1709,19 @@ const styles = StyleSheet.create({
     color: colors.text,
     fontSize: 15,
     fontWeight: '600',
+    fontVariant: ['tabular-nums'],
   },
   summaryInput: {
     width: 120,
     textAlign: 'right',
     paddingRight: 12,
+    fontVariant: ['tabular-nums'],
   },
   totalRow: {
     marginTop: 8,
     paddingTop: 12,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: colors.surfaceBorder,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(255, 255, 255, 0.06)',
   },
   totalLabel: {
     color: colors.text,
@@ -1640,116 +1732,44 @@ const styles = StyleSheet.create({
     color: colors.text,
     fontSize: 18,
     fontWeight: '700',
+    fontVariant: ['tabular-nums'],
   },
-  actions: {
-    marginTop: 8,
-    gap: 12,
-  },
-  shareButton: {
-    backgroundColor: colors.primary,
-    borderRadius: 999,
-    paddingVertical: 14,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  shareButtonText: {
-    color: '#fff',
-    fontSize: 16,
-    fontWeight: '600',
-  },
-  saveButton: {
-    backgroundColor: colors.surface,
-    borderRadius: 999,
-    paddingVertical: 14,
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: colors.surfaceBorder,
-  },
-  saveButtonText: {
-    color: colors.text,
-    fontSize: 16,
-    fontWeight: '600',
-  },
-  deleteButton: {
-    borderRadius: 999,
-    paddingVertical: 14,
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: colors.danger,
-    backgroundColor: 'transparent',
-  },
-  deleteButtonText: {
-    color: colors.danger,
-    fontSize: 16,
-    fontWeight: '600',
-  },
-  buttonDisabled: {
-    opacity: 0.6,
-  },
-  // Payment badge styles
-  paymentBadge: {
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 6,
-  },
-  paymentBadgePaid: {
-    backgroundColor: '#2D5A3D',
-  },
-  paymentBadgePending: {
-    backgroundColor: colors.surfaceBorder,
-  },
-  paymentBadgeText: {
-    fontSize: 12,
-    fontWeight: '600',
-  },
-  paymentBadgeTextPaid: {
-    color: '#6FCF97',
-  },
-  paymentBadgeTextPending: {
-    color: colors.textSecondary,
-  },
-  // Participant management styles
+
+  /* Participants */
   participantCount: {
     color: colors.muted,
-    fontSize: 14,
+    fontSize: 13,
+    fontVariant: ['tabular-nums'],
   },
   addParticipantRow: {
     flexDirection: 'row',
     gap: 10,
   },
-  addParticipantInput: {
-    flex: 1,
-    backgroundColor: 'rgba(17,20,24,0.75)',
-    borderRadius: 12,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    borderWidth: 1,
-    borderColor: colors.surfaceBorder,
-    color: colors.text,
-    fontSize: 15,
-  },
   addParticipantButton: {
     width: 44,
     height: 44,
     borderRadius: 12,
-    backgroundColor: colors.primary,
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.05)',
     justifyContent: 'center',
     alignItems: 'center',
   },
-  addParticipantButtonDisabled: {
-    opacity: 0.5,
+  addParticipantLoadingText: {
+    color: colors.primary,
+    fontSize: 11,
+    fontWeight: '700',
   },
   participantList: {
-    gap: 2,
+    gap: 0,
   },
   participantRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingVertical: 10,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: colors.surfaceBorder,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255, 255, 255, 0.06)',
   },
   participantInfo: {
     flexDirection: 'row',
@@ -1774,29 +1794,25 @@ const styles = StyleSheet.create({
     fontWeight: '500',
   },
   participantYouLabel: {
-    color: colors.textSecondary,
+    color: colors.muted,
     fontSize: 13,
   },
   participantAmount: {
     color: colors.textSecondary,
     fontSize: 13,
+    fontVariant: ['tabular-nums'],
     marginTop: 2,
   },
   participantActions: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    gap: 10,
   },
-  hasClaimsBadge: {
-    backgroundColor: colors.surfaceBorder,
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    borderRadius: 4,
-    marginLeft: 8,
-  },
-  hasClaimsText: {
-    color: colors.textSecondary,
+  paymentTag: {
     fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
   },
   removeParticipantButton: {
     padding: 4,
@@ -1806,35 +1822,131 @@ const styles = StyleSheet.create({
     fontSize: 14,
     lineHeight: 20,
   },
-  // Assignment modal styles
+
+  /* Actions */
+  actions: {
+    paddingVertical: 24,
+    gap: 10,
+  },
+  shareButton: {
+    backgroundColor: '#57E6AE',
+    borderRadius: 10,
+    paddingVertical: 13,
+    paddingHorizontal: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(87, 230, 174, 0.55)',
+    shadowColor: '#57E6AE',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.18,
+    shadowRadius: 20,
+    elevation: 6,
+  },
+  shareButtonText: {
+    color: '#04110D',
+    fontSize: 13,
+    fontWeight: '700',
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
+  },
+  saveButton: {
+    backgroundColor: colors.surface,
+    borderRadius: 10,
+    paddingVertical: 13,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.05)',
+  },
+  saveButtonText: {
+    color: colors.text,
+    fontSize: 12,
+    fontWeight: '700',
+    letterSpacing: 0.4,
+    textTransform: 'uppercase',
+  },
+  deleteAction: {
+    paddingVertical: 12,
+    alignItems: 'center',
+  },
+  deleteText: {
+    color: colors.danger,
+    fontSize: 14,
+    fontWeight: '500',
+  },
+  buttonDisabled: {
+    opacity: 0.5,
+  },
+
+  /* Image modal */
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.9)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  modalContent: {
+    width: '100%',
+    maxWidth: 420,
+    gap: 16,
+  },
+  modalImage: {
+    width: '100%',
+    aspectRatio: 3 / 4,
+    borderRadius: 12,
+    backgroundColor: colors.surfaceBorder,
+  },
+  modalCloseButton: {
+    alignSelf: 'center',
+    paddingHorizontal: 24,
+    paddingVertical: 12,
+    borderRadius: 12,
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.05)',
+  },
+  modalCloseText: {
+    color: colors.text,
+    fontSize: 15,
+    fontWeight: '600',
+  },
+
+  /* Assignment modal */
   assignModalBackdrop: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.6)',
+    backgroundColor: 'rgba(0, 0, 0, 0.6)',
     justifyContent: 'flex-end',
   },
   assignModalContent: {
     backgroundColor: colors.surface,
-    borderTopLeftRadius: 24,
-    borderTopRightRadius: 24,
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
     paddingTop: 20,
     paddingBottom: 40,
     maxHeight: '70%',
+    borderWidth: 1,
+    borderBottomWidth: 0,
+    borderColor: 'rgba(255, 255, 255, 0.05)',
   },
   assignModalHeader: {
     flexDirection: 'row',
     alignItems: 'flex-start',
     justifyContent: 'space-between',
-    paddingHorizontal: 20,
+    paddingHorizontal: 24,
     paddingBottom: 16,
     borderBottomWidth: 1,
-    borderBottomColor: colors.surfaceBorder,
+    borderBottomColor: 'rgba(255, 255, 255, 0.06)',
   },
   assignModalTitle: {
-    color: colors.textSecondary,
-    fontSize: 13,
+    color: colors.muted,
+    fontSize: 12,
+    fontWeight: '700',
     textTransform: 'uppercase',
-    letterSpacing: 0.5,
-    marginBottom: 4,
+    letterSpacing: 0.8,
+    marginBottom: 6,
   },
   assignModalItemName: {
     color: colors.text,
@@ -1846,7 +1958,7 @@ const styles = StyleSheet.create({
     padding: 4,
   },
   assignParticipantList: {
-    paddingHorizontal: 20,
+    paddingHorizontal: 24,
     paddingTop: 8,
   },
   assignParticipantRow: {
@@ -1854,13 +1966,13 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
     paddingVertical: 14,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: colors.surfaceBorder,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255, 255, 255, 0.06)',
   },
   assignParticipantRowSelected: {
-    backgroundColor: `${colors.primary}15`,
-    marginHorizontal: -20,
-    paddingHorizontal: 20,
+    backgroundColor: 'rgba(52, 211, 153, 0.06)',
+    marginHorizontal: -24,
+    paddingHorizontal: 24,
   },
   assignParticipantInfo: {
     flexDirection: 'row',
@@ -1880,7 +1992,7 @@ const styles = StyleSheet.create({
     height: 24,
     borderRadius: 12,
     borderWidth: 2,
-    borderColor: colors.surfaceBorder,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
     justifyContent: 'center',
     alignItems: 'center',
   },
@@ -1898,35 +2010,36 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
   assignDoneButton: {
-    marginHorizontal: 20,
+    marginHorizontal: 24,
     marginTop: 20,
-    paddingVertical: 14,
-    borderRadius: 999,
+    paddingVertical: 16,
+    borderRadius: 12,
     backgroundColor: colors.primary,
     alignItems: 'center',
   },
   assignDoneButtonText: {
-    color: colors.background,
+    color: '#000',
     fontSize: 16,
-    fontWeight: '600',
+    fontWeight: '700',
   },
-  // Settled celebration modal styles
+
+  /* Settled celebration modal */
   settledModalBackdrop: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.7)',
+    backgroundColor: 'rgba(0, 0, 0, 0.7)',
     justifyContent: 'center',
     alignItems: 'center',
-    padding: 20,
+    padding: 24,
   },
   settledModalContent: {
     backgroundColor: colors.surface,
-    borderRadius: 24,
+    borderRadius: 16,
     padding: 32,
     alignItems: 'center',
     maxWidth: 320,
     width: '100%',
     borderWidth: 1,
-    borderColor: colors.surfaceBorder,
+    borderColor: 'rgba(255, 255, 255, 0.05)',
   },
   settledModalEmoji: {
     fontSize: 64,
@@ -1935,7 +2048,8 @@ const styles = StyleSheet.create({
   settledModalTitle: {
     color: colors.primary,
     fontSize: 28,
-    fontWeight: '700',
+    fontWeight: '800',
+    letterSpacing: -0.5,
     marginBottom: 12,
   },
   settledModalMessage: {
@@ -1947,13 +2061,13 @@ const styles = StyleSheet.create({
   },
   settledModalButton: {
     backgroundColor: colors.primary,
-    paddingVertical: 14,
+    paddingVertical: 16,
     paddingHorizontal: 48,
-    borderRadius: 999,
+    borderRadius: 12,
   },
   settledModalButtonText: {
-    color: colors.background,
+    color: '#000',
     fontSize: 16,
-    fontWeight: '600',
+    fontWeight: '700',
   },
 });

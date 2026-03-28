@@ -1,18 +1,13 @@
-import { ActivityIndicator, View, StyleSheet } from 'react-native';
 import { Redirect } from 'expo-router';
 
+import { ScreenPlaceholder } from '@/src/components/Skeleton';
 import { useAuth } from '@/src/hooks/useAuth';
-import { colors } from '@/src/theme';
 
 export default function Index() {
   const { session, isLoading } = useAuth();
 
   if (isLoading) {
-    return (
-      <View style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color={colors.primary} />
-      </View>
-    );
+    return <ScreenPlaceholder />;
   }
 
   if (!session) {
@@ -21,12 +16,3 @@ export default function Index() {
 
   return <Redirect href="/(host)/home" />;
 }
-
-const styles = StyleSheet.create({
-  loadingContainer: {
-    flex: 1,
-    backgroundColor: colors.background,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-});

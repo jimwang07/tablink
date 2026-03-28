@@ -1,8 +1,9 @@
 import { useCallback, useState, useMemo } from 'react';
-import { View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, Pressable } from 'react-native';
 import { Link, useRouter, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import Animated, { FadeInDown } from 'react-native-reanimated';
+import { SkeletonBlock, SkeletonPulse } from '@/src/components/Skeleton';
 import { colors } from '@/src/theme';
 import { useReceipts, type ReceiptWithDetails } from '@/src/hooks/useReceipts';
 import type { ReceiptStatus } from '@/src/types/receipt';
@@ -51,26 +52,42 @@ function formatDate(dateString: string | null): string {
 function calculateProgress(receipt: ReceiptWithDetails): ProgressData {
   const items = receipt.receipt_items || [];
   const participants = receipt.receipt_participants || [];
+  const receiptSubtotalCents =
+    typeof receipt.subtotal_cents === 'number' && receipt.subtotal_cents > 0
+      ? receipt.subtotal_cents
+      : items.reduce((sum, item) => sum + item.price_cents, 0);
+  const taxAndTipCents = (receipt.tax_cents || 0) + (receipt.tip_cents || 0);
 
   const participantPaymentStatus = new Map<string, string>();
   for (const p of participants) {
     participantPaymentStatus.set(p.id, p.payment_status);
   }
 
-  let totalCents = 0;
-  let claimedCents = 0;
-  let paidCents = 0;
+  let claimedSubtotalCents = 0;
+  let paidSubtotalCents = 0;
 
   for (const item of items) {
-    totalCents += item.price_cents;
     for (const claim of item.item_claims || []) {
-      claimedCents += claim.amount_cents;
+      claimedSubtotalCents += claim.amount_cents;
       const paymentStatus = participantPaymentStatus.get(claim.participant_id);
       if (paymentStatus === 'paid') {
-        paidCents += claim.amount_cents;
+        paidSubtotalCents += claim.amount_cents;
       }
     }
   }
+
+  const claimedExtrasCents =
+    receiptSubtotalCents > 0
+      ? Math.round((taxAndTipCents * claimedSubtotalCents) / receiptSubtotalCents)
+      : 0;
+  const paidExtrasCents =
+    receiptSubtotalCents > 0
+      ? Math.round((taxAndTipCents * paidSubtotalCents) / receiptSubtotalCents)
+      : 0;
+
+  const totalCents = receipt.total_cents || receiptSubtotalCents + taxAndTipCents;
+  const claimedCents = claimedSubtotalCents + claimedExtrasCents;
+  const paidCents = paidSubtotalCents + paidExtrasCents;
 
   return {
     unclaimed: totalCents - claimedCents,
@@ -92,6 +109,35 @@ function getEffectiveStatus(receipt: ReceiptWithDetails, progress: ProgressData)
 /* ── Components ────────────────────────────────────────────── */
 
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
+
+function HomeSkeleton() {
+  return (
+    <SkeletonPulse>
+      <View style={s.receiptList}>
+        {[0, 1, 2].map((index) => (
+          <View key={index} style={s.receiptCard}>
+            <View style={s.skeletonHeader}>
+              <SkeletonBlock width="54%" height={18} />
+              <SkeletonBlock width={72} height={18} />
+            </View>
+            <View style={s.cardMeta}>
+              <SkeletonBlock width={64} height={11} />
+              <Text style={s.metaSeparator}>•</Text>
+              <SkeletonBlock width={56} height={11} />
+            </View>
+            <View style={s.progressContainer}>
+              <SkeletonBlock width="100%" height={3} style={s.skeletonProgressTrack} />
+              <View style={s.progressLabels}>
+                <SkeletonBlock width={72} height={12} />
+                <SkeletonBlock width={84} height={12} />
+              </View>
+            </View>
+          </View>
+        ))}
+      </View>
+    </SkeletonPulse>
+  );
+}
 
 function ProgressBar({ data }: { data: ProgressData }) {
   if (data.total === 0) return null;
@@ -154,16 +200,19 @@ function ReceiptCard({ receipt, index }: { receipt: ReceiptWithDetails; index: n
         <Text style={s.totalAmount}>{formatCents(receipt.total_cents)}</Text>
       </View>
 
-      {showProgress && <ProgressBar data={progress} />}
-
-      <View style={s.cardFooter}>
-        <Text style={s.dateText}>
-          {receipt.receipt_date ? formatDate(receipt.receipt_date) : ''}
-        </Text>
+      <View style={s.cardMeta}>
         <Text style={[s.statusText, { color: accent }]}>
           {STATUS_LABEL[effectiveStatus]}
         </Text>
+        {receipt.receipt_date ? (
+          <>
+            <Text style={s.metaSeparator}>•</Text>
+            <Text style={s.dateText}>{formatDate(receipt.receipt_date)}</Text>
+          </>
+        ) : null}
       </View>
+
+      {showProgress && <ProgressBar data={progress} />}
     </AnimatedPressable>
   );
 }
@@ -190,7 +239,9 @@ function EmptyState({ tab }: { tab: Tab }) {
       {isYours && (
         <Link href="/scan" asChild>
           <Pressable style={s.emptyButton}>
+            <Ionicons name="scan-outline" size={16} color="#04110D" />
             <Text style={s.emptyButtonText}>Scan Receipt</Text>
+            <Ionicons name="arrow-forward" size={16} color="#04110D" />
           </Pressable>
         </Link>
       )}
@@ -261,7 +312,19 @@ export default function HomeScreen() {
       <ScrollView contentInsetAdjustmentBehavior="automatic">
         {/* Header */}
         <View style={s.header}>
-          <Text style={s.heading}>Tablink</Text>
+          <View style={s.headerRow}>
+            <Text style={s.heading}>Tablink</Text>
+            {!isLoading && (
+              <Link href="/scan" asChild>
+                <Pressable style={({ pressed }) => [s.scanButton, pressed && s.scanButtonPressed]}>
+                  <View style={s.scanButtonContent}>
+                    <Ionicons name="scan-outline" size={16} color={colors.primary} />
+                    <Text style={s.scanButtonText}>Scan</Text>
+                  </View>
+                </Pressable>
+              </Link>
+            )}
+          </View>
         </View>
 
         {/* Summary (only when money is owed) */}
@@ -288,22 +351,12 @@ export default function HomeScreen() {
 
         {/* Content */}
         {isLoading ? (
-          <View style={s.loadingContainer}>
-            <ActivityIndicator size="large" color={colors.primary} />
-          </View>
+          <HomeSkeleton />
         ) : (
           <ReceiptList receipts={receipts} tab={activeTab} />
         )}
       </ScrollView>
 
-      {/* FAB */}
-      <View style={s.fabContainer}>
-        <Link href="/scan" asChild>
-          <Pressable style={({ pressed }) => [s.fab, pressed && s.fabPressed]}>
-            <Ionicons name="add" size={28} color="#000" />
-          </Pressable>
-        </Link>
-      </View>
     </View>
   );
 }
@@ -322,11 +375,42 @@ const s = StyleSheet.create({
     paddingBottom: 4,
     paddingHorizontal: 24,
   },
+  headerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 16,
+  },
   heading: {
     color: colors.text,
     fontSize: 30,
     fontWeight: '800',
     letterSpacing: -0.5,
+    flexShrink: 1,
+  },
+  scanButton: {
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: 'rgba(52, 211, 153, 0.18)',
+    borderRadius: 999,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    flexShrink: 0,
+  },
+  scanButtonContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  scanButtonPressed: {
+    opacity: 0.82,
+  },
+  scanButtonText: {
+    color: colors.text,
+    fontSize: 14,
+    fontWeight: '700',
+    letterSpacing: 0.2,
+    flexShrink: 0,
+    marginLeft: 8,
   },
 
   /* Summary */
@@ -404,16 +488,20 @@ const s = StyleSheet.create({
     borderRadius: 1,
   },
 
-  /* Loading */
-  loadingContainer: {
-    paddingVertical: 80,
+  skeletonHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
     alignItems: 'center',
+  },
+  skeletonProgressTrack: {
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
   },
 
   /* Receipt list */
   receiptList: {
     paddingHorizontal: 24,
     paddingBottom: 120,
+    gap: 14,
   },
 
   /* Receipt card */
@@ -421,7 +509,6 @@ const s = StyleSheet.create({
     backgroundColor: colors.surface,
     borderRadius: 12,
     padding: 18,
-    marginBottom: 10,
     borderWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.05)',
     borderLeftWidth: 3,
@@ -447,15 +534,19 @@ const s = StyleSheet.create({
     fontWeight: '700',
     fontVariant: ['tabular-nums'],
   },
-  cardFooter: {
+  cardMeta: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
     alignItems: 'center',
-    marginTop: 4,
+    marginTop: 6,
   },
   dateText: {
     color: colors.muted,
     fontSize: 13,
+  },
+  metaSeparator: {
+    color: colors.muted,
+    fontSize: 12,
+    marginHorizontal: 6,
   },
   statusText: {
     fontSize: 11,
@@ -519,38 +610,26 @@ const s = StyleSheet.create({
   },
   emptyButton: {
     marginTop: 28,
-    backgroundColor: colors.primary,
-    paddingVertical: 14,
-    paddingHorizontal: 32,
-    borderRadius: 12,
+    backgroundColor: '#57E6AE',
+    paddingVertical: 13,
+    paddingHorizontal: 16,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(87, 230, 174, 0.55)',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    shadowColor: '#57E6AE',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.18,
+    shadowRadius: 20,
+    elevation: 6,
   },
   emptyButtonText: {
-    color: '#000',
-    fontSize: 15,
+    color: '#04110D',
+    fontSize: 13,
     fontWeight: '700',
-  },
-
-  /* FAB */
-  fabContainer: {
-    position: 'absolute',
-    bottom: 36,
-    right: 24,
-  },
-  fab: {
-    backgroundColor: colors.primary,
-    width: 60,
-    height: 60,
-    borderRadius: 30,
-    alignItems: 'center',
-    justifyContent: 'center',
-    shadowColor: colors.primary,
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.4,
-    shadowRadius: 16,
-    elevation: 8,
-  },
-  fabPressed: {
-    opacity: 0.85,
-    transform: [{ scale: 0.95 }],
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
   },
 });

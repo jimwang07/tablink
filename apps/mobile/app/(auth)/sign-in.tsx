@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
-  ActivityIndicator,
   ScrollView,
   StyleSheet,
   Text,
@@ -101,10 +100,7 @@ export default function SignInScreen() {
               disabled={isAuthenticating}
             >
               <Ionicons name="logo-google" size={18} color={colors.text} />
-              <Text style={s.oauthText}>Continue with Google</Text>
-              {isAuthenticating && (
-                <ActivityIndicator size="small" color={colors.muted} />
-              )}
+              <Text style={s.oauthText}>{isAuthenticating ? 'Connecting...' : 'Continue with Google'}</Text>
             </Pressable>
 
             {Platform.OS === 'ios' && (
@@ -114,10 +110,7 @@ export default function SignInScreen() {
                 disabled={isAuthenticating}
               >
                 <Ionicons name="logo-apple" size={18} color={colors.text} />
-                <Text style={s.oauthText}>Continue with Apple</Text>
-                {isAuthenticating && (
-                  <ActivityIndicator size="small" color={colors.muted} />
-                )}
+                <Text style={s.oauthText}>{isAuthenticating ? 'Connecting...' : 'Continue with Apple'}</Text>
               </Pressable>
             )}
 
@@ -149,13 +142,9 @@ export default function SignInScreen() {
                 onPress={handleEmail}
                 disabled={!emailIsValid || isAuthenticating}
               >
-                {isAuthenticating ? (
-                  <ActivityIndicator size="small" color="#000" />
-                ) : (
-                  <Text style={[s.ctaText, !emailIsValid && s.ctaTextDisabled]}>
-                    Send magic link
-                  </Text>
-                )}
+                <Text style={[s.ctaText, !emailIsValid && s.ctaTextDisabled]}>
+                  {isAuthenticating ? 'Sending...' : 'Send magic link'}
+                </Text>
               </Pressable>
             </View>
 

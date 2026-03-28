@@ -1,14 +1,14 @@
 export default function Home() {
   return (
-    <div className="min-h-screen bg-gray-900 flex items-center justify-center p-4">
-      <div className="bg-gray-800 rounded-xl p-8 max-w-md w-full text-center">
-        <h1 className="text-3xl font-bold text-white mb-4">Tablink</h1>
-        <p className="text-gray-300 mb-6">
-          The easiest way to split bills with friends.
+    <div className="tablink-guest-shell flex min-h-screen items-center justify-center px-4">
+      <div className="tablink-card w-full max-w-xl text-center">
+        <div className="tablink-overline mb-3">Tablink</div>
+        <h1 className="tablink-section-title mb-4">Split the bill without the mess.</h1>
+        <p className="tablink-section-body mb-4">
+          Claim items, calculate your share, and pay the host from one clean link.
         </p>
-        <p className="text-gray-400 text-sm">
-          If you received a link to claim items on a receipt,
-          please use the full URL provided to you.
+        <p className="tablink-empty-note">
+          If someone sent you a receipt link, open the full URL they shared with you.
         </p>
       </div>
     </div>

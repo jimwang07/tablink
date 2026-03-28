@@ -6,9 +6,16 @@ import {
   FlatList,
   RefreshControl,
   Pressable,
-  ActivityIndicator,
 } from 'react-native';
 import { useRouter } from 'expo-router';
+import Animated, {
+  FadeInDown,
+  useSharedValue,
+  useAnimatedStyle,
+  withRepeat,
+  withTiming,
+} from 'react-native-reanimated';
+import { Ionicons } from '@expo/vector-icons';
 import { colors } from '@/src/theme';
 import { useAuth } from '@/src/hooks/useAuth';
 import {
@@ -16,6 +23,22 @@ import {
   fetchRecentActivity,
   subscribeToActivity,
 } from '@/src/services/activityService';
+
+/* ── Type colors (matches home status system) ──────────────── */
+
+const TYPE_COLOR: Record<string, string> = {
+  claim: '#FBBF24',
+  payment: '#34D399',
+  join: '#60A5FA',
+};
+
+const TYPE_ICON: Record<string, keyof typeof Ionicons.glyphMap> = {
+  claim: 'pricetag',
+  payment: 'checkmark-circle',
+  join: 'person-add',
+};
+
+/* ── Helpers ───────────────────────────────────────────────── */
 
 function formatRelativeTime(dateString: string): string {
   const date = new Date(dateString);
@@ -45,14 +68,62 @@ function formatCents(cents: number): string {
   return `$${(cents / 100).toFixed(2)}`;
 }
 
+/* ── Skeleton ──────────────────────────────────────────────── */
+
+function SkeletonPulse({ children }: { children: React.ReactNode }) {
+  const opacity = useSharedValue(0.4);
+
+  useEffect(() => {
+    opacity.value = withRepeat(
+      withTiming(0.8, { duration: 900 }),
+      -1,
+      true
+    );
+  }, []);
+
+  const style = useAnimatedStyle(() => ({ opacity: opacity.value }));
+
+  return <Animated.View style={style}>{children}</Animated.View>;
+}
+
+function SkeletonBar({ width, height = 14 }: { width: number | `${number}%`; height?: number }) {
+  return (
+    <View style={{ width, height, borderRadius: 6, backgroundColor: 'rgba(255, 255, 255, 0.06)' }} />
+  );
+}
+
+function ActivitySkeleton() {
+  return (
+    <SkeletonPulse>
+      {[0, 1, 2, 3, 4].map((i) => (
+        <View key={i} style={s.skeletonRow}>
+          <SkeletonBar width={36} height={36} />
+          <View style={{ flex: 1, gap: 8 }}>
+            <SkeletonBar width="80%" />
+            <SkeletonBar width="50%" height={12} />
+          </View>
+        </View>
+      ))}
+    </SkeletonPulse>
+  );
+}
+
+/* ── Components ────────────────────────────────────────────── */
+
+const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
+
 function ActivityItemRow({
   item,
+  index,
   onPress,
 }: {
   item: ActivityItem;
+  index: number;
   onPress: () => void;
 }) {
-  const emoji = item.participantEmoji || '👤';
+  const accent = TYPE_COLOR[item.type] || colors.muted;
+  const icon = TYPE_ICON[item.type] || 'ellipse';
+
   const description =
     item.type === 'claim'
       ? `claimed "${item.itemName}"`
@@ -61,43 +132,46 @@ function ActivityItemRow({
       : `joined the receipt`;
 
   return (
-    <Pressable
-      style={({ pressed }) => [
-        styles.activityItem,
-        pressed && styles.activityItemPressed,
-      ]}
+    <AnimatedPressable
+      entering={FadeInDown.delay(index * 50).duration(400).springify()}
+      style={({ pressed }) => [s.activityRow, pressed && s.pressed]}
       onPress={onPress}
     >
-      <View style={styles.avatarContainer}>
-        <Text style={styles.avatar}>{emoji}</Text>
-      </View>
-      <View style={styles.activityContent}>
-        <Text style={styles.activityText}>
-          <Text style={styles.participantName}>{item.participantName}</Text>
-          {' '}
-          {description}
-        </Text>
-        <View style={styles.activityMeta}>
-          <Text style={styles.receiptName}>{item.receiptName}</Text>
-          <Text style={styles.separator}>•</Text>
-          <Text style={styles.timestamp}>{formatRelativeTime(item.timestamp)}</Text>
+      <View style={s.activityMain}>
+        <View style={[s.iconContainer, { backgroundColor: `${accent}10` }]}>
+          <Ionicons name={icon} size={16} color={accent} />
+        </View>
+        <View style={s.activityContent}>
+          <Text style={s.activityText}>
+            <Text style={s.participantName}>{item.participantName}</Text>
+            {' '}{description}
+          </Text>
+          <View style={s.activityMeta}>
+            <Text style={s.receiptName} numberOfLines={1}>{item.receiptName}</Text>
+            <Text style={s.dot}>·</Text>
+            <Text style={s.timestamp}>{formatRelativeTime(item.timestamp)}</Text>
+          </View>
         </View>
       </View>
-    </Pressable>
+    </AnimatedPressable>
   );
 }
 
 function EmptyState() {
   return (
-    <View style={styles.emptyContainer}>
-      <Text style={styles.emptyEmoji}>📋</Text>
-      <Text style={styles.emptyTitle}>No activity yet</Text>
-      <Text style={styles.emptySubtitle}>
-        When friends join and claim items on your receipts, you'll see it here in real-time.
+    <Animated.View entering={FadeInDown.duration(500)} style={s.emptyState}>
+      <View style={s.emptyIcon}>
+        <Ionicons name="pulse-outline" size={24} color={colors.muted} />
+      </View>
+      <Text style={s.emptyTitle}>No activity yet</Text>
+      <Text style={s.emptyDescription}>
+        When friends join and claim items on your receipts, updates appear here in real time.
       </Text>
-    </View>
+    </Animated.View>
   );
 }
+
+/* ── Main screen ───────────────────────────────────────────── */
 
 export default function ActivityScreen() {
   const { user } = useAuth();
@@ -131,33 +205,28 @@ export default function ActivityScreen() {
     }
   }, [user?.id]);
 
-  // Initial load
   useEffect(() => {
     loadActivity();
   }, [loadActivity]);
 
-  // Subscribe to realtime updates
   useEffect(() => {
     if (!user?.id) return;
 
     const unsubscribe = subscribeToActivity(user.id, {
       onClaim: (activity) => {
         setActivities((prev) => {
-          // Avoid duplicates
           if (prev.some((a) => a.id === activity.id)) return prev;
           return [activity, ...prev].slice(0, 50);
         });
       },
       onJoin: (activity) => {
         setActivities((prev) => {
-          // Avoid duplicates
           if (prev.some((a) => a.id === activity.id)) return prev;
           return [activity, ...prev].slice(0, 50);
         });
       },
       onPayment: (activity) => {
         setActivities((prev) => {
-          // Avoid duplicates
           if (prev.some((a) => a.id === activity.id)) return prev;
           return [activity, ...prev].slice(0, 50);
         });
@@ -174,146 +243,117 @@ export default function ActivityScreen() {
 
   const handleActivityPress = useCallback(
     (item: ActivityItem) => {
-      router.push(`/receipt/${item.receiptId}`);
+      router.push({
+        pathname: '/receipt/[id]',
+        params: { id: item.receiptId },
+      });
     },
     [router]
   );
 
-  if (isLoading) {
-    return (
-      <View style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color={colors.primary} />
-      </View>
-    );
-  }
-
   return (
-    <View style={styles.container}>
-      <View style={styles.header}>
-        <Text style={styles.heading}>Activity</Text>
-        <Text style={styles.subheading}>Live claims, joins, and payments</Text>
+    <View style={s.container}>
+      <View style={s.header}>
+        <Text style={s.heading}>Activity</Text>
       </View>
-      <FlatList
-        data={activities}
-        keyExtractor={(item) => item.id}
-        renderItem={({ item }) => (
-          <ActivityItemRow
-            item={item}
-            onPress={() => handleActivityPress(item)}
-          />
-        )}
-        contentContainerStyle={activities.length === 0 ? styles.emptyList : styles.listContent}
-        ListEmptyComponent={EmptyState}
-        refreshControl={
-          <RefreshControl
-            refreshing={isRefreshing}
-            onRefresh={handleRefresh}
-            tintColor={colors.primary}
-            colors={[colors.primary]}
-          />
-        }
-        showsVerticalScrollIndicator={false}
-      />
+
+      {isLoading ? (
+        <View style={s.skeletonContainer}>
+          <ActivitySkeleton />
+        </View>
+      ) : (
+        <FlatList
+          data={activities}
+          keyExtractor={(item) => item.id}
+          renderItem={({ item, index }) => (
+            <ActivityItemRow
+              item={item}
+              index={index}
+              onPress={() => handleActivityPress(item)}
+            />
+          )}
+          contentContainerStyle={activities.length === 0 ? s.emptyList : s.listContent}
+          ListEmptyComponent={EmptyState}
+          refreshControl={
+            <RefreshControl
+              refreshing={isRefreshing}
+              onRefresh={handleRefresh}
+              tintColor={colors.primary}
+              colors={[colors.primary]}
+            />
+          }
+          showsVerticalScrollIndicator={false}
+        />
+      )}
     </View>
   );
 }
 
-const styles = StyleSheet.create({
+/* ── Styles ────────────────────────────────────────────────── */
+
+const s = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: colors.background,
-    paddingTop: 60,
-  },
-  loadingContainer: {
-    flex: 1,
-    backgroundColor: colors.background,
-    justifyContent: 'center',
-    alignItems: 'center',
   },
   header: {
-    paddingHorizontal: 20,
-    paddingBottom: 12,
+    paddingTop: 60,
+    paddingBottom: 16,
+    paddingHorizontal: 24,
   },
   heading: {
     color: colors.text,
-    fontSize: 28,
-    fontWeight: '700',
+    fontSize: 30,
+    fontWeight: '800',
+    letterSpacing: -0.5,
   },
-  subheading: {
-    marginTop: 4,
-    color: colors.textSecondary,
-    fontSize: 14,
-    letterSpacing: 0.2,
-  },
+
+  /* List */
   listContent: {
-    paddingHorizontal: 12,
+    paddingHorizontal: 24,
+    paddingBottom: 120,
+    gap: 12,
   },
   emptyList: {
     flex: 1,
   },
-  emptyContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    paddingHorizontal: 40,
-    paddingBottom: 100,
-  },
-  emptyEmoji: {
-    fontSize: 48,
-    marginBottom: 16,
-  },
-  emptyTitle: {
-    color: colors.text,
-    fontSize: 20,
-    fontWeight: '600',
-    marginBottom: 8,
-    textAlign: 'center',
-  },
-  emptySubtitle: {
-    color: colors.textSecondary,
-    fontSize: 15,
-    lineHeight: 22,
-    textAlign: 'center',
-  },
-  activityItem: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    paddingVertical: 14,
+
+  /* Activity row */
+  activityRow: {
+    paddingVertical: 22,
     paddingHorizontal: 16,
-    marginHorizontal: 8,
-    marginVertical: 6,
     borderRadius: 14,
     backgroundColor: colors.surface,
     borderWidth: 1,
-    borderColor: colors.surfaceBorder,
-    shadowColor: '#000',
-    shadowOpacity: 0.15,
-    shadowRadius: 8,
-    shadowOffset: { width: 0, height: 4 },
-    elevation: 4,
+    borderColor: 'rgba(255, 255, 255, 0.04)',
   },
-  activityItemPressed: {
-    backgroundColor: 'rgba(255,255,255,0.02)',
+  activityMain: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    width: '100%',
   },
-  avatarContainer: {
+  pressed: {
+    opacity: 0.7,
+  },
+  iconContainer: {
     width: 40,
     height: 40,
     borderRadius: 20,
-    backgroundColor: colors.surface,
     justifyContent: 'center',
     alignItems: 'center',
-    marginRight: 12,
-  },
-  avatar: {
-    fontSize: 20,
+    flexShrink: 0,
+    marginRight: 18,
   },
   activityContent: {
     flex: 1,
+    flexBasis: 0,
+    minWidth: 0,
   },
   activityText: {
     color: colors.textSecondary,
     fontSize: 15,
-    lineHeight: 21,
+    lineHeight: 23,
+    flexShrink: 1,
   },
   participantName: {
     color: colors.text,
@@ -322,19 +362,61 @@ const styles = StyleSheet.create({
   activityMeta: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginTop: 4,
+    marginTop: 8,
+    gap: 8,
   },
   receiptName: {
     color: colors.muted,
     fontSize: 13,
+    flexShrink: 1,
   },
-  separator: {
+  dot: {
     color: colors.muted,
     fontSize: 13,
-    marginHorizontal: 6,
   },
   timestamp: {
     color: colors.muted,
     fontSize: 13,
+  },
+
+  /* Empty state (matches home) */
+  emptyState: {
+    alignItems: 'center',
+    paddingVertical: 80,
+    paddingHorizontal: 48,
+  },
+  emptyIcon: {
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    backgroundColor: 'rgba(255, 255, 255, 0.04)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 20,
+  },
+  emptyTitle: {
+    color: colors.textSecondary,
+    fontSize: 17,
+    fontWeight: '600',
+    marginBottom: 8,
+  },
+  emptyDescription: {
+    color: colors.muted,
+    fontSize: 14,
+    textAlign: 'center',
+    lineHeight: 21,
+  },
+
+  /* Skeleton */
+  skeletonContainer: {
+    paddingHorizontal: 24,
+  },
+  skeletonRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 14,
+    paddingVertical: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255, 255, 255, 0.06)',
   },
 });

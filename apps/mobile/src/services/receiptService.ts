@@ -18,6 +18,7 @@ export type ReceiptWithItems = Receipt & {
 
 const DEFAULT_SHARE_LINK_EXPIRY_DAYS = 30;
 const SHORT_CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789';
+const PARTICIPANT_FACE_EMOJIS = ['😀', '😄', '😁', '😆', '😎', '🤠', '🥸', '🤓', '😋', '😜', '🤪', '🥳'];
 
 function generateShortCode(length = 8): string {
   let code = '';
@@ -30,6 +31,13 @@ function generateShortCode(length = 8): string {
 
 function dollarsToCents(amount: number): number {
   return Math.round(amount * 100);
+}
+
+export function pickUniqueParticipantEmoji(usedEmojis: string[] = []): string {
+  const available = PARTICIPANT_FACE_EMOJIS.filter((emoji) => !usedEmojis.includes(emoji));
+  const pool = available.length > 0 ? available : PARTICIPANT_FACE_EMOJIS;
+  const index = Math.floor(Math.random() * pool.length);
+  return pool[index];
 }
 
 export type ShareLinkResult = {
@@ -196,7 +204,7 @@ export async function saveReceipt(
       profile_id: userId,
       role: 'owner',
       payment_status: 'paid', // Owner doesn't need to pay themselves
-      emoji: '👤',
+      emoji: pickUniqueParticipantEmoji(),
     });
 
   if (participantError) {

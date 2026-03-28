@@ -1,10 +1,9 @@
 'use client';
 
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useMemo } from 'react';
 import { getSupabaseClient } from '@/lib/supabase';
 import type { RealtimePostgresChangesPayload } from '@supabase/supabase-js';
 
-// Theme colors matching mobile app
 const colors = {
   background: '#080A0C',
   surface: '#111418',
@@ -12,10 +11,14 @@ const colors = {
   muted: '#5A6371',
   text: '#F5F7FA',
   textSecondary: '#C3C8D4',
-  primary: '#2DD36F',
+  primary: '#34D399',
+  primaryBright: '#57E6AE',
   danger: '#FF5C5C',
   warning: '#F2C94C',
 };
+
+const FACE_EMOJIS = ['😀', '😄', '😁', '😆', '😎', '🤠', '🥸', '🤓', '😋', '😜', '🤪', '🥳'];
+const COLORS = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FFEAA7', '#DDA0DD', '#98D8C8', '#F7DC6F', '#74B9FF', '#FD79A8'];
 
 type ReceiptItem = {
   id: string;
@@ -61,8 +64,14 @@ type OwnerProfile = {
   zelle_identifier: string | null;
 };
 
-const EMOJIS = ['😀', '🎉', '🍕', '🌟', '🎸', '🌈', '🚀', '🎨', '🍦', '🎯', '🦊', '🐱', '🦁', '🐸'];
-const COLORS = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FFEAA7', '#DDA0DD', '#98D8C8', '#F7DC6F', '#74b9ff', '#fd79a8'];
+type Props = {
+  receiptId: string;
+  receipt: Receipt;
+  items: ReceiptItem[];
+  initialClaims: ItemClaim[];
+  initialParticipants: Participant[];
+  ownerProfile: OwnerProfile | null;
+};
 
 function formatCents(cents: number): string {
   return `$${(cents / 100).toFixed(2)}`;
@@ -74,16 +83,127 @@ function formatDate(dateString: string | null): string {
   return date.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
 }
 
-type Props = {
-  receiptId: string;
-  receipt: Receipt;
-  items: ReceiptItem[];
-  initialClaims: ItemClaim[];
-  initialParticipants: Participant[];
-  ownerProfile: OwnerProfile | null;
-};
+function pickUniqueEmoji(usedEmojis: string[]): string {
+  const available = FACE_EMOJIS.filter((emoji) => !usedEmojis.includes(emoji));
+  const pool = available.length > 0 ? available : FACE_EMOJIS;
+  return pool[Math.floor(Math.random() * pool.length)];
+}
 
-export function ClaimPageClient({ receiptId, receipt, items, initialClaims, initialParticipants, ownerProfile }: Props) {
+function ArrowIcon({ className = 'h-4 w-4' }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.25">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M5 12h14M13 5l7 7-7 7" />
+    </svg>
+  );
+}
+
+function CheckIcon({ className = 'h-4 w-4' }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+    </svg>
+  );
+}
+
+function CloseIcon() {
+  return (
+    <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+    </svg>
+  );
+}
+
+function AppMark() {
+  return (
+    <div className="flex items-center gap-3">
+      <div className="tablink-logo">
+        <span>T</span>
+      </div>
+      <div>
+        <div className="tablink-meta-label">Tablink</div>
+        <div className="tablink-meta-caption">Claim your share</div>
+      </div>
+    </div>
+  );
+}
+
+function PrimaryAction({
+  children,
+  onClick,
+  disabled,
+  type = 'button',
+}: {
+  children: React.ReactNode;
+  onClick?: () => void;
+  disabled?: boolean;
+  type?: 'button' | 'submit';
+}) {
+  return (
+    <button
+      type={type}
+      onClick={onClick}
+      disabled={disabled}
+      className="tablink-primary-button"
+    >
+      {children}
+    </button>
+  );
+}
+
+function SecondaryAction({
+  children,
+  onClick,
+  disabled,
+}: {
+  children: React.ReactNode;
+  onClick?: () => void;
+  disabled?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      className="tablink-secondary-button"
+    >
+      {children}
+    </button>
+  );
+}
+
+function PaymentLinkAction({
+  href,
+  children,
+  accent,
+}: {
+  href: string;
+  children: React.ReactNode;
+  accent: string;
+}) {
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="tablink-payment-link"
+      style={{
+        borderColor: `${accent}55`,
+        background: `linear-gradient(180deg, ${accent}20 0%, rgba(17,20,24,0.98) 100%)`,
+      }}
+    >
+      {children}
+    </a>
+  );
+}
+
+export function ClaimPageClient({
+  receiptId,
+  receipt,
+  items,
+  initialClaims,
+  initialParticipants,
+  ownerProfile,
+}: Props) {
   const [claims, setClaims] = useState<ItemClaim[]>(initialClaims);
   const [participants, setParticipants] = useState<Participant[]>(initialParticipants);
   const [currentParticipant, setCurrentParticipant] = useState<Participant | null>(null);
@@ -97,39 +217,32 @@ export function ClaimPageClient({ receiptId, receipt, items, initialClaims, init
   const [copiedZelle, setCopiedZelle] = useState(false);
   const [showPaymentModal, setShowPaymentModal] = useState(false);
 
-  // Subscribe to realtime updates
   useEffect(() => {
     const supabase = getSupabaseClient();
-    const itemIds = items.map(i => i.id);
+    const itemIds = items.map((item) => item.id);
 
     const channel = supabase
       .channel(`receipt:${receiptId}`)
       .on(
         'postgres_changes',
-        {
-          event: '*',
-          schema: 'public',
-          table: 'item_claims',
-        },
+        { event: '*', schema: 'public', table: 'item_claims' },
         (payload: RealtimePostgresChangesPayload<ItemClaim>) => {
           if (payload.eventType === 'INSERT') {
             const newClaim = payload.new as ItemClaim;
             if (itemIds.includes(newClaim.item_id)) {
-              setClaims(prev => {
-                if (prev.some(c => c.id === newClaim.id)) return prev;
+              setClaims((prev) => {
+                if (prev.some((claim) => claim.id === newClaim.id)) return prev;
                 return [...prev, newClaim];
               });
             }
           } else if (payload.eventType === 'UPDATE') {
             const updated = payload.new as ItemClaim;
             if (itemIds.includes(updated.item_id)) {
-              setClaims(prev =>
-                prev.map(c => c.id === updated.id ? { ...c, ...updated } : c)
-              );
+              setClaims((prev) => prev.map((claim) => (claim.id === updated.id ? { ...claim, ...updated } : claim)));
             }
           } else if (payload.eventType === 'DELETE') {
             const oldClaim = payload.old as { id: string };
-            setClaims(prev => prev.filter(c => c.id !== oldClaim.id));
+            setClaims((prev) => prev.filter((claim) => claim.id !== oldClaim.id));
           }
         }
       )
@@ -143,8 +256,8 @@ export function ClaimPageClient({ receiptId, receipt, items, initialClaims, init
         },
         (payload: RealtimePostgresChangesPayload<Participant>) => {
           const newParticipant = payload.new as Participant;
-          setParticipants(prev => {
-            if (prev.some(p => p.id === newParticipant.id)) return prev;
+          setParticipants((prev) => {
+            if (prev.some((participant) => participant.id === newParticipant.id)) return prev;
             return [...prev, newParticipant];
           });
         }
@@ -159,9 +272,10 @@ export function ClaimPageClient({ receiptId, receipt, items, initialClaims, init
         },
         (payload: RealtimePostgresChangesPayload<Participant>) => {
           const updated = payload.new as Participant;
-          setParticipants(prev =>
-            prev.map(p => p.id === updated.id ? { ...p, ...updated } : p)
+          setParticipants((prev) =>
+            prev.map((participant) => (participant.id === updated.id ? { ...participant, ...updated } : participant))
           );
+          setCurrentParticipant((prev) => (prev?.id === updated.id ? { ...prev, ...updated } : prev));
         }
       )
       .subscribe();
@@ -169,11 +283,11 @@ export function ClaimPageClient({ receiptId, receipt, items, initialClaims, init
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [receiptId, items]);
+  }, [items, receiptId]);
 
   const handleJoin = useCallback(async () => {
     if (!guestName.trim()) {
-      setError('Please enter your name');
+      setError('Please enter your name.');
       return;
     }
 
@@ -182,7 +296,11 @@ export function ClaimPageClient({ receiptId, receipt, items, initialClaims, init
 
     try {
       const supabase = getSupabaseClient();
-      const emoji = EMOJIS[Math.floor(Math.random() * EMOJIS.length)];
+      const emoji = pickUniqueEmoji(
+        participants
+          .map((participant) => participant.emoji)
+          .filter((value): value is string => Boolean(value))
+      );
       const color = COLORS[Math.floor(Math.random() * COLORS.length)];
 
       const { data, error: insertError } = await supabase
@@ -200,8 +318,8 @@ export function ClaimPageClient({ receiptId, receipt, items, initialClaims, init
       if (insertError) throw insertError;
 
       setCurrentParticipant(data);
-      setParticipants(prev => {
-        if (prev.some(p => p.id === data.id)) return prev;
+      setParticipants((prev) => {
+        if (prev.some((participant) => participant.id === data.id)) return prev;
         return [...prev, data];
       });
     } catch (err) {
@@ -210,108 +328,96 @@ export function ClaimPageClient({ receiptId, receipt, items, initialClaims, init
     } finally {
       setIsJoining(false);
     }
-  }, [guestName, receiptId]);
+  }, [guestName, participants, receiptId]);
 
-  const handleClaimItem = useCallback(async (itemId: string) => {
-    if (!currentParticipant || claimingItemId) return;
+  const handleClaimItem = useCallback(
+    async (itemId: string) => {
+      if (!currentParticipant || claimingItemId) return;
 
-    const item = items.find(i => i.id === itemId);
-    if (!item) return;
+      const item = items.find((entry) => entry.id === itemId);
+      if (!item) return;
 
-    // Block claiming/unclaiming if any claimer on this item has already paid
-    const itemClaims = claims.filter(c => c.item_id === itemId);
-    const claimerIds = itemClaims.map(c => c.participant_id);
-    const hasAnyPaid = participants.some(
-      p => claimerIds.includes(p.id) && p.payment_status === 'paid'
-    );
-    if (hasAnyPaid) {
-      setError('This item has already been paid for and can no longer be changed.');
-      return;
-    }
-
-    setClaimingItemId(itemId);
-    setError(null);
-
-    try {
-      const supabase = getSupabaseClient();
-
-      const existingClaim = claims.find(
-        c => c.item_id === itemId && c.participant_id === currentParticipant.id
+      const itemClaims = claims.filter((claim) => claim.item_id === itemId);
+      const claimerIds = itemClaims.map((claim) => claim.participant_id);
+      const hasAnyPaid = participants.some(
+        (participant) => claimerIds.includes(participant.id) && participant.payment_status === 'paid'
       );
 
-      if (existingClaim) {
-        // Remove the claim
-        const { error: deleteError } = await supabase
-          .from('item_claims')
-          .delete()
-          .eq('id', existingClaim.id);
-
-        if (deleteError) throw deleteError;
-
-        // Get remaining claims for this item and update their amounts
-        const remainingClaims = claims.filter(c => c.item_id === itemId && c.id !== existingClaim.id);
-        if (remainingClaims.length > 0) {
-          const newAmount = Math.round(item.price_cents / remainingClaims.length);
-          await supabase
-            .from('item_claims')
-            .update({ amount_cents: newAmount })
-            .eq('item_id', itemId);
-
-          // Update local state
-          setClaims(prev => prev
-            .filter(c => c.id !== existingClaim.id)
-            .map(c => c.item_id === itemId ? { ...c, amount_cents: newAmount } : c)
-          );
-        } else {
-          setClaims(prev => prev.filter(c => c.id !== existingClaim.id));
-        }
-      } else {
-        // Add a new claim
-        const existingClaimsCount = claims.filter(c => c.item_id === itemId).length;
-        const newTotalClaimers = existingClaimsCount + 1;
-        const newAmount = Math.round(item.price_cents / newTotalClaimers);
-
-        const { data, error: insertError } = await supabase
-          .from('item_claims')
-          .insert({
-            item_id: itemId,
-            participant_id: currentParticipant.id,
-            portion: 1,
-            amount_cents: newAmount,
-          })
-          .select()
-          .single();
-
-        if (insertError) throw insertError;
-
-        // Update existing claims for this item with new split amount
-        if (existingClaimsCount > 0) {
-          await supabase
-            .from('item_claims')
-            .update({ amount_cents: newAmount })
-            .eq('item_id', itemId);
-        }
-
-        // Update local state (dedup: realtime INSERT may have already added it)
-        setClaims(prev => {
-          const updated = prev.map(c => c.item_id === itemId ? { ...c, amount_cents: newAmount } : c);
-          if (updated.some(c => c.id === data.id)) return updated;
-          return [...updated, data];
-        });
+      if (hasAnyPaid) {
+        setError('This item has already been paid for and can no longer be changed.');
+        return;
       }
-    } catch (err) {
-      console.error('Failed to update claim:', err);
-      setError('Failed to update claim. Please try again.');
-    } finally {
-      setClaimingItemId(null);
-    }
-  }, [currentParticipant, items, claims, claimingItemId]);
 
-  // Calculate totals
+      setClaimingItemId(itemId);
+      setError(null);
+
+      try {
+        const supabase = getSupabaseClient();
+        const existingClaim = claims.find(
+          (claim) => claim.item_id === itemId && claim.participant_id === currentParticipant.id
+        );
+
+        if (existingClaim) {
+          const { error: deleteError } = await supabase.from('item_claims').delete().eq('id', existingClaim.id);
+          if (deleteError) throw deleteError;
+
+          const remainingClaims = claims.filter((claim) => claim.item_id === itemId && claim.id !== existingClaim.id);
+
+          if (remainingClaims.length > 0) {
+            const newAmount = Math.round(item.price_cents / remainingClaims.length);
+            await supabase.from('item_claims').update({ amount_cents: newAmount }).eq('item_id', itemId);
+            setClaims((prev) =>
+              prev
+                .filter((claim) => claim.id !== existingClaim.id)
+                .map((claim) => (claim.item_id === itemId ? { ...claim, amount_cents: newAmount } : claim))
+            );
+          } else {
+            setClaims((prev) => prev.filter((claim) => claim.id !== existingClaim.id));
+          }
+        } else {
+          const existingClaimsCount = claims.filter((claim) => claim.item_id === itemId).length;
+          const newTotalClaimers = existingClaimsCount + 1;
+          const newAmount = Math.round(item.price_cents / newTotalClaimers);
+
+          const { data, error: insertError } = await supabase
+            .from('item_claims')
+            .insert({
+              item_id: itemId,
+              participant_id: currentParticipant.id,
+              portion: 1,
+              amount_cents: newAmount,
+            })
+            .select()
+            .single();
+
+          if (insertError) throw insertError;
+
+          if (existingClaimsCount > 0) {
+            await supabase.from('item_claims').update({ amount_cents: newAmount }).eq('item_id', itemId);
+          }
+
+          setClaims((prev) => {
+            const updated = prev.map((claim) =>
+              claim.item_id === itemId ? { ...claim, amount_cents: newAmount } : claim
+            );
+            if (updated.some((claim) => claim.id === data.id)) return updated;
+            return [...updated, data];
+          });
+        }
+      } catch (err) {
+        console.error('Failed to update claim:', err);
+        setError('Failed to update claim. Please try again.');
+      } finally {
+        setClaimingItemId(null);
+      }
+    },
+    [claimingItemId, claims, currentParticipant, items, participants]
+  );
+
   const myTotal = currentParticipant
     ? claims
-        .filter(c => c.participant_id === currentParticipant.id)
-        .reduce((sum, c) => sum + c.amount_cents, 0)
+        .filter((claim) => claim.participant_id === currentParticipant.id)
+        .reduce((sum, claim) => sum + claim.amount_cents, 0)
     : 0;
 
   const itemsTotal = items.reduce((sum, item) => sum + item.price_cents, 0);
@@ -320,39 +426,43 @@ export function ClaimPageClient({ receiptId, receipt, items, initialClaims, init
   const myTip = Math.round(receipt.tip_cents * myShare);
   const myGrandTotal = myTotal + myTax + myTip;
 
-  const handleMarkPaid = useCallback(async (method: string) => {
-    if (!currentParticipant || isMarkingPaid) return;
+  const handleMarkPaid = useCallback(
+    async (method: string) => {
+      if (!currentParticipant || isMarkingPaid) return;
 
-    setIsMarkingPaid(true);
-    setError(null);
+      setIsMarkingPaid(true);
+      setError(null);
 
-    try {
-      const supabase = getSupabaseClient();
+      try {
+        const supabase = getSupabaseClient();
+        const { error: updateError } = await supabase
+          .from('receipt_participants')
+          .update({
+            payment_status: 'paid',
+            paid_at: new Date().toISOString(),
+            payment_method: method,
+            payment_amount_cents: myGrandTotal,
+          })
+          .eq('id', currentParticipant.id);
 
-      const { error: updateError } = await supabase
-        .from('receipt_participants')
-        .update({
-          payment_status: 'paid',
-          paid_at: new Date().toISOString(),
-          payment_method: method,
-          payment_amount_cents: myGrandTotal,
-        })
-        .eq('id', currentParticipant.id);
+        if (updateError) throw updateError;
 
-      if (updateError) throw updateError;
-
-      setPaymentStatus('paid');
-      setCurrentParticipant(prev => prev ? { ...prev, payment_status: 'paid' } : null);
-      setParticipants(prev => prev.map(p =>
-        p.id === currentParticipant.id ? { ...p, payment_status: 'paid' } : p
-      ));
-    } catch (err) {
-      console.error('Failed to mark as paid:', err);
-      setError('Failed to update payment status. Please try again.');
-    } finally {
-      setIsMarkingPaid(false);
-    }
-  }, [currentParticipant, isMarkingPaid, myGrandTotal]);
+        setPaymentStatus('paid');
+        setCurrentParticipant((prev) => (prev ? { ...prev, payment_status: 'paid' } : null));
+        setParticipants((prev) =>
+          prev.map((participant) =>
+            participant.id === currentParticipant.id ? { ...participant, payment_status: 'paid' } : participant
+          )
+        );
+      } catch (err) {
+        console.error('Failed to mark as paid:', err);
+        setError('Failed to update payment status. Please try again.');
+      } finally {
+        setIsMarkingPaid(false);
+      }
+    },
+    [currentParticipant, isMarkingPaid, myGrandTotal]
+  );
 
   const handleCopyZelle = useCallback(() => {
     if (ownerProfile?.zelle_identifier) {
@@ -362,17 +472,17 @@ export function ClaimPageClient({ receiptId, receipt, items, initialClaims, init
     }
   }, [ownerProfile?.zelle_identifier]);
 
-  const getPaymentOptions = useCallback(() => {
+  const paymentOptions = useMemo(() => {
     if (!ownerProfile) return [];
 
     const amountDollars = (myGrandTotal / 100).toFixed(2);
-    const options = [];
+    const options: Array<{ name: string; accent: string; url?: string; identifier?: string }> = [];
 
     if (ownerProfile.venmo_handle) {
       const username = ownerProfile.venmo_handle.replace(/^@/, '');
       options.push({
         name: 'Venmo',
-        color: '#3D95CE',
+        accent: '#3D95CE',
         url: `https://venmo.com/u/${username}`,
       });
     }
@@ -381,7 +491,7 @@ export function ClaimPageClient({ receiptId, receipt, items, initialClaims, init
       const cashtag = ownerProfile.cashapp_handle.replace(/^\$/, '');
       options.push({
         name: 'Cash App',
-        color: '#00D632',
+        accent: '#00D632',
         url: `https://cash.app/$${cashtag}/${amountDollars}`,
       });
     }
@@ -389,7 +499,7 @@ export function ClaimPageClient({ receiptId, receipt, items, initialClaims, init
     if (ownerProfile.paypal_handle) {
       options.push({
         name: 'PayPal',
-        color: '#003087',
+        accent: '#003087',
         url: `https://paypal.me/${ownerProfile.paypal_handle}/${amountDollars}`,
       });
     }
@@ -397,623 +507,426 @@ export function ClaimPageClient({ receiptId, receipt, items, initialClaims, init
     if (ownerProfile.zelle_identifier) {
       options.push({
         name: 'Zelle',
-        color: '#6D1ED4',
+        accent: '#6D1ED4',
         identifier: ownerProfile.zelle_identifier,
       });
     }
 
     return options;
-  }, [ownerProfile, myGrandTotal]);
+  }, [myGrandTotal, ownerProfile]);
 
-  const getItemClaimers = (itemId: string) => {
-    const itemClaims = claims.filter(c => c.item_id === itemId);
-    return itemClaims.map(claim => {
-      const participant = participants.find(p => p.id === claim.participant_id);
-      return participant;
-    }).filter(Boolean) as Participant[];
-  };
+  const guestParticipants = participants.filter((participant) => participant.role !== 'owner');
+  const otherParticipants = participants.filter((participant) => participant.id !== currentParticipant?.id);
 
-  const isClaimedByMe = (itemId: string) => {
-    if (!currentParticipant) return false;
-    return claims.some(c => c.item_id === itemId && c.participant_id === currentParticipant.id);
-  };
+  const getItemClaimers = useCallback(
+    (itemId: string) => {
+      const itemClaims = claims.filter((claim) => claim.item_id === itemId);
+      return itemClaims
+        .map((claim) => participants.find((participant) => participant.id === claim.participant_id))
+        .filter(Boolean) as Participant[];
+    },
+    [claims, participants]
+  );
 
-  // Join screen
+  const isClaimedByMe = useCallback(
+    (itemId: string) => {
+      if (!currentParticipant) return false;
+      return claims.some((claim) => claim.item_id === itemId && claim.participant_id === currentParticipant.id);
+    },
+    [claims, currentParticipant]
+  );
+
   if (!currentParticipant) {
-    const guestParticipants = participants.filter(p => p.role !== 'owner');
-
     return (
-      <div className="min-h-screen flex flex-col" style={{ backgroundColor: colors.background }}>
-        {/* Gradient background accent */}
-        <div
-          className="absolute inset-0 pointer-events-none"
-          style={{
-            background: `radial-gradient(ellipse at top, ${colors.primary}08 0%, transparent 50%)`,
-          }}
-        />
+      <div className="tablink-guest-shell">
+        <div className="tablink-bg-orb tablink-bg-orb-top" />
+        <div className="tablink-bg-orb tablink-bg-orb-bottom" />
 
-        {/* Header */}
-        <header className="relative px-6 pt-12 pb-6">
-          <div className="flex items-center gap-2">
-            <div
-              className="w-8 h-8 rounded-lg flex items-center justify-center"
-              style={{ backgroundColor: colors.primary }}
-            >
-              <span className="text-sm font-bold" style={{ color: colors.background }}>T</span>
-            </div>
-            <span className="text-xl font-bold" style={{ color: colors.text }}>Tablink</span>
-          </div>
-        </header>
-
-        <div className="relative flex-1 flex items-center justify-center px-4 pb-12">
-          <div
-            className="w-full max-w-md rounded-3xl p-8 shadow-2xl"
-            style={{
-              backgroundColor: colors.surface,
-              border: `1px solid ${colors.surfaceBorder}`,
-              boxShadow: `0 25px 50px -12px rgba(0,0,0,0.5), 0 0 0 1px ${colors.surfaceBorder}`,
-            }}
-          >
-            {/* Receipt info */}
-            <div className="text-center mb-8">
-              <div
-                className="inline-flex items-center justify-center w-20 h-20 rounded-2xl mb-5"
-                style={{
-                  backgroundColor: colors.surfaceBorder,
-                  boxShadow: `inset 0 2px 4px rgba(0,0,0,0.2)`,
-                }}
-              >
-                <span className="text-4xl">🧾</span>
-              </div>
-              <h2 className="text-2xl font-bold mb-2" style={{ color: colors.text }}>
-                {receipt.merchant_name || 'Split the Bill'}
-              </h2>
-              {receipt.receipt_date && (
-                <p className="text-sm mb-5" style={{ color: colors.textSecondary }}>
-                  {formatDate(receipt.receipt_date)}
-                </p>
-              )}
-              <div
-                className="inline-flex items-center gap-2 px-5 py-2.5 rounded-full"
-                style={{ backgroundColor: colors.background, border: `1px solid ${colors.surfaceBorder}` }}
-              >
-                <span className="text-sm" style={{ color: colors.textSecondary }}>Total</span>
-                <span className="text-lg font-bold" style={{ color: colors.primary }}>
-                  {formatCents(receipt.total_cents)}
-                </span>
-              </div>
+        <div className="tablink-join-layout">
+          <section className="tablink-hero-panel">
+            <AppMark />
+            <div className="tablink-hero-copy">
+              <div className="tablink-chip">Guest Claim Flow</div>
+              <h1 className="tablink-hero-title">
+                Join the receipt, claim your items, and settle up without the group-chat chaos.
+              </h1>
+              <p className="tablink-hero-body">
+                Tablink gives you one clean place to split the bill. Choose your identity, tap what you ordered,
+                and pay the host directly.
+              </p>
             </div>
 
-            {/* Join form */}
-            <div className="space-y-4">
-              {error && (
-                <div
-                  className="px-4 py-3 rounded-xl text-sm"
-                  style={{ backgroundColor: `${colors.danger}15`, border: `1px solid ${colors.danger}30`, color: colors.danger }}
-                >
-                  {error}
-                </div>
-              )}
-
-              {/* Existing participants to select from */}
-              {guestParticipants.length > 0 && !showNewNameInput && (
+            <div className="tablink-overview-card">
+              <div className="tablink-overview-header">
                 <div>
-                  <p className="text-sm font-medium mb-3" style={{ color: colors.textSecondary }}>
-                    Select your name
-                  </p>
-                  <div className="space-y-2">
-                    {guestParticipants.map(p => (
-                      <button
-                        key={p.id}
-                        onClick={() => setCurrentParticipant(p)}
-                        disabled={isJoining}
-                        className="w-full flex items-center gap-4 p-4 rounded-2xl text-left transition-all hover:scale-[1.02] active:scale-[0.98]"
-                        style={{
-                          backgroundColor: colors.background,
-                          border: `1px solid ${colors.surfaceBorder}`,
-                        }}
-                      >
-                        <div
-                          className="w-12 h-12 rounded-xl flex items-center justify-center"
-                          style={{ backgroundColor: `${p.color_token}20` }}
-                        >
-                          <span className="text-2xl">{p.emoji}</span>
-                        </div>
-                        <span className="font-medium text-lg" style={{ color: colors.text }}>
-                          {p.display_name}
-                        </span>
-                      </button>
-                    ))}
-                  </div>
-                  <button
-                    onClick={() => setShowNewNameInput(true)}
-                    className="w-full mt-4 py-3.5 rounded-full font-medium text-sm transition-all hover:bg-white/5"
-                    style={{
-                      color: colors.textSecondary,
-                      border: `1px dashed ${colors.surfaceBorder}`,
-                    }}
-                  >
-                    + I'm someone else
-                  </button>
+                  <div className="tablink-overline">Receipt</div>
+                  <h2 className="tablink-overview-title">{receipt.merchant_name || 'Shared receipt'}</h2>
                 </div>
-              )}
+                <div className="tablink-total-pill">{formatCents(receipt.total_cents)}</div>
+              </div>
 
-              {/* New name input */}
-              {(guestParticipants.length === 0 || showNewNameInput) && (
-                <div>
-                  <label
-                    htmlFor="name"
-                    className="block text-sm font-medium mb-3"
-                    style={{ color: colors.textSecondary }}
-                  >
-                    {guestParticipants.length > 0 ? 'Enter your name' : 'What\'s your name?'}
-                  </label>
-                  <input
-                    id="name"
-                    type="text"
-                    value={guestName}
-                    onChange={(e) => setGuestName(e.target.value)}
-                    onKeyDown={(e) => e.key === 'Enter' && handleJoin()}
-                    placeholder="Your name"
-                    className="w-full px-5 py-4 rounded-2xl text-base outline-none transition-all focus:ring-2"
-                    style={{
-                      backgroundColor: colors.background,
-                      border: `1px solid ${colors.surfaceBorder}`,
-                      color: colors.text,
-                    }}
-                    autoFocus
-                  />
-                  <button
-                    onClick={handleJoin}
-                    disabled={isJoining || !guestName.trim()}
-                    className="w-full mt-5 py-4 rounded-full font-semibold text-base transition-all disabled:opacity-50 disabled:cursor-not-allowed hover:brightness-110 active:scale-[0.98]"
-                    style={{
-                      backgroundColor: colors.primary,
-                      color: colors.background,
-                    }}
-                  >
-                    {isJoining ? (
-                      <span className="flex items-center justify-center gap-2">
-                        <svg className="animate-spin h-5 w-5" viewBox="0 0 24 24">
-                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
-                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-                        </svg>
-                        Joining...
-                      </span>
-                    ) : 'Continue'}
-                  </button>
-                  {guestParticipants.length > 0 && (
+              {receipt.receipt_date ? <p className="tablink-overview-date">{formatDate(receipt.receipt_date)}</p> : null}
+
+              <div className="tablink-stat-grid">
+                <div className="tablink-stat-card">
+                  <span className="tablink-stat-label">Items</span>
+                  <span className="tablink-stat-value">{items.length}</span>
+                </div>
+                <div className="tablink-stat-card">
+                  <span className="tablink-stat-label">People</span>
+                  <span className="tablink-stat-value">{guestParticipants.length + 1}</span>
+                </div>
+                <div className="tablink-stat-card">
+                  <span className="tablink-stat-label">Tax + Tip</span>
+                  <span className="tablink-stat-value">{formatCents(receipt.tax_cents + receipt.tip_cents)}</span>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section className="tablink-card tablink-join-card">
+            <div className="tablink-card-head">
+              <div className="tablink-overline">Step 1</div>
+              <h2 className="tablink-section-title">Identify yourself</h2>
+              <p className="tablink-section-body">
+                Select your name if you already joined, or add yourself to the receipt to start claiming.
+              </p>
+            </div>
+
+            {error ? <div className="tablink-alert">{error}</div> : null}
+
+            {guestParticipants.length > 0 && !showNewNameInput ? (
+              <>
+                <div className="tablink-name-list">
+                  {guestParticipants.map((participant) => (
                     <button
-                      onClick={() => {
-                        setShowNewNameInput(false);
-                        setGuestName('');
-                      }}
-                      className="w-full mt-3 py-2 text-sm transition-all hover:opacity-80"
-                      style={{ color: colors.muted }}
+                      key={participant.id}
+                      type="button"
+                      onClick={() => setCurrentParticipant(participant)}
+                      disabled={isJoining}
+                      className="tablink-name-option"
                     >
-                      Back to name list
+                      <div
+                        className="tablink-name-emoji"
+                        style={{ backgroundColor: `${participant.color_token ?? colors.primary}22` }}
+                      >
+                        <span>{participant.emoji}</span>
+                      </div>
+                      <div className="tablink-name-copy">
+                        <div className="tablink-name-title">{participant.display_name}</div>
+                        <div className="tablink-name-subtitle">Continue as this guest</div>
+                      </div>
+                      <ArrowIcon />
                     </button>
-                  )}
+                  ))}
                 </div>
-              )}
-            </div>
-          </div>
-        </div>
 
-        {/* Footer branding */}
-        <footer className="relative pb-6 text-center">
-          <p className="text-xs" style={{ color: colors.muted }}>
-            Powered by Tablink
-          </p>
-        </footer>
+                <SecondaryAction onClick={() => setShowNewNameInput(true)}>
+                  <span>I&apos;m someone else</span>
+                </SecondaryAction>
+              </>
+            ) : (
+              <div className="tablink-form-stack">
+                <label className="tablink-input-label" htmlFor="guest-name">
+                  {guestParticipants.length > 0 ? 'Enter your name' : 'What should the host call you?'}
+                </label>
+                <input
+                  id="guest-name"
+                  type="text"
+                  value={guestName}
+                  onChange={(event) => setGuestName(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') handleJoin();
+                  }}
+                  placeholder="Your name"
+                  className="tablink-input"
+                  autoFocus
+                />
+                <PrimaryAction onClick={handleJoin} disabled={isJoining || !guestName.trim()}>
+                  <span>{isJoining ? 'Joining...' : 'Continue'}</span>
+                  <ArrowIcon />
+                </PrimaryAction>
+
+                {guestParticipants.length > 0 ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowNewNameInput(false);
+                      setGuestName('');
+                    }}
+                    className="tablink-text-button"
+                  >
+                    Back to name list
+                  </button>
+                ) : null}
+              </div>
+            )}
+          </section>
+        </div>
       </div>
     );
   }
 
-  // Claim screen
   return (
-    <div className="min-h-screen flex flex-col" style={{ backgroundColor: colors.background }}>
-      {/* Header */}
-      <header
-        className="sticky top-0 z-10 px-4 py-4 backdrop-blur-lg"
-        style={{
-          backgroundColor: `${colors.surface}ee`,
-          borderBottom: `1px solid ${colors.surfaceBorder}`,
-        }}
-      >
-        <div className="max-w-lg mx-auto">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <div
-                className="w-8 h-8 rounded-lg flex items-center justify-center"
-                style={{ backgroundColor: colors.primary }}
-              >
-                <span className="text-sm font-bold" style={{ color: colors.background }}>T</span>
-              </div>
-              <div>
-                <h1 className="text-lg font-semibold" style={{ color: colors.text }}>
-                  {receipt.merchant_name || 'Receipt'}
-                </h1>
-                {receipt.receipt_date && (
-                  <p className="text-xs" style={{ color: colors.textSecondary }}>
-                    {formatDate(receipt.receipt_date)}
-                  </p>
-                )}
-              </div>
-            </div>
-            <div
-              className="flex items-center gap-2 px-3 py-2 rounded-full"
-              style={{ backgroundColor: colors.surfaceBorder }}
-            >
-              <span className="text-lg">{currentParticipant.emoji}</span>
-              <span className="text-sm font-medium" style={{ color: colors.text }}>
-                {currentParticipant.display_name}
-              </span>
-            </div>
+    <div className="tablink-guest-shell">
+      <div className="tablink-bg-orb tablink-bg-orb-top" />
+      <div className="tablink-bg-orb tablink-bg-orb-bottom" />
+
+      <header className="tablink-claim-header">
+        <div className="tablink-header-inner">
+          <AppMark />
+          <div className="tablink-identity-pill">
+            <span className="tablink-identity-emoji">{currentParticipant.emoji}</span>
+            <span>{currentParticipant.display_name}</span>
           </div>
         </div>
       </header>
 
-      {/* Items List */}
-      <main className="flex-1 overflow-auto px-4 py-6">
-        <div className="max-w-lg mx-auto">
-          <div className="flex items-center gap-2 mb-4">
-            <div
-              className="w-2 h-2 rounded-full animate-pulse"
-              style={{ backgroundColor: colors.primary }}
-            />
-            <p className="text-sm" style={{ color: colors.textSecondary }}>
-              Tap items you ordered
+      <main className="tablink-claim-layout">
+        <section className="tablink-card tablink-receipt-summary">
+          <div className="tablink-card-head">
+            <div className="tablink-overline">Receipt</div>
+            <div className="tablink-summary-row">
+              <div>
+                <h1 className="tablink-section-title">{receipt.merchant_name || 'Shared receipt'}</h1>
+                {receipt.receipt_date ? <p className="tablink-section-body">{formatDate(receipt.receipt_date)}</p> : null}
+              </div>
+              <div className="tablink-total-pill">{formatCents(receipt.total_cents)}</div>
+            </div>
+          </div>
+
+          <div className="tablink-summary-meta">
+            <div className="tablink-summary-meta-card">
+              <span className="tablink-stat-label">Items</span>
+              <span className="tablink-stat-value">{items.length}</span>
+            </div>
+            <div className="tablink-summary-meta-card">
+              <span className="tablink-stat-label">Subtotal</span>
+              <span className="tablink-stat-value">{formatCents(receipt.subtotal_cents)}</span>
+            </div>
+            <div className="tablink-summary-meta-card">
+              <span className="tablink-stat-label">Tax + Tip</span>
+              <span className="tablink-stat-value">{formatCents(receipt.tax_cents + receipt.tip_cents)}</span>
+            </div>
+          </div>
+        </section>
+
+        <section className="tablink-card tablink-item-panel">
+          <div className="tablink-card-head">
+            <div className="tablink-overline">Step 2</div>
+            <h2 className="tablink-section-title">Claim what you ordered</h2>
+            <p className="tablink-section-body">
+              Tap any item that belongs to you. Claims update live for everyone viewing the receipt.
             </p>
           </div>
 
-          {error && (
-            <div
-              className="rounded-2xl p-4 mb-4"
-              style={{ backgroundColor: `${colors.danger}15`, border: `1px solid ${colors.danger}30` }}
-            >
-              <p className="text-sm" style={{ color: colors.danger }}>{error}</p>
-            </div>
-          )}
+          {error ? <div className="tablink-alert">{error}</div> : null}
 
-          <div className="space-y-2">
-            {items.map(item => {
+          <div className="tablink-item-grid">
+            {items.map((item) => {
               const claimers = getItemClaimers(item.id);
               const isMine = isClaimedByMe(item.id);
               const isLoading = claimingItemId === item.id;
-              const hasAnyPaid = claimers.some(c => c.payment_status === 'paid');
-              const isSettled = claimers.length > 0 && claimers.every(c => c.payment_status === 'paid');
+              const hasAnyPaid = claimers.some((claimer) => claimer.payment_status === 'paid');
+              const isSettled = claimers.length > 0 && claimers.every((claimer) => claimer.payment_status === 'paid');
               const isClaimed = claimers.length > 0 && !isSettled;
 
               return (
                 <button
                   key={item.id}
+                  type="button"
                   onClick={() => handleClaimItem(item.id)}
                   disabled={isLoading || paymentStatus === 'paid' || hasAnyPaid}
-                  className="w-full text-left p-4 rounded-2xl transition-all duration-200 hover:scale-[1.01] active:scale-[0.99]"
-                  style={{
-                    backgroundColor: isSettled
-                      ? `${colors.primary}18`
-                      : isMine
-                        ? `${colors.primary}12`
-                        : isClaimed
-                          ? `${colors.warning}08`
-                          : colors.surface,
-                    border: `1.5px solid ${
-                      isSettled
-                        ? colors.primary
-                        : isMine
-                          ? `${colors.primary}60`
-                          : isClaimed
-                            ? `${colors.warning}40`
-                            : colors.surfaceBorder
-                    }`,
-                    opacity: isLoading ? 0.6 : 1,
-                  }}
+                  className={`tablink-item-card${isMine ? ' is-mine' : ''}${isClaimed ? ' is-claimed' : ''}${isSettled ? ' is-settled' : ''}`}
                 >
-                  <div className="flex justify-between items-start gap-3">
-                    <div className="flex-1 flex items-start gap-3">
-                      {/* Checkbox/status indicator */}
-                      <div
-                        className="w-6 h-6 rounded-lg flex items-center justify-center flex-shrink-0 mt-0.5 transition-all"
-                        style={{
-                          backgroundColor: isSettled || isMine ? colors.primary : 'transparent',
-                          border: isSettled || isMine ? 'none' : `2px solid ${colors.surfaceBorder}`,
-                        }}
-                      >
-                        {(isSettled || isMine) && (
-                          <svg className="w-4 h-4" style={{ color: colors.background }} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-                          </svg>
-                        )}
+                  <div className="tablink-item-leading">
+                    <div className="tablink-item-check">
+                      {isMine || isSettled ? <CheckIcon className="h-3.5 w-3.5" /> : null}
+                    </div>
+                    <div className="tablink-item-copy">
+                      <div className="tablink-item-title-row">
+                        <span className="tablink-item-title">{item.label}</span>
+                        {item.quantity > 1 ? <span className="tablink-qty-pill">×{item.quantity}</span> : null}
                       </div>
 
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2">
-                          <span
-                            className="font-medium"
-                            style={{ color: isSettled ? colors.primary : colors.text }}
-                          >
-                            {item.label}
-                          </span>
-                          {item.quantity > 1 && (
+                      {claimers.length > 0 ? (
+                        <div className="tablink-claimer-row">
+                          {claimers.map((claimer) => (
                             <span
-                              className="text-xs px-1.5 py-0.5 rounded"
-                              style={{ backgroundColor: colors.surfaceBorder, color: colors.textSecondary }}
+                              key={claimer.id}
+                              className="tablink-claimer-pill"
+                              style={{ borderLeftColor: claimer.color_token ?? colors.primary }}
                             >
-                              ×{item.quantity}
+                              <span>{claimer.emoji}</span>
+                              <span>{claimer.display_name}</span>
+                              {claimer.payment_status === 'paid' ? <CheckIcon className="h-3 w-3" /> : null}
                             </span>
-                          )}
+                          ))}
                         </div>
-
-                        {/* Claimer badges */}
-                        {claimers.length > 0 && (
-                          <div className="flex flex-wrap gap-1.5 mt-2">
-                            {claimers.map(claimer => (
-                              <span
-                                key={claimer.id}
-                                className="inline-flex items-center gap-1 px-2 py-1 rounded-lg text-xs"
-                                style={{
-                                  backgroundColor: colors.background,
-                                  borderLeft: `3px solid ${claimer.color_token}`,
-                                }}
-                              >
-                                <span>{claimer.emoji}</span>
-                                <span style={{ color: colors.textSecondary }}>{claimer.display_name}</span>
-                                {claimer.payment_status === 'paid' && (
-                                  <svg className="w-3 h-3 ml-0.5" style={{ color: colors.primary }} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
-                                    <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-                                  </svg>
-                                )}
-                              </span>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-
-                    <div className="flex items-center gap-2 flex-shrink-0">
-                      {isSettled && (
-                        <span
-                          className="text-xs font-semibold px-2 py-1 rounded-lg"
-                          style={{ backgroundColor: `${colors.primary}20`, color: colors.primary }}
-                        >
-                          Paid
-                        </span>
+                      ) : (
+                        <div className="tablink-item-subtitle">Unclaimed</div>
                       )}
-                      <span
-                        className="font-semibold tabular-nums"
-                        style={{ color: isSettled ? colors.primary : colors.text }}
-                      >
-                        {formatCents(item.price_cents)}
-                      </span>
                     </div>
+                  </div>
+
+                  <div className="tablink-item-trailing">
+                    {isSettled ? <span className="tablink-paid-pill">Paid</span> : null}
+                    <span className="tablink-item-price">{isLoading ? 'Updating...' : formatCents(item.price_cents)}</span>
                   </div>
                 </button>
               );
             })}
           </div>
+        </section>
 
-          {/* Participants */}
-          {participants.filter(p => p.id !== currentParticipant.id).length > 0 && (
-            <div
-              className="mt-8 p-5 rounded-2xl"
-              style={{ backgroundColor: colors.surface, border: `1px solid ${colors.surfaceBorder}` }}
-            >
-              <p className="text-sm font-medium mb-4" style={{ color: colors.textSecondary }}>
-                Splitting with
-              </p>
-              <div className="flex flex-wrap gap-2">
-                {participants.filter(p => p.id !== currentParticipant.id).map(p => (
-                  <span
-                    key={p.id}
-                    className="inline-flex items-center gap-2 px-3 py-2 rounded-xl text-sm"
-                    style={{ backgroundColor: colors.background, border: `1px solid ${colors.surfaceBorder}` }}
-                  >
-                    <span>{p.emoji}</span>
-                    <span style={{ color: colors.text }}>{p.display_name}</span>
-                    {p.role === 'owner' && (
-                      <span
-                        className="text-xs px-1.5 py-0.5 rounded"
-                        style={{ backgroundColor: colors.surfaceBorder, color: colors.textSecondary }}
-                      >
-                        Host
-                      </span>
-                    )}
-                  </span>
-                ))}
+        <aside className="tablink-sidebar-stack">
+          <section className="tablink-card tablink-total-panel">
+            <div className="tablink-card-head">
+              <div className="tablink-overline">Step 3</div>
+              <h2 className="tablink-section-title">Pay the host</h2>
+            </div>
+
+            <div className="tablink-total-breakdown">
+              <div className="tablink-total-line">
+                <span>Your items</span>
+                <span>{formatCents(myTotal)}</span>
+              </div>
+              {receipt.tax_cents > 0 ? (
+                <div className="tablink-total-line">
+                  <span>Tax</span>
+                  <span>{formatCents(myTax)}</span>
+                </div>
+              ) : null}
+              {receipt.tip_cents > 0 ? (
+                <div className="tablink-total-line">
+                  <span>Tip</span>
+                  <span>{formatCents(myTip)}</span>
+                </div>
+              ) : null}
+              <div className="tablink-total-grand">
+                <span>Your total</span>
+                <span>{formatCents(myGrandTotal)}</span>
               </div>
             </div>
-          )}
-        </div>
-      </main>
 
-      {/* Footer with totals and payment */}
-      <footer
-        className="sticky bottom-0 px-4 py-5"
-        style={{
-          backgroundColor: colors.surface,
-          borderTop: `1px solid ${colors.surfaceBorder}`,
-          boxShadow: '0 -10px 40px rgba(0,0,0,0.3)',
-        }}
-      >
-        <div className="max-w-lg mx-auto">
-          {/* Totals breakdown */}
-          <div className="space-y-2 text-sm">
-            <div className="flex justify-between" style={{ color: colors.textSecondary }}>
-              <span>Your items</span>
-              <span className="tabular-nums">{formatCents(myTotal)}</span>
-            </div>
-            {receipt.tax_cents > 0 && (
-              <div className="flex justify-between" style={{ color: colors.textSecondary }}>
-                <span>Tax (proportional)</span>
-                <span className="tabular-nums">{formatCents(myTax)}</span>
-              </div>
-            )}
-            {receipt.tip_cents > 0 && (
-              <div className="flex justify-between" style={{ color: colors.textSecondary }}>
-                <span>Tip (proportional)</span>
-                <span className="tabular-nums">{formatCents(myTip)}</span>
-              </div>
-            )}
-            <div
-              className="flex justify-between text-lg font-semibold pt-3 mt-2"
-              style={{ color: colors.text, borderTop: `1px solid ${colors.surfaceBorder}` }}
-            >
-              <span>Your total</span>
-              <span className="tabular-nums" style={{ color: colors.primary }}>{formatCents(myGrandTotal)}</span>
-            </div>
-          </div>
-
-          {/* Payment Button */}
-          {myGrandTotal > 0 && (
-            <div className="mt-5">
-              {paymentStatus === 'paid' ? (
-                <div
-                  className="text-center py-4 rounded-2xl"
-                  style={{ backgroundColor: `${colors.primary}12`, border: `1px solid ${colors.primary}30` }}
-                >
-                  <div className="flex items-center justify-center gap-2">
-                    <div
-                      className="w-6 h-6 rounded-full flex items-center justify-center"
-                      style={{ backgroundColor: colors.primary }}
-                    >
-                      <svg className="w-4 h-4" style={{ color: colors.background }} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-                      </svg>
-                    </div>
-                    <span className="font-semibold" style={{ color: colors.primary }}>Payment confirmed!</span>
+            {myGrandTotal > 0 ? (
+              paymentStatus === 'paid' ? (
+                <div className="tablink-paid-card">
+                  <div className="tablink-paid-badge">
+                    <CheckIcon />
                   </div>
-                  <p className="text-sm mt-1" style={{ color: colors.textSecondary }}>
-                    Thanks for settling up
-                  </p>
+                  <div>
+                    <div className="tablink-paid-title">Payment confirmed</div>
+                    <div className="tablink-paid-copy">Thanks for settling up.</div>
+                  </div>
                 </div>
               ) : (
-                <button
-                  onClick={() => setShowPaymentModal(true)}
-                  className="w-full py-4 rounded-full font-semibold text-base transition-all hover:brightness-110 active:scale-[0.98]"
-                  style={{
-                    backgroundColor: colors.primary,
-                    color: colors.background,
-                  }}
-                >
-                  Pay {ownerProfile?.display_name || 'Host'} {formatCents(myGrandTotal)}
-                </button>
-              )}
-            </div>
-          )}
-        </div>
-      </footer>
+                <PrimaryAction onClick={() => setShowPaymentModal(true)}>
+                  <span>Pay {ownerProfile?.display_name || 'Host'}</span>
+                  <ArrowIcon />
+                </PrimaryAction>
+              )
+            ) : (
+              <div className="tablink-empty-note">Claim one or more items to calculate your share.</div>
+            )}
+          </section>
 
-      {/* Payment Modal */}
-      {showPaymentModal && (
-        <div
-          className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4 sm:p-6"
-          style={{ backgroundColor: 'rgba(0,0,0,0.7)' }}
-          onClick={() => setShowPaymentModal(false)}
-        >
-          <div
-            className="w-full max-w-md rounded-3xl p-6 sm:p-8 animate-in slide-in-from-bottom duration-300"
-            style={{
-              backgroundColor: colors.surface,
-              border: `1px solid ${colors.surfaceBorder}`,
-              boxShadow: '0 25px 50px -12px rgba(0,0,0,0.5)',
-            }}
-            onClick={e => e.stopPropagation()}
-          >
-            {/* Modal header */}
-            <div className="flex justify-between items-start mb-6">
-              <div>
-                <h2 className="text-xl font-bold" style={{ color: colors.text }}>
-                  Pay {ownerProfile?.display_name || 'Host'}
-                </h2>
-                <p className="text-sm mt-1" style={{ color: colors.textSecondary }}>
-                  Choose a payment method
-                </p>
+          {otherParticipants.length > 0 ? (
+            <section className="tablink-card">
+              <div className="tablink-card-head">
+                <div className="tablink-overline">People</div>
+                <h2 className="tablink-section-title">Splitting with</h2>
               </div>
-              <button
-                onClick={() => setShowPaymentModal(false)}
-                className="p-2 rounded-xl transition-all hover:bg-white/5"
-                style={{ backgroundColor: colors.surfaceBorder }}
-              >
-                <svg className="w-5 h-5" style={{ color: colors.text }} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                </svg>
+
+              <div className="tablink-participant-list">
+                {otherParticipants.map((participant) => (
+                  <div key={participant.id} className="tablink-participant-row">
+                    <div className="tablink-participant-leading">
+                      <div
+                        className="tablink-participant-avatar"
+                        style={{ backgroundColor: `${participant.color_token ?? colors.primary}22` }}
+                      >
+                        <span>{participant.emoji}</span>
+                      </div>
+                      <div>
+                        <div className="tablink-participant-name">{participant.display_name}</div>
+                        <div className="tablink-participant-meta">
+                          {participant.role === 'owner' ? 'Host' : 'Guest'}
+                        </div>
+                      </div>
+                    </div>
+                    {participant.payment_status === 'paid' ? <span className="tablink-paid-pill">Paid</span> : null}
+                  </div>
+                ))}
+              </div>
+            </section>
+          ) : null}
+        </aside>
+      </main>
+
+      {showPaymentModal ? (
+        <div className="tablink-modal-backdrop" onClick={() => setShowPaymentModal(false)}>
+          <div className="tablink-modal" onClick={(event) => event.stopPropagation()}>
+            <div className="tablink-modal-head">
+              <div>
+                <div className="tablink-overline">Payment</div>
+                <h2 className="tablink-section-title">Settle with {ownerProfile?.display_name || 'Host'}</h2>
+              </div>
+              <button type="button" className="tablink-icon-button" onClick={() => setShowPaymentModal(false)}>
+                <CloseIcon />
               </button>
             </div>
 
-            {/* Amount display */}
-            <div
-              className="text-center py-6 rounded-2xl mb-6"
-              style={{ backgroundColor: colors.background, border: `1px solid ${colors.surfaceBorder}` }}
-            >
-              <p className="text-sm mb-1" style={{ color: colors.textSecondary }}>Amount due</p>
-              <p className="text-4xl font-bold tabular-nums" style={{ color: colors.primary }}>
-                {formatCents(myGrandTotal)}
-              </p>
+            <div className="tablink-payment-amount-card">
+              <div className="tablink-stat-label">Amount due</div>
+              <div className="tablink-payment-amount">{formatCents(myGrandTotal)}</div>
             </div>
 
-            {/* Payment options */}
-            {ownerProfile && getPaymentOptions().length > 0 ? (
-              <div className="space-y-3">
-                {getPaymentOptions().map(option => (
-                  'url' in option ? (
-                    <a
-                      key={option.name}
-                      href={option.url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="flex items-center justify-center gap-3 py-4 rounded-2xl font-semibold text-base transition-all hover:brightness-110 active:scale-[0.98] w-full"
-                      style={{ backgroundColor: option.color, color: '#fff' }}
-                    >
-                      Pay with {option.name}
-                    </a>
+            {paymentOptions.length > 0 ? (
+              <div className="tablink-payment-stack">
+                {paymentOptions.map((option) =>
+                  option.url ? (
+                    <PaymentLinkAction key={option.name} href={option.url} accent={option.accent}>
+                      <span>Pay with {option.name}</span>
+                      <ArrowIcon />
+                    </PaymentLinkAction>
                   ) : (
                     <button
                       key={option.name}
+                      type="button"
                       onClick={handleCopyZelle}
-                      className="flex items-center justify-center gap-3 py-4 rounded-2xl font-semibold text-base transition-all hover:brightness-110 active:scale-[0.98] w-full"
-                      style={{ backgroundColor: option.color, color: '#fff' }}
+                      className="tablink-payment-link"
+                      style={{
+                        borderColor: `${option.accent}55`,
+                        background: `linear-gradient(180deg, ${option.accent}20 0%, rgba(17,20,24,0.98) 100%)`,
+                      }}
                     >
-                      {copiedZelle ? '✓ Copied to clipboard!' : `Zelle: ${option.identifier}`}
+                      <span>{copiedZelle ? 'Copied to clipboard' : `Zelle: ${option.identifier}`}</span>
+                      <ArrowIcon />
                     </button>
                   )
-                ))}
+                )}
               </div>
             ) : (
-              <div
-                className="text-center py-6 rounded-2xl"
-                style={{ backgroundColor: colors.background }}
-              >
-                <p style={{ color: colors.textSecondary }}>
-                  No payment methods available.
-                </p>
-                <p className="text-sm mt-1" style={{ color: colors.muted }}>
-                  Contact the host directly.
-                </p>
+              <div className="tablink-empty-note">
+                No payment links are available yet. Contact the host directly to settle up.
               </div>
             )}
 
-            {/* Mark as paid button */}
-            <div className="mt-6 pt-5" style={{ borderTop: `1px solid ${colors.surfaceBorder}` }}>
-              <button
+            <div className="tablink-modal-footer">
+              <SecondaryAction
                 onClick={() => {
                   handleMarkPaid('manual');
                   setShowPaymentModal(false);
                 }}
                 disabled={isMarkingPaid}
-                className="w-full py-3.5 rounded-full font-medium text-base transition-all disabled:opacity-50 hover:bg-white/5 active:scale-[0.98]"
-                style={{
-                  color: colors.text,
-                  border: `1px solid ${colors.surfaceBorder}`,
-                }}
               >
-                {isMarkingPaid ? 'Confirming...' : "I've already paid"}
-              </button>
+                <span>{isMarkingPaid ? 'Confirming...' : "I've already paid"}</span>
+              </SecondaryAction>
             </div>
           </div>
         </div>
-      )}
+      ) : null}
     </div>
   );
 }

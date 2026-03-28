@@ -1,23 +1,22 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  ActivityIndicator,
   Alert,
   Image,
   Keyboard,
   KeyboardAvoidingView,
   Modal,
   Platform,
+  Pressable,
   ScrollView,
   Share,
   StyleSheet,
   Text,
   TextInput,
-  TouchableOpacity,
   View,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Swipeable } from 'react-native-gesture-handler';
-import Animated, { FadeOut, LinearTransition } from 'react-native-reanimated';
+import Animated, { FadeInDown, FadeOut, LinearTransition } from 'react-native-reanimated';
 import { Ionicons } from '@expo/vector-icons';
 
 import { usePendingReceipt } from '@/src/hooks/usePendingReceipt';
@@ -59,7 +58,7 @@ function parseQuantityInput(value: string) {
 }
 
 function formatCurrency(amount: number) {
-  if (Number.isNaN(amount)) return '—';
+  if (Number.isNaN(amount)) return '\u2014';
   return new Intl.NumberFormat('en-US', {
     style: 'currency',
     currency: 'USD',
@@ -100,6 +99,7 @@ export default function ReceiptReviewScreen() {
   const [showShareSuccess, setShowShareSuccess] = useState(false);
   const [sharedReceiptId, setSharedReceiptId] = useState<string | null>(null);
   const [hasPaymentMethods, setHasPaymentMethods] = useState<boolean | null>(null);
+  const isClosingRef = useRef(false);
 
   // Check if user has payment methods set up
   useEffect(() => {
@@ -132,7 +132,7 @@ export default function ReceiptReviewScreen() {
   const TABLINK_BASE_URL = process.env.EXPO_PUBLIC_TABLINK_URL || 'http://localhost:3000';
 
   useEffect(() => {
-    if (!pendingReceipt) {
+    if (!pendingReceipt && !isClosingRef.current) {
       router.replace('/(host)/home');
     }
   }, [pendingReceipt, router]);
@@ -204,6 +204,19 @@ export default function ReceiptReviewScreen() {
     };
   }, [parsed, editableItems, merchantName, subtotal, taxAmount, tipAmount, grandTotal]);
 
+  const closeReviewFlow = useCallback(
+    (onComplete?: () => void) => {
+      isClosingRef.current = true;
+      setPendingReceipt(null);
+      router.dismiss(2);
+
+      if (onComplete) {
+        setTimeout(onComplete, 50);
+      }
+    },
+    [router, setPendingReceipt]
+  );
+
   const handleSaveDraft = useCallback(async () => {
     if (!pendingReceipt || !session?.user?.id) {
       Alert.alert('Error', 'You must be signed in to save a receipt.');
@@ -223,15 +236,14 @@ export default function ReceiptReviewScreen() {
         return;
       }
 
-      setPendingReceipt(null);
-      router.replace('/(host)/home');
+      closeReviewFlow();
     } catch (error) {
       console.error('[review] Failed to save draft:', error);
       Alert.alert('Error', 'Failed to save receipt. Please try again.');
     } finally {
       setIsSaving(false);
     }
-  }, [buildUpdatedParsed, pendingReceipt, router, session, setPendingReceipt]);
+  }, [buildUpdatedParsed, closeReviewFlow, pendingReceipt, session]);
 
   const handleShareReceipt = useCallback(async () => {
     if (!pendingReceipt || !session?.user?.id) {
@@ -256,12 +268,13 @@ export default function ReceiptReviewScreen() {
                   const updatedReceipt = { ...pendingReceipt, parsed: updatedParsed };
                   const result = await saveReceipt(updatedReceipt, session.user.id);
                   if (result.success) {
-                    setPendingReceipt(null);
-                    Alert.alert(
-                      'Receipt Saved',
-                      'Your receipt has been saved as a draft. You can find it on the home screen after setting up your payment info.',
-                      [{ text: 'OK', onPress: () => router.push('/(host)/settings') }]
-                    );
+                    closeReviewFlow(() => {
+                      Alert.alert(
+                        'Receipt Saved',
+                        'Your receipt has been saved as a draft. You can find it on the home screen after setting up your payment info.',
+                        [{ text: 'OK', onPress: () => router.push('/(host)/settings') }]
+                      );
+                    });
                     return;
                   }
                 }
@@ -315,7 +328,6 @@ export default function ReceiptReviewScreen() {
 
       // Store the receipt ID and show success modal
       setSharedReceiptId(result.receiptId);
-      setPendingReceipt(null);
       setShowShareSuccess(true);
     } catch (error) {
       console.error('[review] Failed to share receipt:', error);
@@ -323,19 +335,24 @@ export default function ReceiptReviewScreen() {
     } finally {
       setIsSharing(false);
     }
-  }, [buildUpdatedParsed, pendingReceipt, session, setPendingReceipt, TABLINK_BASE_URL, hasPaymentMethods, router]);
+  }, [buildUpdatedParsed, closeReviewFlow, pendingReceipt, session, TABLINK_BASE_URL, hasPaymentMethods, router]);
 
   const handleViewReceipt = useCallback(() => {
     setShowShareSuccess(false);
     if (sharedReceiptId) {
-      router.replace(`/receipt/${sharedReceiptId}`);
+      closeReviewFlow(() => {
+        router.push({
+          pathname: '/receipt/[id]',
+          params: { id: sharedReceiptId },
+        });
+      });
     }
-  }, [router, sharedReceiptId]);
+  }, [closeReviewFlow, router, sharedReceiptId]);
 
   const handleGoHome = useCallback(() => {
     setShowShareSuccess(false);
-    router.replace('/(host)/home');
-  }, [router]);
+    closeReviewFlow();
+  }, [closeReviewFlow]);
 
   const handleDiscard = useCallback(() => {
     Alert.alert(
@@ -347,15 +364,14 @@ export default function ReceiptReviewScreen() {
           text: 'Discard',
           style: 'destructive',
           onPress: () => {
-            setPendingReceipt(null);
-            router.replace('/(host)/home');
+            closeReviewFlow();
           },
         },
       ]
     );
-  }, [router, setPendingReceipt]);
+  }, [closeReviewFlow]);
 
-  const placeholderColor = 'rgba(195,200,212,0.5)';
+  const placeholderColor = colors.muted;
 
   if (!pendingReceipt || !parsed) {
     return null;
@@ -363,68 +379,70 @@ export default function ReceiptReviewScreen() {
 
   return (
     <KeyboardAvoidingView
-      style={styles.container}
+      style={s.container}
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
     >
       <ScrollView
-        contentContainerStyle={styles.content}
+        contentContainerStyle={s.scrollContent}
         keyboardShouldPersistTaps="handled"
         contentInsetAdjustmentBehavior="automatic"
+        showsVerticalScrollIndicator={false}
       >
         {/* Header */}
-        <View style={styles.header}>
-          <TouchableOpacity onPress={handleDiscard} style={styles.backArrow}>
+        <Animated.View entering={FadeInDown.duration(400)} style={s.header}>
+          <Pressable onPress={handleDiscard} style={s.backArrow}>
             <Ionicons name="close" size={24} color={colors.text} />
-          </TouchableOpacity>
-          <View style={styles.headerContent}>
-            <Text style={styles.title} numberOfLines={1}>
+          </Pressable>
+          <View style={s.headerContent}>
+            <Text style={s.title} numberOfLines={1}>
               {merchantName || 'New Receipt'}
             </Text>
-            <Text style={styles.subtitle}>{formatDate(parsed.purchaseDate)}</Text>
+            <Text style={s.subtitle}>{formatDate(parsed.purchaseDate)}</Text>
           </View>
-          <View style={styles.statusBadge}>
-            <Text style={styles.statusText}>New</Text>
-          </View>
-        </View>
+          <Text style={[s.statusLabel, { color: colors.primary }]}>NEW</Text>
+        </Animated.View>
 
         {/* Receipt Image */}
         {imageUri ? (
-          <View style={styles.imageCard}>
-            <Image source={{ uri: imageUri }} style={styles.receiptImage} resizeMode="cover" />
-            <TouchableOpacity style={styles.expandButton} onPress={() => setIsImageExpanded(true)}>
-              <Text style={styles.expandButtonText}>View full receipt</Text>
-            </TouchableOpacity>
-          </View>
+          <Animated.View entering={FadeInDown.delay(50).duration(400)} style={s.imageCard}>
+            <Image source={{ uri: imageUri }} style={s.receiptImage} resizeMode="cover" />
+            <Pressable
+              style={({ pressed }) => [s.expandButton, pressed && s.pressed]}
+              onPress={() => setIsImageExpanded(true)}
+            >
+              <Text style={s.expandButtonText}>View full receipt</Text>
+            </Pressable>
+          </Animated.View>
         ) : null}
 
         {/* Merchant */}
-        <View style={styles.card}>
-          <Text style={styles.inputLabel}>Merchant Name</Text>
+        <Animated.View entering={FadeInDown.delay(100).duration(400)} style={s.section}>
+          <Text style={s.sectionLabel}>MERCHANT</Text>
           <TextInput
             value={merchantName}
             onChangeText={setMerchantName}
             placeholder="Add merchant name"
             placeholderTextColor={placeholderColor}
-            style={styles.textInput}
+            style={s.textInput}
           />
-        </View>
+        </Animated.View>
 
         {/* Items */}
-        <View style={styles.card}>
-          <View style={styles.cardHeader}>
-            <Text style={styles.cardTitle}>Items</Text>
-            <TouchableOpacity style={styles.addButton} onPress={addItem}>
-              <Text style={styles.addButtonText}>+ Add item</Text>
-            </TouchableOpacity>
+        <Animated.View entering={FadeInDown.delay(150).duration(400)} style={s.section}>
+          <View style={s.cardHeader}>
+            <Text style={s.sectionLabel}>ITEMS</Text>
+            <Pressable onPress={addItem}>
+              <Text style={s.addButtonText}>+ Add item</Text>
+            </Pressable>
           </View>
           {editableItems.map((item) => (
             <Animated.View
               key={item.key}
-              style={styles.itemWrapper}
+              style={s.itemWrapper}
               exiting={FadeOut.duration(200)}
               layout={LinearTransition.duration(200)}
             >
-              <View style={styles.swipeDeleteBehind} />
+              <View style={s.swipeDeleteBehind} />
               <Swipeable
                 overshootRight={false}
                 rightThreshold={60}
@@ -438,105 +456,111 @@ export default function ReceiptReviewScreen() {
                   }
                 }}
                 renderRightActions={() => (
-                  <View style={styles.swipeDeleteButton}>
+                  <View style={s.swipeDeleteButton}>
                     <Ionicons name="trash" size={22} color="#fff" />
                   </View>
                 )}
               >
-                <View style={styles.itemRow}>
+                <View style={s.itemRow}>
                   <TextInput
                     value={item.name}
                     onChangeText={(value) => updateItemField(item.key, 'name', value)}
                     placeholder="Item name"
                     placeholderTextColor={placeholderColor}
-                    style={[styles.itemNameInput, { color: '#F5F7FA' }]}
+                    style={s.itemNameInput}
                   />
-                  <View style={styles.itemRightFields}>
+                  <View style={s.itemRightFields}>
                     <TextInput
                       value={item.quantity}
                       onChangeText={(value) => updateItemField(item.key, 'quantity', value)}
                       placeholder="1"
                       placeholderTextColor={placeholderColor}
                       keyboardType="decimal-pad"
-                      style={styles.itemQtyInput}
+                      style={s.itemQtyInput}
                     />
-                    <Text style={styles.itemTimesSymbol}>×</Text>
+                    <Text style={s.itemTimesSymbol}>×</Text>
                     <TextInput
                       value={item.price}
                       onChangeText={(value) => updateItemField(item.key, 'price', value)}
                       placeholder="0.00"
                       placeholderTextColor={placeholderColor}
                       keyboardType="decimal-pad"
-                      style={styles.itemPriceInput}
+                      style={s.itemPriceInput}
                     />
                   </View>
                 </View>
               </Swipeable>
             </Animated.View>
           ))}
-          <Text style={styles.hint}>Swipe left to delete an item.</Text>
-        </View>
+          <Text style={s.hint}>Swipe left to delete an item.</Text>
+        </Animated.View>
 
         {/* Totals */}
-        <View style={styles.card}>
-          <Text style={styles.cardTitle}>Totals</Text>
-          <View style={styles.summaryRow}>
-            <Text style={styles.summaryLabel}>Items subtotal</Text>
-            <Text style={styles.summaryValue}>{formatCurrency(subtotal)}</Text>
+        <Animated.View entering={FadeInDown.delay(200).duration(400)} style={s.section}>
+          <Text style={s.sectionLabel}>TOTALS</Text>
+          <View style={s.summaryRow}>
+            <Text style={s.summaryLabel}>Items subtotal</Text>
+            <Text style={s.summaryValue}>{formatCurrency(subtotal)}</Text>
           </View>
-          <View style={styles.summaryRow}>
-            <Text style={styles.summaryLabel}>Tax</Text>
+          <View style={s.summaryRow}>
+            <Text style={s.summaryLabel}>Tax</Text>
             <TextInput
               value={taxInput}
               onChangeText={setTaxInput}
               placeholder="0.00"
               placeholderTextColor={placeholderColor}
               keyboardType="decimal-pad"
-              style={[styles.textInput, styles.summaryInput]}
+              style={[s.textInput, s.summaryInput]}
             />
           </View>
-          <View style={styles.summaryRow}>
-            <Text style={styles.summaryLabel}>Tip</Text>
+          <View style={s.summaryRow}>
+            <Text style={s.summaryLabel}>Tip</Text>
             <TextInput
               value={tipInput}
               onChangeText={setTipInput}
               placeholder="0.00"
               placeholderTextColor={placeholderColor}
               keyboardType="decimal-pad"
-              style={[styles.textInput, styles.summaryInput]}
+              style={[s.textInput, s.summaryInput]}
             />
           </View>
-          <View style={[styles.summaryRow, styles.totalRow]}>
-            <Text style={styles.totalLabel}>Total</Text>
-            <Text style={styles.totalValue}>{formatCurrency(grandTotal)}</Text>
+          <View style={[s.summaryRow, s.totalRow]}>
+            <Text style={s.totalLabel}>Total</Text>
+            <Text style={s.totalValue}>{formatCurrency(grandTotal)}</Text>
           </View>
-        </View>
+        </Animated.View>
 
         {/* Actions */}
-        <View style={styles.actions}>
-          <TouchableOpacity
-            style={[styles.shareButton, isSharing && styles.buttonDisabled]}
+        <Animated.View entering={FadeInDown.delay(250).duration(400)} style={s.actions}>
+          <Pressable
+            style={({ pressed }) => [
+              s.shareButton,
+              isSharing && s.buttonDisabled,
+              pressed && s.pressed,
+            ]}
             onPress={handleShareReceipt}
             disabled={isSharing || isSaving}
           >
-            {isSharing ? (
-              <ActivityIndicator size="small" color="#fff" />
-            ) : (
-              <Text style={styles.shareButtonText}>Share Receipt</Text>
-            )}
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.saveDraftButton, isSaving && styles.buttonDisabled]}
+            <Ionicons name="share-outline" size={16} color="#04110D" />
+            <Text style={s.shareButtonText}>
+              {isSharing ? 'Sharing...' : 'Share Receipt'}
+            </Text>
+            <Ionicons name="arrow-forward" size={16} color="#04110D" />
+          </Pressable>
+          <Pressable
+            style={({ pressed }) => [
+              s.saveDraftButton,
+              isSaving && s.buttonDisabled,
+              pressed && s.pressed,
+            ]}
             onPress={handleSaveDraft}
             disabled={isSaving || isSharing}
           >
-            {isSaving ? (
-              <ActivityIndicator size="small" color={colors.textSecondary} />
-            ) : (
-              <Text style={styles.saveDraftButtonText}>Save as Draft</Text>
-            )}
-          </TouchableOpacity>
-        </View>
+            <Text style={s.saveDraftButtonText}>
+              {isSaving ? 'Saving...' : 'Save as Draft'}
+            </Text>
+          </Pressable>
+        </Animated.View>
       </ScrollView>
 
       {/* Full Image Modal */}
@@ -546,18 +570,21 @@ export default function ReceiptReviewScreen() {
         transparent
         onRequestClose={() => setIsImageExpanded(false)}
       >
-        <View style={styles.modalBackdrop}>
-          <View style={styles.modalContent}>
+        <View style={s.modalBackdrop}>
+          <View style={s.modalContent}>
             {imageUri ? (
               <Image
                 source={{ uri: imageUri }}
                 resizeMode="contain"
-                style={styles.modalImage}
+                style={s.modalImage}
               />
             ) : null}
-            <TouchableOpacity style={styles.modalCloseButton} onPress={() => setIsImageExpanded(false)}>
-              <Text style={styles.modalCloseText}>Close</Text>
-            </TouchableOpacity>
+            <Pressable
+              style={({ pressed }) => [s.modalCloseButton, pressed && s.pressed]}
+              onPress={() => setIsImageExpanded(false)}
+            >
+              <Text style={s.modalCloseText}>Close</Text>
+            </Pressable>
           </View>
         </View>
       </Modal>
@@ -569,28 +596,30 @@ export default function ReceiptReviewScreen() {
         transparent
         onRequestClose={handleGoHome}
       >
-        <View style={styles.successModalBackdrop}>
-          <View style={styles.successModalContent}>
-            <View style={styles.successIconContainer}>
-              <Ionicons name="checkmark-circle" size={64} color={colors.primary} />
+        <View style={s.successModalBackdrop}>
+          <View style={s.successModalContent}>
+            <View style={s.successIconContainer}>
+              <Ionicons name="checkmark-circle" size={56} color={colors.primary} />
             </View>
-            <Text style={styles.successTitle}>Receipt Shared!</Text>
-            <Text style={styles.successMessage}>
+            <Text style={s.successTitle}>Receipt Shared!</Text>
+            <Text style={s.successMessage}>
               Your tablink has been created. View your receipt to see claims update in real-time as friends claim their items.
             </Text>
-            <View style={styles.successActions}>
-              <TouchableOpacity
-                style={styles.successPrimaryButton}
+            <View style={s.successActions}>
+              <Pressable
+                style={({ pressed }) => [s.shareButton, pressed && s.pressed]}
                 onPress={handleViewReceipt}
               >
-                <Text style={styles.successPrimaryButtonText}>View Receipt</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={styles.successSecondaryButton}
+                <Ionicons name="receipt-outline" size={16} color="#04110D" />
+                <Text style={s.shareButtonText}>View Receipt</Text>
+                <Ionicons name="arrow-forward" size={16} color="#04110D" />
+              </Pressable>
+              <Pressable
+                style={({ pressed }) => [s.saveDraftButton, pressed && s.pressed]}
                 onPress={handleGoHome}
               >
-                <Text style={styles.successSecondaryButtonText}>Go Home</Text>
-              </TouchableOpacity>
+                <Text style={s.saveDraftButtonText}>Go Home</Text>
+              </Pressable>
             </View>
           </View>
         </View>
@@ -599,21 +628,24 @@ export default function ReceiptReviewScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+/* ── Styles ────────────────────────────────────────────────── */
+
+const s = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: colors.background,
   },
-  content: {
-    padding: 20,
-    paddingTop: 20,
-    gap: 16,
-    paddingBottom: 40,
+  scrollContent: {
+    paddingHorizontal: 24,
+    paddingTop: 60,
+    paddingBottom: 120,
   },
+
+  /* Header */
   header: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
+    gap: 14,
     marginBottom: 8,
   },
   backArrow: {
@@ -625,30 +657,29 @@ const styles = StyleSheet.create({
   title: {
     color: colors.text,
     fontSize: 22,
-    fontWeight: '700',
+    fontWeight: '800',
+    letterSpacing: -0.3,
   },
   subtitle: {
-    color: colors.textSecondary,
-    fontSize: 14,
+    color: colors.muted,
+    fontSize: 13,
     marginTop: 2,
   },
-  statusBadge: {
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 6,
-    backgroundColor: 'rgba(45, 211, 111, 0.2)',
+  statusLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
   },
-  statusText: {
-    color: colors.primary,
-    fontSize: 12,
-    fontWeight: '600',
-  },
+
+  /* Image */
   imageCard: {
     backgroundColor: colors.surface,
-    borderRadius: 16,
+    borderRadius: 12,
     overflow: 'hidden',
     borderWidth: 1,
-    borderColor: colors.surfaceBorder,
+    borderColor: 'rgba(255, 255, 255, 0.05)',
+    marginBottom: 4,
   },
   receiptImage: {
     width: '100%',
@@ -661,99 +692,62 @@ const styles = StyleSheet.create({
     alignSelf: 'center',
     paddingHorizontal: 16,
     paddingVertical: 8,
-    borderRadius: 999,
+    borderRadius: 12,
     backgroundColor: 'rgba(8, 10, 12, 0.9)',
     borderWidth: 1,
-    borderColor: 'rgba(45, 211, 111, 0.6)',
+    borderColor: 'rgba(255, 255, 255, 0.05)',
   },
   expandButtonText: {
     color: colors.primary,
     fontSize: 13,
     fontWeight: '600',
-    letterSpacing: 0.3,
   },
-  modalBackdrop: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.85)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: 20,
-  },
-  modalContent: {
-    width: '100%',
-    maxWidth: 420,
-    gap: 16,
-  },
-  modalImage: {
-    width: '100%',
-    aspectRatio: 3 / 4,
-    borderRadius: 18,
-    backgroundColor: colors.surfaceBorder,
-  },
-  modalCloseButton: {
-    alignSelf: 'center',
-    paddingHorizontal: 24,
-    paddingVertical: 12,
-    borderRadius: 999,
-    backgroundColor: 'rgba(17,20,24,0.9)',
-    borderWidth: 1,
-    borderColor: colors.surfaceBorder,
-  },
-  modalCloseText: {
-    color: colors.text,
-    fontSize: 15,
-    fontWeight: '600',
-  },
-  card: {
-    backgroundColor: colors.surface,
-    borderRadius: 16,
-    padding: 16,
+
+  /* Sections */
+  section: {
+    paddingVertical: 20,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255, 255, 255, 0.06)',
     gap: 12,
-    borderWidth: 1,
-    borderColor: colors.surfaceBorder,
+  },
+  sectionLabel: {
+    color: colors.muted,
+    fontSize: 12,
+    fontWeight: '700',
+    letterSpacing: 0.8,
+    textTransform: 'uppercase',
   },
   cardHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
   },
-  cardTitle: {
-    color: colors.text,
-    fontSize: 16,
-    fontWeight: '600',
-  },
-  addButton: {
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: colors.surfaceBorder,
-    backgroundColor: 'rgba(17,20,24,0.9)',
-  },
   addButtonText: {
     color: colors.primary,
     fontSize: 14,
     fontWeight: '600',
   },
-  inputLabel: {
-    color: colors.textSecondary,
-    fontSize: 12,
-    textTransform: 'uppercase',
-    letterSpacing: 0.8,
-  },
+
+  /* Inputs */
   textInput: {
-    backgroundColor: 'rgba(17,20,24,0.75)',
+    backgroundColor: colors.surface,
     borderRadius: 12,
     paddingHorizontal: 14,
     paddingVertical: 12,
     borderWidth: 1,
-    borderColor: colors.surfaceBorder,
+    borderColor: 'rgba(255, 255, 255, 0.05)',
     color: colors.text,
     fontSize: 15,
   },
+
+  /* Items */
+  hint: {
+    color: colors.muted,
+    fontSize: 12,
+    marginTop: 4,
+  },
   itemWrapper: {
     position: 'relative',
-    marginBottom: 8,
   },
   swipeDeleteBehind: {
     position: 'absolute',
@@ -762,7 +756,6 @@ const styles = StyleSheet.create({
     bottom: 0,
     width: 80,
     backgroundColor: colors.danger,
-    borderRadius: 8,
   },
   swipeDeleteButton: {
     width: 80,
@@ -777,12 +770,13 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     paddingHorizontal: 12,
     gap: 8,
-    backgroundColor: colors.surface,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: colors.surfaceBorder,
+    backgroundColor: colors.background,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255, 255, 255, 0.06)',
   },
   itemNameInput: {
     flex: 1,
+    color: colors.text,
     fontSize: 15,
     paddingVertical: 4,
     paddingHorizontal: 0,
@@ -803,24 +797,22 @@ const styles = StyleSheet.create({
     backgroundColor: 'transparent',
   },
   itemTimesSymbol: {
-    color: colors.textSecondary,
+    color: colors.muted,
     fontSize: 13,
   },
   itemPriceInput: {
     color: colors.text,
     fontSize: 15,
     fontWeight: '600',
+    fontVariant: ['tabular-nums'],
     width: 70,
     textAlign: 'right',
     paddingVertical: 4,
     paddingHorizontal: 0,
     backgroundColor: 'transparent',
   },
-  hint: {
-    color: colors.textSecondary,
-    fontSize: 12,
-    marginTop: 4,
-  },
+
+  /* Totals */
   summaryRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -835,17 +827,19 @@ const styles = StyleSheet.create({
     color: colors.text,
     fontSize: 15,
     fontWeight: '600',
+    fontVariant: ['tabular-nums'],
   },
   summaryInput: {
     width: 120,
     textAlign: 'right',
     paddingRight: 12,
+    fontVariant: ['tabular-nums'],
   },
   totalRow: {
     marginTop: 8,
     paddingTop: 12,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: colors.surfaceBorder,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(255, 255, 255, 0.06)',
   },
   totalLabel: {
     color: colors.text,
@@ -856,63 +850,121 @@ const styles = StyleSheet.create({
     color: colors.text,
     fontSize: 18,
     fontWeight: '700',
+    fontVariant: ['tabular-nums'],
   },
+
+  /* Actions */
   actions: {
-    marginTop: 8,
-    gap: 12,
+    paddingVertical: 24,
+    gap: 10,
   },
   shareButton: {
-    backgroundColor: colors.primary,
-    borderRadius: 999,
-    paddingVertical: 14,
+    backgroundColor: '#57E6AE',
+    borderRadius: 10,
+    paddingVertical: 13,
+    paddingHorizontal: 16,
     alignItems: 'center',
+    justifyContent: 'center',
+    flexDirection: 'row',
+    gap: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(87, 230, 174, 0.55)',
+    shadowColor: '#57E6AE',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.18,
+    shadowRadius: 20,
+    elevation: 6,
   },
   shareButtonText: {
-    color: colors.background,
-    fontSize: 16,
-    fontWeight: '600',
+    color: '#04110D',
+    fontSize: 13,
+    fontWeight: '700',
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
   },
   saveDraftButton: {
-    borderRadius: 999,
-    paddingVertical: 14,
+    backgroundColor: colors.surface,
+    borderRadius: 10,
+    paddingVertical: 13,
     alignItems: 'center',
     borderWidth: 1,
-    borderColor: colors.surfaceBorder,
+    borderColor: 'rgba(255, 255, 255, 0.05)',
   },
   saveDraftButtonText: {
-    color: colors.textSecondary,
-    fontSize: 16,
-    fontWeight: '600',
+    color: colors.text,
+    fontSize: 12,
+    fontWeight: '700',
+    letterSpacing: 0.4,
+    textTransform: 'uppercase',
   },
   buttonDisabled: {
-    opacity: 0.6,
+    opacity: 0.5,
   },
-  successModalBackdrop: {
+  pressed: {
+    opacity: 0.7,
+  },
+
+  /* Image modal */
+  modalBackdrop: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.85)',
+    backgroundColor: 'rgba(0, 0, 0, 0.9)',
     justifyContent: 'center',
     alignItems: 'center',
     padding: 20,
   },
-  successModalContent: {
+  modalContent: {
     width: '100%',
-    maxWidth: 340,
+    maxWidth: 420,
+    gap: 16,
+  },
+  modalImage: {
+    width: '100%',
+    aspectRatio: 3 / 4,
+    borderRadius: 12,
+    backgroundColor: colors.surfaceBorder,
+  },
+  modalCloseButton: {
+    alignSelf: 'center',
+    paddingHorizontal: 24,
+    paddingVertical: 12,
+    borderRadius: 12,
     backgroundColor: colors.surface,
-    borderRadius: 20,
-    padding: 24,
-    alignItems: 'center',
     borderWidth: 1,
-    borderColor: colors.surfaceBorder,
+    borderColor: 'rgba(255, 255, 255, 0.05)',
+  },
+  modalCloseText: {
+    color: colors.text,
+    fontSize: 15,
+    fontWeight: '600',
+  },
+
+  /* Share success modal */
+  successModalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 24,
+  },
+  successModalContent: {
+    backgroundColor: colors.surface,
+    borderRadius: 16,
+    padding: 32,
+    alignItems: 'center',
+    maxWidth: 320,
+    width: '100%',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.05)',
   },
   successIconContainer: {
     marginBottom: 16,
   },
   successTitle: {
-    color: colors.text,
-    fontSize: 22,
-    fontWeight: '700',
+    color: colors.primary,
+    fontSize: 24,
+    fontWeight: '800',
+    letterSpacing: -0.5,
     marginBottom: 12,
-    textAlign: 'center',
   },
   successMessage: {
     color: colors.textSecondary,
@@ -923,29 +975,6 @@ const styles = StyleSheet.create({
   },
   successActions: {
     width: '100%',
-    gap: 12,
-  },
-  successPrimaryButton: {
-    backgroundColor: colors.primary,
-    borderRadius: 999,
-    paddingVertical: 14,
-    alignItems: 'center',
-  },
-  successPrimaryButtonText: {
-    color: colors.background,
-    fontSize: 16,
-    fontWeight: '600',
-  },
-  successSecondaryButton: {
-    borderRadius: 999,
-    paddingVertical: 14,
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: colors.surfaceBorder,
-  },
-  successSecondaryButtonText: {
-    color: colors.textSecondary,
-    fontSize: 16,
-    fontWeight: '600',
+    gap: 10,
   },
 });
