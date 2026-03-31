@@ -320,27 +320,64 @@ export async function updateReceiptItems(
   items: Array<{ id?: string; label: string; price_cents: number; quantity: number; position: number }>
 ): Promise<{ success: boolean; error?: string }> {
   const supabase = getSupabaseClient();
+  type ReceiptItemUpdate = { id: string; label: string; price_cents: number; quantity: number; position: number };
 
-  // Delete existing items and insert new ones (simpler than diffing)
-  const { error: deleteError } = await supabase
+  const { data: existingItems, error: existingError } = await supabase
     .from('receipt_items')
-    .delete()
+    .select('id')
     .eq('receipt_id', receiptId);
 
-  if (deleteError) {
-    console.error('[receiptService] Failed to delete old items:', deleteError);
-    return { success: false, error: deleteError.message };
+  if (existingError) {
+    console.error('[receiptService] Failed to fetch existing items:', existingError);
+    return { success: false, error: existingError.message };
   }
 
-  if (items.length > 0) {
-    const itemsToInsert = items.map((item, index) => ({
+  const existingIds = new Set((existingItems ?? []).map((item) => item.id));
+  const nextIds = new Set(items.map((item) => item.id).filter((id): id is string => Boolean(id)));
+  const idsToDelete = [...existingIds].filter((id) => !nextIds.has(id));
+
+  if (idsToDelete.length > 0) {
+    const { error: deleteError } = await supabase
+      .from('receipt_items')
+      .delete()
+      .in('id', idsToDelete);
+
+    if (deleteError) {
+      console.error('[receiptService] Failed to delete removed items:', deleteError);
+      return { success: false, error: deleteError.message };
+    }
+  }
+
+  const itemsToUpdate = items.filter((item): item is ReceiptItemUpdate => Boolean(item.id));
+  for (const item of itemsToUpdate) {
+    const { error: updateError } = await supabase
+      .from('receipt_items')
+      .update({
+        label: item.label,
+        price_cents: item.price_cents,
+        quantity: item.quantity,
+        position: item.position,
+      })
+      .eq('id', item.id)
+      .eq('receipt_id', receiptId);
+
+    if (updateError) {
+      console.error('[receiptService] Failed to update item:', updateError);
+      return { success: false, error: updateError.message };
+    }
+  }
+
+  const itemsToInsert = items
+    .filter((item) => !item.id)
+    .map((item) => ({
       receipt_id: receiptId,
       label: item.label,
       price_cents: item.price_cents,
       quantity: item.quantity,
-      position: index,
+      position: item.position,
     }));
 
+  if (itemsToInsert.length > 0) {
     const { error: insertError } = await supabase
       .from('receipt_items')
       .insert(itemsToInsert);

@@ -66,6 +66,7 @@ type Participant = {
 
 type EditableItem = {
   key: string;
+  id?: string;
   name: string;
   price: string;
   quantity: string;
@@ -74,6 +75,7 @@ type EditableItem = {
 /* ── Status config (matches home screen) ───────────────────── */
 
 type ReceiptStatus = 'draft' | 'ready' | 'shared' | 'partially_claimed' | 'fully_claimed' | 'settled';
+const TIP_PRESET_PERCENTS = [15, 18, 20] as const;
 
 const STATUS_COLOR: Record<ReceiptStatus, string> = {
   draft: '#6B7280',
@@ -127,6 +129,18 @@ function parseQuantityInput(value: string) {
   return Math.max(0.01, Number(parsed.toFixed(2)));
 }
 
+function parsePercentInput(value: string) {
+  if (!value) return 0;
+  const cleaned = value.replace(/[^0-9.,]/g, '').replace(',', '.');
+  const parsed = Number.parseFloat(cleaned);
+  return Number.isFinite(parsed) ? Math.max(0, Number(parsed.toFixed(2))) : 0;
+}
+
+function formatPercentInput(value: number) {
+  if (!Number.isFinite(value) || value <= 0) return '';
+  return value % 1 === 0 ? String(value) : value.toFixed(2).replace(/\.?0+$/, '');
+}
+
 function formatCurrency(amount: number) {
   if (Number.isNaN(amount)) return '—';
   return new Intl.NumberFormat('en-US', {
@@ -153,6 +167,7 @@ function buildEditableItems(items: ReceiptItem[]): EditableItem[] {
   }
   return items.map((item) => ({
     key: item.id || createItemKey(),
+    id: item.id,
     name: item.label,
     price: toCurrencyString(centsToDollars(item.price_cents)),
     quantity: item.quantity.toString(),
@@ -287,6 +302,7 @@ export default function ReceiptDetailScreen() {
   const [merchantName, setMerchantName] = useState('');
   const [taxInput, setTaxInput] = useState('0.00');
   const [tipInput, setTipInput] = useState('0.00');
+  const [customTipPercentInput, setCustomTipPercentInput] = useState('');
   const [editableItems, setEditableItems] = useState<EditableItem[]>([]);
   const [hasChanges, setHasChanges] = useState(false);
 
@@ -491,6 +507,38 @@ export default function ReceiptDetailScreen() {
   const taxAmount = useMemo(() => parseCurrencyInput(taxInput), [taxInput]);
   const tipAmount = useMemo(() => parseCurrencyInput(tipInput), [tipInput]);
   const grandTotal = useMemo(() => subtotal + taxAmount + tipAmount, [subtotal, taxAmount, tipAmount]);
+  const currentTipPercent = useMemo(() => {
+    if (subtotal <= 0 || tipAmount <= 0) return 0;
+    return Number(((tipAmount / subtotal) * 100).toFixed(2));
+  }, [subtotal, tipAmount]);
+  const activeTipPreset = useMemo(
+    () => TIP_PRESET_PERCENTS.find((percent) => Math.abs(currentTipPercent - percent) < 0.01) ?? null,
+    [currentTipPercent]
+  );
+
+  useEffect(() => {
+    if (subtotal <= 0 || tipAmount <= 0 || activeTipPreset) {
+      setCustomTipPercentInput('');
+      return;
+    }
+
+    setCustomTipPercentInput(formatPercentInput(currentTipPercent));
+  }, [activeTipPreset, currentTipPercent, subtotal, tipAmount]);
+
+  const applyTipPercent = useCallback((percent: number) => {
+    const safePercent = Math.max(0, Number(percent.toFixed(2)));
+    setCustomTipPercentInput(
+      TIP_PRESET_PERCENTS.includes(safePercent as (typeof TIP_PRESET_PERCENTS)[number])
+        ? ''
+        : formatPercentInput(safePercent)
+    );
+    setTipInput(toCurrencyString(subtotal * (safePercent / 100)));
+  }, [subtotal]);
+
+  const handleCustomTipPercentChange = useCallback((value: string) => {
+    setCustomTipPercentInput(value);
+    setTipInput(toCurrencyString(subtotal * (parsePercentInput(value) / 100)));
+  }, [subtotal]);
 
   const effectiveStatus = useMemo((): ReceiptStatus => {
     if (!receipt) return 'draft';
@@ -593,6 +641,7 @@ export default function ReceiptDetailScreen() {
       }
 
       const itemsToSave = editableItems.map((item, index) => ({
+        id: item.id,
         label: item.name.trim() || 'Untitled item',
         price_cents: dollarsToCents(parseCurrencyInput(item.price)),
         quantity: parseQuantityInput(item.quantity),
@@ -1031,6 +1080,17 @@ export default function ReceiptDetailScreen() {
                             placeholderTextColor={colors.muted}
                             style={s.itemNameInput}
                           />
+                          <View style={s.itemQtyGroup}>
+                            <Text style={s.itemQtyPrefix}>×</Text>
+                            <TextInput
+                              value={item.quantity}
+                              onChangeText={(value) => updateItemField(item.key, 'quantity', value)}
+                              placeholder="1"
+                              placeholderTextColor={colors.muted}
+                              keyboardType="decimal-pad"
+                              style={s.itemQtyInput}
+                            />
+                          </View>
                           {isPaid && (
                             <Text style={s.paidTag}>Paid</Text>
                           )}
@@ -1053,25 +1113,14 @@ export default function ReceiptDetailScreen() {
                         )}
                       </View>
                       <View style={s.itemRightSection}>
-                        <View style={s.itemRightFields}>
-                          <TextInput
-                            value={item.quantity}
-                            onChangeText={(value) => updateItemField(item.key, 'quantity', value)}
-                            placeholder="1"
-                            placeholderTextColor={colors.muted}
-                            keyboardType="decimal-pad"
-                            style={s.itemQtyInput}
-                          />
-                          <Text style={s.itemTimesSymbol}>×</Text>
-                          <TextInput
-                            value={item.price}
-                            onChangeText={(value) => updateItemField(item.key, 'price', value)}
-                            placeholder="0.00"
-                            placeholderTextColor={colors.muted}
-                            keyboardType="decimal-pad"
-                            style={s.itemPriceInput}
-                          />
-                        </View>
+                        <TextInput
+                          value={item.price}
+                          onChangeText={(value) => updateItemField(item.key, 'price', value)}
+                          placeholder="0.00"
+                          placeholderTextColor={colors.muted}
+                          keyboardType="decimal-pad"
+                          style={s.itemPriceInput}
+                        />
                       </View>
                     </View>
                   );
@@ -1109,6 +1158,38 @@ export default function ReceiptDetailScreen() {
               keyboardType="decimal-pad"
               style={[s.textInput, s.summaryInput]}
             />
+          </View>
+          <View style={s.tipControls}>
+            <View style={s.tipPresetRow}>
+              {TIP_PRESET_PERCENTS.map((percent) => {
+                const isActive = activeTipPreset === percent;
+                return (
+                  <Pressable
+                    key={percent}
+                    onPress={() => applyTipPercent(percent)}
+                    style={({ pressed }) => [
+                      s.tipPresetButton,
+                      isActive && s.tipPresetButtonActive,
+                      pressed && s.pressed,
+                    ]}
+                  >
+                    <Text style={[s.tipPresetText, isActive && s.tipPresetTextActive]}>{percent}%</Text>
+                  </Pressable>
+                );
+              })}
+              <View style={s.tipCustomButton}>
+                <Text style={s.tipPresetText}>Custom</Text>
+                <TextInput
+                  value={customTipPercentInput}
+                  onChangeText={handleCustomTipPercentChange}
+                  placeholder="0"
+                  placeholderTextColor={colors.muted}
+                  keyboardType="decimal-pad"
+                  style={s.tipPercentInput}
+                />
+                <Text style={s.tipPresetText}>%</Text>
+              </View>
+            </View>
           </View>
           <View style={[s.summaryRow, s.totalRow]}>
             <Text style={s.totalLabel}>Total</Text>
@@ -1622,6 +1703,11 @@ const s = StyleSheet.create({
     alignItems: 'center',
     gap: 8,
   },
+  itemQtyGroup: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 2,
+  },
   itemNameInput: {
     color: colors.text,
     fontSize: 15,
@@ -1664,21 +1750,16 @@ const s = StyleSheet.create({
     alignItems: 'flex-end',
     paddingVertical: 12,
   },
-  itemRightFields: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-  },
   itemQtyInput: {
     color: colors.text,
-    fontSize: 14,
-    width: 36,
-    textAlign: 'center',
+    fontSize: 13,
+    width: 28,
+    textAlign: 'left',
     paddingVertical: 4,
-    paddingHorizontal: 4,
+    paddingHorizontal: 0,
     backgroundColor: 'transparent',
   },
-  itemTimesSymbol: {
+  itemQtyPrefix: {
     color: colors.muted,
     fontSize: 13,
   },
@@ -1715,6 +1796,60 @@ const s = StyleSheet.create({
     width: 120,
     textAlign: 'right',
     paddingRight: 12,
+    fontVariant: ['tabular-nums'],
+  },
+  tipControls: {
+    marginTop: 10,
+    gap: 10,
+  },
+  tipPresetRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  tipPresetButton: {
+    minWidth: 54,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.08)',
+    backgroundColor: colors.surface,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  tipPresetButtonActive: {
+    backgroundColor: colors.primary,
+    borderColor: colors.primary,
+  },
+  tipPresetText: {
+    color: colors.textSecondary,
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  tipPresetTextActive: {
+    color: '#0B0F14',
+  },
+  tipCustomButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    minWidth: 104,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.08)',
+    backgroundColor: colors.surface,
+  },
+  tipPercentInput: {
+    minWidth: 24,
+    color: colors.text,
+    fontSize: 13,
+    fontWeight: '600',
+    textAlign: 'center',
+    paddingVertical: 0,
+    paddingHorizontal: 0,
     fontVariant: ['tabular-nums'],
   },
   totalRow: {

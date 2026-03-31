@@ -672,10 +672,19 @@ input:focus { outline: none; }
   gap: 10px;
 }
 
+.tablink-item-title-row {
+  min-width: 0;
+}
+
 .tablink-item-title {
   font-weight: 600;
   font-size: 0.93rem;
   letter-spacing: -0.01em;
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .tablink-qty-pill {
@@ -722,6 +731,7 @@ input:focus { outline: none; }
   font-weight: 700;
   font-size: 0.95rem;
   letter-spacing: -0.02em;
+  white-space: nowrap;
 }
 
 .tablink-paid-pill {
@@ -946,9 +956,10 @@ input:focus { outline: none; }
   }
 
   .tablink-item-card {
-    flex-direction: column;
+    flex-direction: row;
     align-items: flex-start;
     padding: 12px 0;
+    gap: 10px;
   }
 
   .tablink-item-card.is-mine,
@@ -958,10 +969,11 @@ input:focus { outline: none; }
   }
 
   .tablink-item-trailing {
-    width: 100%;
-    flex-direction: row;
-    justify-content: space-between;
-    align-items: center;
+    width: auto;
+    flex-direction: column;
+    justify-content: flex-start;
+    align-items: flex-end;
+    gap: 6px;
   }
 
   .tablink-summary-row,
