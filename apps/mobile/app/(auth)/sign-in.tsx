@@ -82,7 +82,10 @@ export default function SignInScreen() {
         >
           {/* ── Brand ── */}
           <Animated.View entering={FadeInDown.duration(600)} style={s.hero}>
-            <Text style={s.brandName}>Tablink</Text>
+            <Text style={s.brandName}>
+              <Text>Tab</Text>
+              <Text style={s.brandAccent}>link</Text>
+            </Text>
             <View style={s.accent} />
             <Text style={s.tagline}>
               Split receipts.{'\n'}
@@ -206,6 +209,9 @@ const s = StyleSheet.create({
     fontSize: 42,
     fontWeight: '800',
     letterSpacing: -1,
+  },
+  brandAccent: {
+    color: colors.primary,
   },
   accent: {
     width: 32,

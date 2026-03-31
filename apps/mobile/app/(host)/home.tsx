@@ -313,7 +313,10 @@ export default function HomeScreen() {
         {/* Header */}
         <View style={s.header}>
           <View style={s.headerRow}>
-            <Text style={s.heading}>Tablink</Text>
+            <Text style={s.heading}>
+              <Text>Tab</Text>
+              <Text style={s.headingAccent}>link</Text>
+            </Text>
             {!isLoading && (
               <Link href="/scan" asChild>
                 <Pressable style={({ pressed }) => [s.scanButton, pressed && s.scanButtonPressed]}>
@@ -387,6 +390,9 @@ const s = StyleSheet.create({
     fontWeight: '800',
     letterSpacing: -0.5,
     flexShrink: 1,
+  },
+  headingAccent: {
+    color: colors.primary,
   },
   scanButton: {
     backgroundColor: colors.surface,

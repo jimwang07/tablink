@@ -115,15 +115,9 @@ function CloseIcon() {
 
 function AppMark() {
   return (
-    <div className="flex items-center gap-3">
-      <div className="tablink-logo">
-        <span>T</span>
-      </div>
-      <div>
-        <div className="tablink-meta-label">Tablink</div>
-        <div className="tablink-meta-caption">Claim your share</div>
-      </div>
-    </div>
+    <span className="tablink-wordmark">
+      Tab<span className="tablink-wordmark-accent">link</span>
+    </span>
   );
 }
 
@@ -543,53 +537,34 @@ export function ClaimPageClient({
         <div className="tablink-bg-orb tablink-bg-orb-bottom" />
 
         <div className="tablink-join-layout">
-          <section className="tablink-hero-panel">
-            <AppMark />
-            <div className="tablink-hero-copy">
-              <div className="tablink-chip">Guest Claim Flow</div>
-              <h1 className="tablink-hero-title">
-                Join the receipt, claim your items, and settle up without the group-chat chaos.
-              </h1>
-              <p className="tablink-hero-body">
-                Tablink gives you one clean place to split the bill. Choose your identity, tap what you ordered,
-                and pay the host directly.
-              </p>
-            </div>
+          <AppMark />
 
-            <div className="tablink-overview-card">
-              <div className="tablink-overview-header">
-                <div>
-                  <div className="tablink-overline">Receipt</div>
-                  <h2 className="tablink-overview-title">{receipt.merchant_name || 'Shared receipt'}</h2>
-                </div>
-                <div className="tablink-total-pill">{formatCents(receipt.total_cents)}</div>
+          <section className="tablink-overview-card">
+            <div className="tablink-overline">Receipt</div>
+            <h2 className="tablink-overview-title">{receipt.merchant_name || 'Shared receipt'}</h2>
+            {receipt.receipt_date ? <p className="tablink-overview-date">{formatDate(receipt.receipt_date)}</p> : null}
+            <div className="tablink-detail-rows">
+              <div className="tablink-detail-row">
+                <span className="tablink-detail-label">Total</span>
+                <span className="tablink-detail-value">{formatCents(receipt.total_cents)}</span>
               </div>
-
-              {receipt.receipt_date ? <p className="tablink-overview-date">{formatDate(receipt.receipt_date)}</p> : null}
-
-              <div className="tablink-stat-grid">
-                <div className="tablink-stat-card">
-                  <span className="tablink-stat-label">Items</span>
-                  <span className="tablink-stat-value">{items.length}</span>
-                </div>
-                <div className="tablink-stat-card">
-                  <span className="tablink-stat-label">People</span>
-                  <span className="tablink-stat-value">{guestParticipants.length + 1}</span>
-                </div>
-                <div className="tablink-stat-card">
-                  <span className="tablink-stat-label">Tax + Tip</span>
-                  <span className="tablink-stat-value">{formatCents(receipt.tax_cents + receipt.tip_cents)}</span>
-                </div>
+              <div className="tablink-detail-row">
+                <span className="tablink-detail-label">Items</span>
+                <span className="tablink-detail-value">{items.length}</span>
+              </div>
+              <div className="tablink-detail-row">
+                <span className="tablink-detail-label">Tax + Tip</span>
+                <span className="tablink-detail-value">{formatCents(receipt.tax_cents + receipt.tip_cents)}</span>
               </div>
             </div>
           </section>
 
-          <section className="tablink-card tablink-join-card">
+          <section className="tablink-card">
             <div className="tablink-card-head">
-              <div className="tablink-overline">Step 1</div>
-              <h2 className="tablink-section-title">Identify yourself</h2>
+              <div className="tablink-overline">Join</div>
+              <h2 className="tablink-section-title">Who are you?</h2>
               <p className="tablink-section-body">
-                Select your name if you already joined, or add yourself to the receipt to start claiming.
+                Claim what you ordered and pay the host.
               </p>
             </div>
 
@@ -683,7 +658,7 @@ export function ClaimPageClient({
       </header>
 
       <main className="tablink-claim-layout">
-        <section className="tablink-card tablink-receipt-summary">
+        <section className="tablink-card">
           <div className="tablink-card-head">
             <div className="tablink-overline">Receipt</div>
             <div className="tablink-summary-row">
@@ -691,22 +666,22 @@ export function ClaimPageClient({
                 <h1 className="tablink-section-title">{receipt.merchant_name || 'Shared receipt'}</h1>
                 {receipt.receipt_date ? <p className="tablink-section-body">{formatDate(receipt.receipt_date)}</p> : null}
               </div>
-              <div className="tablink-total-pill">{formatCents(receipt.total_cents)}</div>
+              <span className="tablink-header-total">{formatCents(receipt.total_cents)}</span>
             </div>
           </div>
 
-          <div className="tablink-summary-meta">
-            <div className="tablink-summary-meta-card">
-              <span className="tablink-stat-label">Items</span>
-              <span className="tablink-stat-value">{items.length}</span>
+          <div className="tablink-detail-rows">
+            <div className="tablink-detail-row">
+              <span className="tablink-detail-label">Items</span>
+              <span className="tablink-detail-value">{items.length}</span>
             </div>
-            <div className="tablink-summary-meta-card">
-              <span className="tablink-stat-label">Subtotal</span>
-              <span className="tablink-stat-value">{formatCents(receipt.subtotal_cents)}</span>
+            <div className="tablink-detail-row">
+              <span className="tablink-detail-label">Subtotal</span>
+              <span className="tablink-detail-value">{formatCents(receipt.subtotal_cents)}</span>
             </div>
-            <div className="tablink-summary-meta-card">
-              <span className="tablink-stat-label">Tax + Tip</span>
-              <span className="tablink-stat-value">{formatCents(receipt.tax_cents + receipt.tip_cents)}</span>
+            <div className="tablink-detail-row">
+              <span className="tablink-detail-label">Tax + Tip</span>
+              <span className="tablink-detail-value">{formatCents(receipt.tax_cents + receipt.tip_cents)}</span>
             </div>
           </div>
         </section>
@@ -779,90 +754,85 @@ export function ClaimPageClient({
           </div>
         </section>
 
-        <aside className="tablink-sidebar-stack">
-          <section className="tablink-card tablink-total-panel">
+        {otherParticipants.length > 0 ? (
+          <section className="tablink-card">
             <div className="tablink-card-head">
-              <div className="tablink-overline">Step 3</div>
-              <h2 className="tablink-section-title">Pay the host</h2>
+              <div className="tablink-overline">People</div>
+              <h2 className="tablink-section-title">Splitting with</h2>
             </div>
 
-            <div className="tablink-total-breakdown">
-              <div className="tablink-total-line">
-                <span>Your items</span>
-                <span>{formatCents(myTotal)}</span>
-              </div>
-              {receipt.tax_cents > 0 ? (
-                <div className="tablink-total-line">
-                  <span>Tax</span>
-                  <span>{formatCents(myTax)}</span>
-                </div>
-              ) : null}
-              {receipt.tip_cents > 0 ? (
-                <div className="tablink-total-line">
-                  <span>Tip</span>
-                  <span>{formatCents(myTip)}</span>
-                </div>
-              ) : null}
-              <div className="tablink-total-grand">
-                <span>Your total</span>
-                <span>{formatCents(myGrandTotal)}</span>
-              </div>
-            </div>
-
-            {myGrandTotal > 0 ? (
-              paymentStatus === 'paid' ? (
-                <div className="tablink-paid-card">
-                  <div className="tablink-paid-badge">
-                    <CheckIcon />
-                  </div>
-                  <div>
-                    <div className="tablink-paid-title">Payment confirmed</div>
-                    <div className="tablink-paid-copy">Thanks for settling up.</div>
-                  </div>
-                </div>
-              ) : (
-                <PrimaryAction onClick={() => setShowPaymentModal(true)}>
-                  <span>Pay {ownerProfile?.display_name || 'Host'}</span>
-                  <ArrowIcon />
-                </PrimaryAction>
-              )
-            ) : (
-              <div className="tablink-empty-note">Claim one or more items to calculate your share.</div>
-            )}
-          </section>
-
-          {otherParticipants.length > 0 ? (
-            <section className="tablink-card">
-              <div className="tablink-card-head">
-                <div className="tablink-overline">People</div>
-                <h2 className="tablink-section-title">Splitting with</h2>
-              </div>
-
-              <div className="tablink-participant-list">
-                {otherParticipants.map((participant) => (
-                  <div key={participant.id} className="tablink-participant-row">
-                    <div className="tablink-participant-leading">
-                      <div
-                        className="tablink-participant-avatar"
-                        style={{ backgroundColor: `${participant.color_token ?? colors.primary}22` }}
-                      >
-                        <span>{participant.emoji}</span>
-                      </div>
-                      <div>
-                        <div className="tablink-participant-name">{participant.display_name}</div>
-                        <div className="tablink-participant-meta">
-                          {participant.role === 'owner' ? 'Host' : 'Guest'}
-                        </div>
+            <div className="tablink-participant-list">
+              {otherParticipants.map((participant) => (
+                <div key={participant.id} className="tablink-participant-row">
+                  <div className="tablink-participant-leading">
+                    <div
+                      className="tablink-participant-avatar"
+                      style={{ backgroundColor: `${participant.color_token ?? colors.primary}22` }}
+                    >
+                      <span>{participant.emoji}</span>
+                    </div>
+                    <div>
+                      <div className="tablink-participant-name">{participant.display_name}</div>
+                      <div className="tablink-participant-meta">
+                        {participant.role === 'owner' ? 'Host' : 'Guest'}
                       </div>
                     </div>
-                    {participant.payment_status === 'paid' ? <span className="tablink-paid-pill">Paid</span> : null}
                   </div>
-                ))}
-              </div>
-            </section>
-          ) : null}
-        </aside>
+                  {participant.payment_status === 'paid' ? <span className="tablink-paid-pill">Paid</span> : null}
+                </div>
+              ))}
+            </div>
+          </section>
+        ) : null}
       </main>
+
+      <footer className="tablink-action-footer">
+        <div className="tablink-action-footer-inner">
+          <div className="tablink-total-breakdown">
+            <div className="tablink-total-line">
+              <span>Your items</span>
+              <span>{formatCents(myTotal)}</span>
+            </div>
+            {receipt.tax_cents > 0 ? (
+              <div className="tablink-total-line">
+                <span>Tax</span>
+                <span>{formatCents(myTax)}</span>
+              </div>
+            ) : null}
+            {receipt.tip_cents > 0 ? (
+              <div className="tablink-total-line">
+                <span>Tip</span>
+                <span>{formatCents(myTip)}</span>
+              </div>
+            ) : null}
+            <div className="tablink-total-grand">
+              <span>Your total</span>
+              <span>{formatCents(myGrandTotal)}</span>
+            </div>
+          </div>
+
+          {myGrandTotal > 0 ? (
+            paymentStatus === 'paid' ? (
+              <div className="tablink-paid-card">
+                <div className="tablink-paid-badge">
+                  <CheckIcon />
+                </div>
+                <div>
+                  <div className="tablink-paid-title">Payment confirmed</div>
+                  <div className="tablink-paid-copy">Thanks for settling up.</div>
+                </div>
+              </div>
+            ) : (
+              <PrimaryAction onClick={() => setShowPaymentModal(true)}>
+                <span>Pay {ownerProfile?.display_name || 'Host'}</span>
+                <ArrowIcon />
+              </PrimaryAction>
+            )
+          ) : (
+            <div className="tablink-empty-note">Claim one or more items to calculate your share.</div>
+          )}
+        </div>
+      </footer>
 
       {showPaymentModal ? (
         <div className="tablink-modal-backdrop" onClick={() => setShowPaymentModal(false)}>

@@ -98,7 +98,8 @@ function safeDate(value: string | null | undefined): string | null {
 }
 
 function reconcileTotals({ subtotal, tax, tip, total, items }: ReconcileInput) {
-  const itemsSum = items.reduce((a, i) => a + i.price * i.quantity, 0);
+  // `price` is the line total shown on the receipt, not the unit price.
+  const itemsSum = items.reduce((a, i) => a + i.price, 0);
   let nextSubtotal = subtotal || itemsSum;
   const nextTax = tax || 0;
   const nextTip = tip || 0;
@@ -181,6 +182,8 @@ Rules:
 - Numbers must be plain numbers (no "$").
 - If not a receipt, set isValidReceipt=false, items=[], and explain in "notes".
 - If date or totals are missing, use null (not strings like "N/A").
+- For each item, set "price" to the line total shown on the receipt, not the unit price.
+- Example: if a line reads "3 @ 4.69" and the rightmost amount is "14.07", return {"quantity": 3, "price": 14.07}.
 - If quantity is unclear, default to 1.
 `;
 

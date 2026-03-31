@@ -96,7 +96,8 @@ function reconcileTotals({
   total: number;
   items: ModelExtractItem[];
 }) {
-  const itemsSum = items.reduce((a, i) => a + i.price * i.quantity, 0);
+  // `price` is the line total shown on the receipt, not the unit price.
+  const itemsSum = items.reduce((a, i) => a + i.price, 0);
   let s = subtotal || itemsSum;
   const tx = tax || 0;
   const tp = tip || 0;
@@ -193,7 +194,7 @@ Deno.serve(async (req) => {
       additionalProperties: false,
     } as const;
 
-    const instructions = `You are a receipt parsing assistant. If not a receipt, set isValidReceipt=false and items=[] with an explanation in notes. Extract fields; numbers must be plain numbers (no $). Default quantity=1 when unclear.`;
+    const instructions = `You are a receipt parsing assistant. If not a receipt, set isValidReceipt=false and items=[] with an explanation in notes. Extract fields; numbers must be plain numbers (no $). For each item, set price to the line total shown on the receipt, not the unit price. If a line reads like "3 @ 4.69" with "14.07" on the right, return quantity=3 and price=14.07. Default quantity=1 when unclear.`;
 
     // Responses API (base64 via data URL)
     const resp = await openai.responses.create({
