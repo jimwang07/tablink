@@ -296,7 +296,7 @@ export default function ReceiptDetailScreen() {
   const [imageUrl, setImageUrl] = useState<string | null>(null);
   const [isImageExpanded, setIsImageExpanded] = useState(false);
 
-  const TABLINK_BASE_URL = process.env.EXPO_PUBLIC_TABLINK_URL || 'http://localhost:3000';
+  const TABLINK_BASE_URL = process.env.EXPO_PUBLIC_TABLINK_URL;
 
   // Editable state
   const [merchantName, setMerchantName] = useState('');
@@ -722,6 +722,11 @@ export default function ReceiptDetailScreen() {
 
     setIsSharing(true);
     try {
+      if (!TABLINK_BASE_URL) {
+        Alert.alert('Configuration Error', 'Missing Tablink share URL configuration.');
+        return;
+      }
+
       if (receipt.status === 'draft') {
         const result = await updateReceipt(id, { status: 'shared' });
         if (!result.success) {

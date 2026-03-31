@@ -39,6 +39,17 @@ type UseReceiptsResult = {
   refresh: () => Promise<void>;
 };
 
+function normalizeReceipt(record: unknown): ReceiptWithDetails {
+  const value = record as Partial<ReceiptWithDetails> | null;
+
+  return {
+    ...(value as ReceiptWithDetails),
+    celebration_shown: typeof value?.celebration_shown === 'boolean' ? value.celebration_shown : false,
+    receipt_items: Array.isArray(value?.receipt_items) ? value.receipt_items : [],
+    receipt_participants: Array.isArray(value?.receipt_participants) ? value.receipt_participants : [],
+  };
+}
+
 export function useReceipts(): UseReceiptsResult {
   const { session } = useAuth();
   const [yourReceipts, setYourReceipts] = useState<ReceiptWithDetails[]>([]);
@@ -124,8 +135,8 @@ export function useReceipts(): UseReceiptsResult {
 
       if (sharedError) throw sharedError;
 
-      setYourReceipts((owned as ReceiptWithDetails[]) ?? []);
-      setSharedReceipts((shared as ReceiptWithDetails[]) ?? []);
+      setYourReceipts((owned ?? []).map(normalizeReceipt));
+      setSharedReceipts((shared ?? []).map(normalizeReceipt));
       hasLoadedRef.current = true;
     } catch (err) {
       console.error('[useReceipts] Error fetching receipts:', err);

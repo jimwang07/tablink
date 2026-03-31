@@ -143,7 +143,7 @@ export default function ReceiptReviewScreen() {
     checkPaymentMethods();
   }, [session?.user?.id]);
 
-  const TABLINK_BASE_URL = process.env.EXPO_PUBLIC_TABLINK_URL || 'http://localhost:3000';
+  const TABLINK_BASE_URL = process.env.EXPO_PUBLIC_TABLINK_URL;
 
   useEffect(() => {
     if (!pendingReceipt && !isClosingRef.current) {
@@ -340,6 +340,10 @@ export default function ReceiptReviewScreen() {
     try {
       const updatedParsed = buildUpdatedParsed();
       if (!updatedParsed) return;
+      if (!TABLINK_BASE_URL) {
+        Alert.alert('Configuration Error', 'Missing Tablink share URL configuration.');
+        return;
+      }
 
       // Save the receipt first
       const updatedReceipt = { ...pendingReceipt, parsed: updatedParsed };

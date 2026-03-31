@@ -344,7 +344,7 @@ export default function ScanReceiptScreen() {
           <View style={styles.confirmationContainer}>
             <Image source={{ uri: lastPhoto?.uri ?? importPreview ?? '' }} style={styles.previewImage} />
             <Text style={styles.previewHint}>
-              Looks good? We'll parse the receipt on the next screen when you continue.
+              Looks good? We&apos;ll parse the receipt on the next screen when you continue.
             </Text>
             <Pressable
               style={({ pressed }) => [styles.retakeButton, pressed && styles.pressed]}

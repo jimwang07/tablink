@@ -3,6 +3,7 @@ import { Platform } from 'react-native';
 import type { Session, User, AuthError } from '@supabase/supabase-js';
 import * as WebBrowser from 'expo-web-browser';
 import * as Linking from 'expo-linking';
+import Constants from 'expo-constants';
 import * as AppleAuthentication from 'expo-apple-authentication';
 import { makeRedirectUri } from 'expo-auth-session';
 
@@ -31,6 +32,10 @@ function buildRedirectUri() {
     scheme: 'tablink',
     path: 'auth/callback',
   });
+}
+
+function getQueryParamValue(value: string | string[] | undefined): string | undefined {
+  return typeof value === 'string' ? value : Array.isArray(value) ? value[0] : undefined;
 }
 
 export function AuthProvider({ children }: PropsWithChildren) {
@@ -131,23 +136,12 @@ export function AuthProvider({ children }: PropsWithChildren) {
       try {
         setLastAuthError(null);
 
-        if (typeof client.auth.getSessionFromUrl === 'function') {
-          const { data, error } = await client.auth.getSessionFromUrl({ url, storeSession: true });
-          if (error) {
-            throw error;
-          }
-          if (data.session) {
-            setSession(data.session);
-          }
-          return;
-        }
-
         const parsed = Linking.parse(url);
         const queryParams = parsed?.queryParams ?? {};
 
-        const authCode = typeof queryParams.code === 'string' ? queryParams.code : undefined;
-        if (authCode && typeof client.auth.exchangeCodeForSession === 'function') {
-          const { data, error } = await client.auth.exchangeCodeForSession({ authCode });
+        const authCode = getQueryParamValue(queryParams.code);
+        if (authCode) {
+          const { data, error } = await client.auth.exchangeCodeForSession(authCode);
           if (error) {
             throw error;
           }
@@ -167,14 +161,9 @@ export function AuthProvider({ children }: PropsWithChildren) {
         const refreshToken = fragmentParams.get('refresh_token');
 
         if (accessToken && refreshToken) {
-          const expiresAt = fragmentParams.get('expires_at');
-          const expiresIn = fragmentParams.get('expires_in');
-
           const { data, error } = await client.auth.setSession({
             access_token: accessToken,
             refresh_token: refreshToken,
-            expires_at: expiresAt ? Number(expiresAt) : undefined,
-            expires_in: expiresIn ? Number(expiresIn) : undefined,
           });
 
           if (error) {
@@ -289,7 +278,6 @@ export function AuthProvider({ children }: PropsWithChildren) {
           email,
           options: {
             emailRedirectTo: redirectTo,
-            createUser: true,
             shouldCreateUser: true,
           },
         });
@@ -336,6 +324,12 @@ export function AuthProvider({ children }: PropsWithChildren) {
 
     if (Platform.OS !== 'ios') {
       throw new Error('Apple Sign In is only available on iOS');
+    }
+
+    // In Expo Go, Apple returns an identity token for the Expo client
+    // (`host.exp.Exponent`), which Supabase will reject for this app.
+    if (Constants.appOwnership === 'expo') {
+      throw new Error('Apple Sign In requires a development or production iOS build. It will not work in Expo Go.');
     }
 
     try {
