@@ -113,6 +113,15 @@ function CloseIcon() {
   );
 }
 
+function CopyIcon({ className = 'h-4 w-4' }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <rect x="9" y="9" width="10" height="10" rx="2" />
+      <path strokeLinecap="round" strokeLinejoin="round" d="M15 9V7a2 2 0 0 0-2-2H7a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h2" />
+    </svg>
+  );
+}
+
 function AppMark() {
   return (
     <span className="tablink-wordmark">
@@ -209,6 +218,7 @@ export function ClaimPageClient({
   const [isMarkingPaid, setIsMarkingPaid] = useState(false);
   const [paymentStatus, setPaymentStatus] = useState<'unpaid' | 'paid'>('unpaid');
   const [copiedZelle, setCopiedZelle] = useState(false);
+  const [copiedAmount, setCopiedAmount] = useState(false);
   const [showPaymentModal, setShowPaymentModal] = useState(false);
 
   useEffect(() => {
@@ -466,6 +476,12 @@ export function ClaimPageClient({
     }
   }, [ownerProfile?.zelle_identifier]);
 
+  const handleCopyAmount = useCallback(() => {
+    navigator.clipboard.writeText((myGrandTotal / 100).toFixed(2));
+    setCopiedAmount(true);
+    setTimeout(() => setCopiedAmount(false), 2000);
+  }, [myGrandTotal]);
+
   const paymentOptions = useMemo(() => {
     if (!ownerProfile) return [];
 
@@ -596,9 +612,11 @@ export function ClaimPageClient({
                   ))}
                 </div>
 
-                <SecondaryAction onClick={() => setShowNewNameInput(true)}>
-                  <span>I&apos;m someone else</span>
-                </SecondaryAction>
+                <div className="tablink-name-list-action">
+                  <SecondaryAction onClick={() => setShowNewNameInput(true)}>
+                    <span>I&apos;m someone else</span>
+                  </SecondaryAction>
+                </div>
               </>
             ) : (
               <div className="tablink-form-stack">
@@ -784,10 +802,13 @@ export function ClaimPageClient({
             </div>
           </section>
         ) : null}
-      </main>
 
-      <footer className="tablink-action-footer">
-        <div className="tablink-action-footer-inner">
+        <section className="tablink-card">
+          <div className="tablink-card-head">
+            <div className="tablink-overline">Your Share</div>
+            <h2 className="tablink-section-title">Your total</h2>
+          </div>
+
           <div className="tablink-total-breakdown">
             <div className="tablink-total-line">
               <span>Your items</span>
@@ -795,13 +816,13 @@ export function ClaimPageClient({
             </div>
             {receipt.tax_cents > 0 ? (
               <div className="tablink-total-line">
-                <span>Tax</span>
+                <span>Tax (Proportional)</span>
                 <span>{formatCents(myTax)}</span>
               </div>
             ) : null}
             {receipt.tip_cents > 0 ? (
               <div className="tablink-total-line">
-                <span>Tip</span>
+                <span>Tip (Proportional)</span>
                 <span>{formatCents(myTip)}</span>
               </div>
             ) : null}
@@ -831,8 +852,8 @@ export function ClaimPageClient({
           ) : (
             <div className="tablink-empty-note">Claim one or more items to calculate your share.</div>
           )}
-        </div>
-      </footer>
+        </section>
+      </main>
 
       {showPaymentModal ? (
         <div className="tablink-modal-backdrop" onClick={() => setShowPaymentModal(false)}>
@@ -847,10 +868,14 @@ export function ClaimPageClient({
               </button>
             </div>
 
-            <div className="tablink-payment-amount-card">
+            <button type="button" className="tablink-payment-amount-card" onClick={handleCopyAmount}>
+              <span className="tablink-payment-copy-hint">
+                <CopyIcon className="h-3.5 w-3.5" />
+                {copiedAmount ? 'Copied' : 'Tap to copy'}
+              </span>
               <div className="tablink-stat-label">Amount due</div>
               <div className="tablink-payment-amount">{formatCents(myGrandTotal)}</div>
-            </div>
+            </button>
 
             {paymentOptions.length > 0 ? (
               <div className="tablink-payment-stack">
