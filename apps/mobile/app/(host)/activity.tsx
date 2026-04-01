@@ -7,7 +7,7 @@ import {
   RefreshControl,
   Pressable,
 } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useRouter, useFocusEffect } from 'expo-router';
 import Animated, {
   FadeInDown,
   useSharedValue,
@@ -16,6 +16,7 @@ import Animated, {
   withTiming,
 } from 'react-native-reanimated';
 import { Ionicons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { colors } from '@/src/theme';
 import { useAuth } from '@/src/hooks/useAuth';
 import {
@@ -174,6 +175,7 @@ function EmptyState() {
 /* ── Main screen ───────────────────────────────────────────── */
 
 export default function ActivityScreen() {
+  const insets = useSafeAreaInsets();
   const { user } = useAuth();
   const router = useRouter();
   const [activities, setActivities] = useState<ActivityItem[]>([]);
@@ -187,8 +189,6 @@ export default function ActivityScreen() {
     const isInitialLoad = !hasLoadedRef.current;
     if (isInitialLoad) {
       setIsLoading(true);
-    } else {
-      setIsRefreshing(true);
     }
 
     try {
@@ -201,44 +201,36 @@ export default function ActivityScreen() {
       if (isInitialLoad) {
         setIsLoading(false);
       }
-      setIsRefreshing(false);
     }
   }, [user?.id]);
 
-  useEffect(() => {
-    loadActivity();
-  }, [loadActivity]);
+  useFocusEffect(
+    useCallback(() => {
+      loadActivity();
 
-  useEffect(() => {
-    if (!user?.id) return;
+      if (!user?.id) return;
 
-    const unsubscribe = subscribeToActivity(user.id, {
-      onClaim: (activity) => {
+      const addActivity = (activity: ActivityItem) => {
         setActivities((prev) => {
           if (prev.some((a) => a.id === activity.id)) return prev;
           return [activity, ...prev].slice(0, 50);
         });
-      },
-      onJoin: (activity) => {
-        setActivities((prev) => {
-          if (prev.some((a) => a.id === activity.id)) return prev;
-          return [activity, ...prev].slice(0, 50);
-        });
-      },
-      onPayment: (activity) => {
-        setActivities((prev) => {
-          if (prev.some((a) => a.id === activity.id)) return prev;
-          return [activity, ...prev].slice(0, 50);
-        });
-      },
-    });
+      };
 
-    return unsubscribe;
-  }, [user?.id]);
+      const unsubscribe = subscribeToActivity(user.id, {
+        onClaim: addActivity,
+        onJoin: addActivity,
+        onPayment: addActivity,
+      });
 
-  const handleRefresh = useCallback(() => {
+      return unsubscribe;
+    }, [loadActivity, user?.id])
+  );
+
+  const handleRefresh = useCallback(async () => {
     setIsRefreshing(true);
-    loadActivity();
+    await loadActivity();
+    setIsRefreshing(false);
   }, [loadActivity]);
 
   const handleActivityPress = useCallback(
@@ -253,8 +245,11 @@ export default function ActivityScreen() {
 
   return (
     <View style={s.container}>
-      <View style={s.header}>
-        <Text style={s.heading}>Activity</Text>
+      <View style={[s.header, { paddingTop: insets.top + 16 }]}>
+        <View style={s.headerRow}>
+          <Text style={s.heading}>Activity</Text>
+          <View style={s.headerSpacer} />
+        </View>
       </View>
 
       {isLoading ? (
@@ -298,14 +293,26 @@ const s = StyleSheet.create({
   },
   header: {
     paddingTop: 60,
-    paddingBottom: 16,
+    paddingBottom: 14,
     paddingHorizontal: 24,
+  },
+  headerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 16,
+    minHeight: 40,
   },
   heading: {
     color: colors.text,
     fontSize: 30,
     fontWeight: '800',
     letterSpacing: -0.5,
+    flexShrink: 1,
+  },
+  headerSpacer: {
+    width: 76,
+    flexShrink: 0,
   },
 
   /* List */

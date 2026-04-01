@@ -17,6 +17,7 @@ import Animated, {
   withTiming,
 } from 'react-native-reanimated';
 import { Ionicons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { colors } from '@/src/theme';
 import { useAuth } from '@/src/hooks/useAuth';
 import { getSupabaseClient } from '@/src/lib/supabaseClient';
@@ -86,6 +87,7 @@ function SettingsSkeleton() {
 /* ── Main screen ───────────────────────────────────────────── */
 
 export default function SettingsScreen() {
+  const insets = useSafeAreaInsets();
   const { user, signOut, isAuthenticating } = useAuth();
 
   const [isLoading, setIsLoading] = useState(true);
@@ -168,8 +170,11 @@ export default function SettingsScreen() {
         showsVerticalScrollIndicator={false}
       >
         {/* Header */}
-        <View style={s.header}>
-          <Text style={s.heading}>Settings</Text>
+        <View style={[s.header, { paddingTop: insets.top + 16 }]}>
+          <View style={s.headerRow}>
+            <Text style={s.heading}>Settings</Text>
+            <View style={s.headerSpacer} />
+          </View>
         </View>
 
         {isLoading ? (
@@ -291,13 +296,25 @@ const s = StyleSheet.create({
   /* Header */
   header: {
     paddingTop: 60,
-    paddingBottom: 8,
+    paddingBottom: 4,
+  },
+  headerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 16,
+    minHeight: 40,
   },
   heading: {
     color: colors.text,
     fontSize: 30,
     fontWeight: '800',
     letterSpacing: -0.5,
+    flexShrink: 1,
+  },
+  headerSpacer: {
+    width: 76,
+    flexShrink: 0,
   },
 
   sectionPadding: {

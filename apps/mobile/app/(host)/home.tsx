@@ -3,12 +3,21 @@ import { View, Text, StyleSheet, ScrollView, Pressable } from 'react-native';
 import { Link, useRouter, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import Animated, { FadeInDown } from 'react-native-reanimated';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { SkeletonBlock, SkeletonPulse } from '@/src/components/Skeleton';
 import { colors } from '@/src/theme';
 import { useReceipts, type ReceiptWithDetails } from '@/src/hooks/useReceipts';
 import type { ReceiptStatus } from '@/src/types/receipt';
 
 type Tab = 'yours' | 'shared';
+type SortMode = 'date' | 'status' | 'added';
+
+const SORT_MODES: SortMode[] = ['date', 'status', 'added'];
+const SORT_LABEL: Record<SortMode, string> = {
+  date: 'Date',
+  status: 'Status',
+  added: 'Added',
+};
 
 type ProgressData = {
   unclaimed: number;
@@ -228,13 +237,18 @@ function EmptyState({ tab }: { tab: Tab }) {
           color={colors.muted}
         />
       </View>
+      {!isYours && (
+        <View style={s.comingSoonBadge}>
+          <Text style={s.comingSoonBadgeText}>Coming Soon</Text>
+        </View>
+      )}
       <Text style={s.emptyTitle}>
-        {isYours ? 'No receipts yet' : 'Nothing shared with you'}
+        {isYours ? 'No receipts yet' : 'Shared receipts are coming'}
       </Text>
       <Text style={s.emptyDescription}>
         {isYours
           ? 'Scan or upload a receipt to start splitting with friends.'
-          : 'When someone shares a receipt with you, it will appear here.'}
+          : 'Soon you will be able to open receipts shared with you in the app and keep them here.'}
       </Text>
       {isYours && (
         <Link href="/scan" asChild>
@@ -296,22 +310,55 @@ function OwedSummary({ receipts }: { receipts: ReceiptWithDetails[] }) {
 /* ── Main screen ───────────────────────────────────────────── */
 
 export default function HomeScreen() {
+  const insets = useSafeAreaInsets();
   const [activeTab, setActiveTab] = useState<Tab>('yours');
-  const { yourReceipts, sharedReceipts, isLoading, refresh } = useReceipts();
+  const [sortMode, setSortMode] = useState<SortMode>('added');
+  const { yourReceipts, sharedReceipts, isLoading, refresh, subscribe, unsubscribe } = useReceipts();
 
   useFocusEffect(
     useCallback(() => {
       refresh();
-    }, [refresh])
+      subscribe();
+      return unsubscribe;
+    }, [refresh, subscribe, unsubscribe])
   );
 
   const receipts = activeTab === 'yours' ? yourReceipts : sharedReceipts;
 
+  const sortedReceipts = useMemo(() => {
+    const list = [...receipts];
+    switch (sortMode) {
+      case 'date':
+        return list.sort((a, b) => {
+          const dateA = a.receipt_date ? new Date(a.receipt_date).getTime() : 0;
+          const dateB = b.receipt_date ? new Date(b.receipt_date).getTime() : 0;
+          return dateB - dateA;
+        });
+      case 'added':
+        return list.sort((a, b) =>
+          new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+        );
+      case 'status': {
+        return list.sort((a, b) => {
+          const pa = calculateProgress(a);
+          const pb = calculateProgress(b);
+          const scoreA = pa.total > 0 ? (pa.paid + pa.claimed) / pa.total : 0;
+          const scoreB = pb.total > 0 ? (pb.paid + pb.claimed) / pb.total : 0;
+          return scoreA - scoreB;
+        });
+      }
+    }
+  }, [receipts, sortMode]);
+
+  const cycleSort = useCallback(() => {
+    setSortMode((prev) => SORT_MODES[(SORT_MODES.indexOf(prev) + 1) % SORT_MODES.length]);
+  }, []);
+
   return (
     <View style={s.container}>
-      <ScrollView contentInsetAdjustmentBehavior="automatic">
+      <ScrollView contentInsetAdjustmentBehavior="never">
         {/* Header */}
-        <View style={s.header}>
+        <View style={[s.header, { paddingTop: insets.top + 16 }]}>
           <View style={s.headerRow}>
             <Text style={s.heading}>
               <Text>Tab</Text>
@@ -350,13 +397,21 @@ export default function HomeScreen() {
               </Pressable>
             );
           })}
+          <Pressable
+            style={({ pressed }) => [s.sortButton, pressed && s.sortButtonPressed]}
+            onPress={cycleSort}
+          >
+            <Ionicons name="swap-vertical" size={14} color={colors.muted} />
+            <Text style={s.sortLabel}>Sort: </Text>
+            <Text style={s.sortValue}>{SORT_LABEL[sortMode]}</Text>
+          </Pressable>
         </View>
 
         {/* Content */}
         {isLoading ? (
           <HomeSkeleton />
         ) : (
-          <ReceiptList receipts={receipts} tab={activeTab} />
+          <ReceiptList receipts={sortedReceipts} tab={activeTab} />
         )}
       </ScrollView>
 
@@ -503,11 +558,50 @@ const s = StyleSheet.create({
     backgroundColor: 'rgba(255, 255, 255, 0.05)',
   },
 
+  /* Sort */
+  sortButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    marginLeft: 'auto',
+    paddingBottom: 12,
+  },
+  sortButtonPressed: {
+    opacity: 0.5,
+  },
+  sortLabel: {
+    color: colors.muted,
+    fontSize: 13,
+    fontWeight: '500',
+  },
+  sortValue: {
+    color: colors.textSecondary,
+    fontSize: 13,
+    fontWeight: '600',
+  },
+
   /* Receipt list */
   receiptList: {
     paddingHorizontal: 24,
     paddingBottom: 120,
     gap: 14,
+  },
+
+  comingSoonBadge: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+    backgroundColor: 'rgba(52, 211, 153, 0.08)',
+    borderWidth: 1,
+    borderColor: 'rgba(52, 211, 153, 0.16)',
+    marginBottom: 12,
+  },
+  comingSoonBadgeText: {
+    color: colors.primary,
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.6,
+    textTransform: 'uppercase',
   },
 
   /* Receipt card */

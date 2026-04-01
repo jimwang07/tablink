@@ -37,6 +37,8 @@ type UseReceiptsResult = {
   isLoading: boolean;
   error: string | null;
   refresh: () => Promise<void>;
+  subscribe: () => void;
+  unsubscribe: () => void;
 };
 
 function normalizeReceipt(record: unknown): ReceiptWithDetails {
@@ -157,15 +159,14 @@ export function useReceipts(): UseReceiptsResult {
     setIsLoading(true);
   }, [session?.user?.id]);
 
-  // Realtime subscriptions for live updates
-  useEffect(() => {
+  const subscribe = useCallback(() => {
     if (!session?.user?.id) return;
 
     const supabase = getSupabaseClient();
 
     // Subscribe to changes on item_claims, receipt_participants, and receipts
     const channel = supabase
-      .channel('receipts-home-updates')
+      .channel(`receipts-home-updates-${Date.now()}`)
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'item_claims' },
@@ -190,14 +191,15 @@ export function useReceipts(): UseReceiptsResult {
       .subscribe();
 
     channelRef.current = channel;
-
-    return () => {
-      if (channelRef.current) {
-        supabase.removeChannel(channelRef.current);
-        channelRef.current = null;
-      }
-    };
   }, [session?.user?.id, fetchReceipts]);
+
+  const unsubscribe = useCallback(() => {
+    if (channelRef.current) {
+      const supabase = getSupabaseClient();
+      supabase.removeChannel(channelRef.current);
+      channelRef.current = null;
+    }
+  }, []);
 
   return {
     yourReceipts,
@@ -205,5 +207,7 @@ export function useReceipts(): UseReceiptsResult {
     isLoading,
     error,
     refresh: fetchReceipts,
+    subscribe,
+    unsubscribe,
   };
 }
