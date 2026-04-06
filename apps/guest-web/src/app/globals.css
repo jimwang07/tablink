@@ -913,6 +913,21 @@ input:focus { outline: none; }
   transition: transform 120ms ease, border-color 200ms ease;
 }
 
+.tablink-payment-link-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.tablink-payment-logo {
+  width: 1.5rem;
+  height: 1.5rem;
+  flex: 0 0 auto;
+  border-radius: 0.45rem;
+  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.18);
+}
+
 .tablink-payment-link:hover { transform: translateY(-1px); }
 .tablink-payment-link:active { transform: translateY(0); }
 

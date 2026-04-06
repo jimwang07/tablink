@@ -391,6 +391,79 @@ export async function updateReceiptItems(
   return { success: true };
 }
 
+export async function duplicateReceipt(
+  receiptId: string,
+  userId: string
+): Promise<{ success: boolean; newReceiptId?: string; error?: string }> {
+  const supabase = getSupabaseClient();
+
+  // Fetch original receipt
+  const { data: original, error: fetchError } = await supabase
+    .from('receipts')
+    .select('*')
+    .eq('id', receiptId)
+    .single();
+
+  if (fetchError || !original) {
+    return { success: false, error: fetchError?.message || 'Receipt not found' };
+  }
+
+  const newId = uuidv4();
+  const { error: insertError } = await supabase.from('receipts').insert({
+    id: newId,
+    owner_id: userId,
+    merchant_name: original.merchant_name,
+    receipt_date: original.receipt_date,
+    image_path: original.image_path,
+    subtotal_cents: original.subtotal_cents,
+    tax_cents: original.tax_cents,
+    tip_cents: original.tip_cents,
+    total_cents: original.total_cents,
+    status: 'draft',
+  });
+
+  if (insertError) {
+    return { success: false, error: insertError.message };
+  }
+
+  // Duplicate items
+  const { data: items } = await supabase
+    .from('receipt_items')
+    .select('label, price_cents, quantity, position')
+    .eq('receipt_id', receiptId)
+    .order('position');
+
+  if (items && items.length > 0) {
+    await supabase.from('receipt_items').insert(
+      items.map((item) => ({
+        receipt_id: newId,
+        label: item.label,
+        price_cents: item.price_cents,
+        quantity: item.quantity,
+        position: item.position,
+      }))
+    );
+  }
+
+  // Add owner as participant
+  const { data: profile } = await supabase
+    .from('user_profiles')
+    .select('display_name')
+    .eq('user_id', userId)
+    .single();
+
+  await supabase.from('receipt_participants').insert({
+    receipt_id: newId,
+    display_name: profile?.display_name || 'Me',
+    profile_id: userId,
+    role: 'owner',
+    payment_status: 'paid',
+    emoji: pickUniqueParticipantEmoji(),
+  });
+
+  return { success: true, newReceiptId: newId };
+}
+
 export async function deleteReceipt(receiptId: string): Promise<{ success: boolean; error?: string }> {
   const supabase = getSupabaseClient();
 

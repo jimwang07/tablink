@@ -424,6 +424,42 @@ export type Database = {
         }
         Relationships: []
       }
+      scan_events: {
+        Row: {
+          id: string
+          user_id: string
+          receipt_id: string | null
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          user_id: string
+          receipt_id?: string | null
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          user_id?: string
+          receipt_id?: string | null
+          created_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "scan_events_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "users"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "scan_events_receipt_id_fkey"
+            columns: ["receipt_id"]
+            isOneToOne: false
+            referencedRelation: "receipts"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       user_profiles: {
         Row: {
           avatar_url: string | null
@@ -432,6 +468,7 @@ export type Database = {
           display_name: string | null
           onboarding_completed_at: string | null
           paypal_handle: string | null
+          subscription_tier: string
           updated_at: string
           user_id: string
           venmo_handle: string | null
@@ -444,6 +481,7 @@ export type Database = {
           display_name?: string | null
           onboarding_completed_at?: string | null
           paypal_handle?: string | null
+          subscription_tier?: string
           updated_at?: string
           user_id: string
           venmo_handle?: string | null
@@ -456,6 +494,7 @@ export type Database = {
           display_name?: string | null
           onboarding_completed_at?: string | null
           paypal_handle?: string | null
+          subscription_tier?: string
           updated_at?: string
           user_id?: string
           venmo_handle?: string | null

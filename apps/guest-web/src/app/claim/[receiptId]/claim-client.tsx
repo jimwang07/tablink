@@ -122,6 +122,57 @@ function CopyIcon({ className = 'h-4 w-4' }: { className?: string }) {
   );
 }
 
+type PaymentProvider = 'venmo' | 'cashapp' | 'paypal' | 'zelle';
+
+function PaymentLogo({ provider }: { provider: PaymentProvider }) {
+  switch (provider) {
+    case 'venmo':
+      return (
+        <svg className="tablink-payment-logo" viewBox="0 0 64 64" aria-hidden="true">
+          <rect width="64" height="64" rx="18" fill="#008CFF" />
+          <path
+            d="M45.7 18.9c1.1 1.8 1.6 3.8 1.6 6.1 0 7.6-6.5 17.4-11.7 24H25.2l-8.5-33.7 9.1-.9 4.5 24.1c2.6-4.3 5.8-10.9 5.8-15.4 0-2.5-.4-4.2-1-5.7l10.6 1.5Z"
+            fill="#fff"
+          />
+        </svg>
+      );
+    case 'cashapp':
+      return (
+        <svg className="tablink-payment-logo" viewBox="0 0 64 64" aria-hidden="true">
+          <rect width="64" height="64" rx="18" fill="#00D632" />
+          <path
+            d="M36.9 17.2c-4.4 0-7.7 2.2-8.8 6.3l-2.3 8.2h-4.6c-1.6 0-2.9 1.3-2.9 2.9s1.3 2.9 2.9 2.9h3.1l-1.9 6.7h7.1l1.9-6.7h7.9l-1.9 6.7h7.1l1.9-6.7h3.4c1.6 0 2.9-1.3 2.9-2.9s-1.3-2.9-2.9-2.9h-1.8l2.1-7.4c1.7-6-2.1-10.7-9.2-10.7Zm2.3 8.4-1.7 6.1h-7.9l1.7-6.1c.4-1.4 1.6-2.4 3.6-2.4 2.9 0 4.7.9 4.3 2.4Z"
+            fill="#fff"
+          />
+        </svg>
+      );
+    case 'paypal':
+      return (
+        <svg className="tablink-payment-logo" viewBox="0 0 64 64" aria-hidden="true">
+          <rect width="64" height="64" rx="18" fill="#003087" />
+          <path
+            d="M24.5 18h13.1c5.6 0 10 4.3 9.1 9.9-.9 6.2-5.8 9.7-11.7 9.7h-5.7L27 49H18l6.5-31Zm9.3 7.2h-2.1l-1.7 9h3.1c3 0 4.9-1.7 5.3-4.4.4-2.8-1.1-4.6-4.6-4.6Z"
+            fill="#fff"
+          />
+          <path
+            d="M40.6 24.1h6.8c4.3 0 7.2 3.4 6.5 7.7-.9 5.5-5.3 8.6-10.6 8.6h-4.2L37.4 49h-7.1l4.3-24.9Z"
+            fill="#009CDE"
+          />
+        </svg>
+      );
+    case 'zelle':
+      return (
+        <svg className="tablink-payment-logo" viewBox="0 0 64 64" aria-hidden="true">
+          <rect width="64" height="64" rx="18" fill="#6D1ED4" />
+          <path
+            d="M20 21.5c0-2 1.6-3.5 3.5-3.5h17c1.9 0 3.5 1.5 3.5 3.5V26l-12.5 12H44v4.5c0 2-1.6 3.5-3.5 3.5h-17c-1.9 0-3.5-1.5-3.5-3.5V38l12.5-12H20v-4.5Z"
+            fill="#fff"
+          />
+        </svg>
+      );
+  }
+}
+
 function AppMark() {
   return (
     <span className="tablink-wordmark">
@@ -486,12 +537,13 @@ export function ClaimPageClient({
     if (!ownerProfile) return [];
 
     const amountDollars = (myGrandTotal / 100).toFixed(2);
-    const options: Array<{ name: string; accent: string; url?: string; identifier?: string }> = [];
+    const options: Array<{ name: string; provider: PaymentProvider; accent: string; url?: string; identifier?: string }> = [];
 
     if (ownerProfile.venmo_handle) {
       const username = ownerProfile.venmo_handle.replace(/^@/, '');
       options.push({
         name: 'Venmo',
+        provider: 'venmo',
         accent: '#3D95CE',
         url: `https://venmo.com/u/${username}`,
       });
@@ -501,6 +553,7 @@ export function ClaimPageClient({
       const cashtag = ownerProfile.cashapp_handle.replace(/^\$/, '');
       options.push({
         name: 'Cash App',
+        provider: 'cashapp',
         accent: '#00D632',
         url: `https://cash.app/$${cashtag}/${amountDollars}`,
       });
@@ -509,6 +562,7 @@ export function ClaimPageClient({
     if (ownerProfile.paypal_handle) {
       options.push({
         name: 'PayPal',
+        provider: 'paypal',
         accent: '#003087',
         url: `https://paypal.me/${ownerProfile.paypal_handle}/${amountDollars}`,
       });
@@ -517,6 +571,7 @@ export function ClaimPageClient({
     if (ownerProfile.zelle_identifier) {
       options.push({
         name: 'Zelle',
+        provider: 'zelle',
         accent: '#6D1ED4',
         identifier: ownerProfile.zelle_identifier,
       });
@@ -882,7 +937,10 @@ export function ClaimPageClient({
                 {paymentOptions.map((option) =>
                   option.url ? (
                     <PaymentLinkAction key={option.name} href={option.url} accent={option.accent}>
-                      <span>Pay with {option.name}</span>
+                      <span className="tablink-payment-link-label">
+                        <PaymentLogo provider={option.provider} />
+                        <span>Pay with {option.name}</span>
+                      </span>
                       <ArrowIcon />
                     </PaymentLinkAction>
                   ) : (
@@ -896,7 +954,10 @@ export function ClaimPageClient({
                         background: `linear-gradient(180deg, ${option.accent}20 0%, rgba(17,20,24,0.98) 100%)`,
                       }}
                     >
-                      <span>{copiedZelle ? 'Copied to clipboard' : `Zelle: ${option.identifier}`}</span>
+                      <span className="tablink-payment-link-label">
+                        <PaymentLogo provider={option.provider} />
+                        <span>{copiedZelle ? 'Copied to clipboard' : `Zelle: ${option.identifier}`}</span>
+                      </span>
                       <ArrowIcon />
                     </button>
                   )

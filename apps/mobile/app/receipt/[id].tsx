@@ -1314,7 +1314,7 @@ export default function ReceiptDetailScreen() {
             ) : (
               <>
                 <Ionicons name="share-outline" size={16} color="#04110D" />
-                <Text style={s.shareButtonText}>Share Receipt</Text>
+                <Text style={s.shareButtonText}>Share Tablink</Text>
                 <Ionicons name="arrow-forward" size={16} color="#04110D" />
               </>
             )}

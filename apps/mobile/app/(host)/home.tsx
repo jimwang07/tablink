@@ -1,5 +1,5 @@
-import { useCallback, useState, useMemo } from 'react';
-import { View, Text, StyleSheet, ScrollView, Pressable } from 'react-native';
+import { useCallback, useRef, useState, useMemo } from 'react';
+import { Alert, Dimensions, Modal, View, Text, StyleSheet, ScrollView, Pressable, Share } from 'react-native';
 import { Link, useRouter, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import Animated, { FadeInDown } from 'react-native-reanimated';
@@ -7,6 +7,14 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { SkeletonBlock, SkeletonPulse } from '@/src/components/Skeleton';
 import { colors } from '@/src/theme';
 import { useReceipts, type ReceiptWithDetails } from '@/src/hooks/useReceipts';
+import { useAuth } from '@/src/hooks/useAuth';
+import {
+  deleteReceipt,
+  duplicateReceipt,
+  getOrCreateShareLink,
+  updateReceipt,
+} from '@/src/services/receiptService';
+import { getSupabaseClient } from '@/src/lib/supabaseClient';
 import type { ReceiptStatus } from '@/src/types/receipt';
 
 type Tab = 'yours' | 'shared';
@@ -185,12 +193,29 @@ function ProgressBar({ data }: { data: ProgressData }) {
   );
 }
 
-function ReceiptCard({ receipt, index }: { receipt: ReceiptWithDetails; index: number }) {
+type MenuAnchor = { x: number; y: number };
+
+function ReceiptCard({
+  receipt,
+  index,
+  onMenuPress,
+}: {
+  receipt: ReceiptWithDetails;
+  index: number;
+  onMenuPress: (receipt: ReceiptWithDetails, anchor: MenuAnchor) => void;
+}) {
   const router = useRouter();
+  const btnRef = useRef<View>(null);
   const progress = useMemo(() => calculateProgress(receipt), [receipt]);
   const showProgress = receipt.status !== 'draft' && progress.total > 0;
   const effectiveStatus = useMemo(() => getEffectiveStatus(receipt, progress), [receipt, progress]);
   const accent = STATUS_COLOR[effectiveStatus] || STATUS_COLOR.draft;
+
+  const handleMenuPress = useCallback(() => {
+    btnRef.current?.measureInWindow((x, y, width, height) => {
+      onMenuPress(receipt, { x: x + width, y: y + height });
+    });
+  }, [receipt, onMenuPress]);
 
   return (
     <AnimatedPressable
@@ -207,6 +232,15 @@ function ReceiptCard({ receipt, index }: { receipt: ReceiptWithDetails; index: n
           {receipt.merchant_name || 'Unknown'}
         </Text>
         <Text style={s.totalAmount}>{formatCents(receipt.total_cents)}</Text>
+        <Pressable
+          ref={btnRef}
+          collapsable={false}
+          onPress={handleMenuPress}
+          hitSlop={{ top: 12, bottom: 12, left: 12, right: 8 }}
+          style={({ pressed }) => [s.cardMenuButton, pressed && s.cardMenuButtonPressed]}
+        >
+          <Ionicons name="ellipsis-horizontal" size={18} color={colors.muted} />
+        </Pressable>
       </View>
 
       <View style={s.cardMeta}>
@@ -263,13 +297,21 @@ function EmptyState({ tab }: { tab: Tab }) {
   );
 }
 
-function ReceiptList({ receipts, tab }: { receipts: ReceiptWithDetails[]; tab: Tab }) {
+function ReceiptList({
+  receipts,
+  tab,
+  onMenuPress,
+}: {
+  receipts: ReceiptWithDetails[];
+  tab: Tab;
+  onMenuPress: (receipt: ReceiptWithDetails, anchor: MenuAnchor) => void;
+}) {
   if (receipts.length === 0) return <EmptyState tab={tab} />;
 
   return (
     <View style={s.receiptList}>
       {receipts.map((receipt, i) => (
-        <ReceiptCard key={receipt.id} receipt={receipt} index={i} />
+        <ReceiptCard key={receipt.id} receipt={receipt} index={i} onMenuPress={onMenuPress} />
       ))}
     </View>
   );
@@ -307,13 +349,85 @@ function OwedSummary({ receipts }: { receipts: ReceiptWithDetails[] }) {
   );
 }
 
+/* ── Action menu ──────────────────────────────────────────── */
+
+type MenuAction = {
+  key: string;
+  label: string;
+  icon: React.ComponentProps<typeof Ionicons>['name'];
+  color?: string;
+  onPress: () => void;
+};
+
+function ReceiptActionMenu({
+  anchor,
+  actions,
+  onClose,
+}: {
+  anchor: MenuAnchor;
+  actions: MenuAction[];
+  onClose: () => void;
+}) {
+  const insets = useSafeAreaInsets();
+  const screen = Dimensions.get('window');
+
+  const menuWidth = 200;
+  const menuEstimatedHeight = actions.length * 48 + 16;
+
+  // Anchor below-right of the button, clamped to screen
+  let top = anchor.y + 4;
+  let left = anchor.x - menuWidth;
+  if (top + menuEstimatedHeight > screen.height - insets.bottom - 16) {
+    top = anchor.y - menuEstimatedHeight - 4;
+  }
+  if (left < 16) left = 16;
+
+  return (
+    <Modal visible transparent animationType="fade" onRequestClose={onClose} statusBarTranslucent>
+      <Pressable style={s.menuOverlay} onPress={onClose}>
+        <Pressable style={[s.menuPopover, { top, left, width: menuWidth }]}>
+          {actions.map((action, i) => (
+            <Pressable
+              key={action.key}
+              style={({ pressed }) => [
+                s.menuAction,
+                i < actions.length - 1 && s.menuActionBorder,
+                pressed && s.menuActionPressed,
+              ]}
+              onPress={action.onPress}
+            >
+              <Ionicons
+                name={action.icon}
+                size={18}
+                color={action.color || colors.textSecondary}
+                style={s.menuActionIcon}
+              />
+              <Text
+                style={[s.menuActionLabel, action.color ? { color: action.color } : undefined]}
+              >
+                {action.label}
+              </Text>
+            </Pressable>
+          ))}
+        </Pressable>
+      </Pressable>
+    </Modal>
+  );
+}
+
 /* ── Main screen ───────────────────────────────────────────── */
 
 export default function HomeScreen() {
   const insets = useSafeAreaInsets();
+  const router = useRouter();
+  const { session } = useAuth();
   const [activeTab, setActiveTab] = useState<Tab>('yours');
   const [sortMode, setSortMode] = useState<SortMode>('added');
   const { yourReceipts, sharedReceipts, isLoading, refresh, subscribe, unsubscribe } = useReceipts();
+  const [menuState, setMenuState] = useState<{
+    receipt: ReceiptWithDetails;
+    anchor: MenuAnchor;
+  } | null>(null);
 
   useFocusEffect(
     useCallback(() => {
@@ -353,6 +467,152 @@ export default function HomeScreen() {
   const cycleSort = useCallback(() => {
     setSortMode((prev) => SORT_MODES[(SORT_MODES.indexOf(prev) + 1) % SORT_MODES.length]);
   }, []);
+
+  const TABLINK_BASE_URL = process.env.EXPO_PUBLIC_TABLINK_URL;
+
+  const handleMenuShare = useCallback(async (receipt: ReceiptWithDetails) => {
+    setMenuState(null);
+    const userId = session?.user?.id;
+    if (!userId || !receipt.id) return;
+
+    // Check payment methods
+    const supabase = getSupabaseClient();
+    const { data: profile } = await supabase
+      .from('user_profiles')
+      .select('venmo_handle, cashapp_handle, paypal_handle, zelle_identifier')
+      .eq('user_id', userId)
+      .single();
+
+    const hasPayment = !!(
+      profile?.venmo_handle ||
+      profile?.cashapp_handle ||
+      profile?.paypal_handle ||
+      profile?.zelle_identifier
+    );
+
+    if (!hasPayment) {
+      Alert.alert(
+        'Set Up Payment Methods',
+        'Before sharing a receipt, add your payment info (Venmo, CashApp, etc.) so guests can pay you.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Go to Settings', onPress: () => router.push('/(host)/settings') },
+        ]
+      );
+      return;
+    }
+
+    if (!TABLINK_BASE_URL) {
+      Alert.alert('Configuration Error', 'Missing Tablink share URL configuration.');
+      return;
+    }
+
+    try {
+      if (receipt.status === 'draft') {
+        const result = await updateReceipt(receipt.id, { status: 'shared' });
+        if (!result.success) {
+          Alert.alert('Error', result.error || 'Failed to activate receipt');
+          return;
+        }
+      }
+
+      const linkResult = await getOrCreateShareLink(receipt.id);
+      if (!linkResult.success) {
+        Alert.alert('Error', linkResult.error || 'Failed to generate share link');
+        return;
+      }
+
+      const tablinkUrl = `${TABLINK_BASE_URL}/claim/${linkResult.shortCode}`;
+      await Share.share({
+        message: `Split the bill with me! ${receipt.merchant_name ? `(${receipt.merchant_name})` : ''}\n${tablinkUrl}`,
+        url: tablinkUrl,
+        title: 'Share Tablink',
+      });
+    } catch (err) {
+      console.error('[Home] Share error:', err);
+      Alert.alert('Error', 'Failed to share tablink');
+    }
+  }, [session?.user?.id, TABLINK_BASE_URL, router]);
+
+  const handleMenuDuplicate = useCallback(async (receipt: ReceiptWithDetails) => {
+    setMenuState(null);
+    const userId = session?.user?.id;
+    if (!userId) return;
+
+    try {
+      const result = await duplicateReceipt(receipt.id, userId);
+      if (result.success && result.newReceiptId) {
+        await refresh();
+        router.push(`/receipt/${result.newReceiptId}`);
+      } else {
+        Alert.alert('Error', result.error || 'Failed to duplicate receipt');
+      }
+    } catch (err) {
+      console.error('[Home] Duplicate error:', err);
+      Alert.alert('Error', 'Failed to duplicate receipt');
+    }
+  }, [session?.user?.id, refresh, router]);
+
+  const handleMenuDelete = useCallback((receipt: ReceiptWithDetails) => {
+    setMenuState(null);
+    Alert.alert(
+      'Delete Receipt',
+      'Are you sure you want to delete this receipt? This cannot be undone.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              const result = await deleteReceipt(receipt.id);
+              if (result.success) {
+                refresh();
+              } else {
+                Alert.alert('Error', result.error || 'Failed to delete receipt');
+              }
+            } catch (err) {
+              console.error('[Home] Delete error:', err);
+              Alert.alert('Error', 'Failed to delete receipt');
+            }
+          },
+        },
+      ]
+    );
+  }, [refresh]);
+
+  const handleOpenMenu = useCallback(
+    (receipt: ReceiptWithDetails, anchor: MenuAnchor) => {
+      setMenuState({ receipt, anchor });
+    },
+    []
+  );
+
+  const menuActions = useMemo<MenuAction[]>(() => {
+    if (!menuState) return [];
+    const { receipt } = menuState;
+    return [
+      {
+        key: 'share',
+        label: 'Share Tablink',
+        icon: 'link-outline',
+        onPress: () => handleMenuShare(receipt),
+      },
+      {
+        key: 'duplicate',
+        label: 'Duplicate',
+        icon: 'copy-outline',
+        onPress: () => handleMenuDuplicate(receipt),
+      },
+      {
+        key: 'delete',
+        label: 'Delete',
+        icon: 'trash-outline',
+        color: colors.danger,
+        onPress: () => handleMenuDelete(receipt),
+      },
+    ];
+  }, [menuState, handleMenuShare, handleMenuDuplicate, handleMenuDelete]);
 
   return (
     <View style={s.container}>
@@ -411,10 +671,17 @@ export default function HomeScreen() {
         {isLoading ? (
           <HomeSkeleton />
         ) : (
-          <ReceiptList receipts={sortedReceipts} tab={activeTab} />
+          <ReceiptList receipts={sortedReceipts} tab={activeTab} onMenuPress={handleOpenMenu} />
         )}
       </ScrollView>
 
+      {menuState && (
+        <ReceiptActionMenu
+          anchor={menuState.anchor}
+          actions={menuActions}
+          onClose={() => setMenuState(null)}
+        />
+      )}
     </View>
   );
 }
@@ -619,14 +886,23 @@ const s = StyleSheet.create({
   cardHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    alignItems: 'baseline',
+    alignItems: 'center',
   },
   merchantName: {
     color: colors.text,
     fontSize: 17,
     fontWeight: '600',
     flex: 1,
-    marginRight: 16,
+    marginRight: 12,
+  },
+  cardMenuButton: {
+    marginLeft: 6,
+    padding: 4,
+    borderRadius: 6,
+    backgroundColor: 'rgba(255, 255, 255, 0.04)',
+  },
+  cardMenuButtonPressed: {
+    backgroundColor: 'rgba(255, 255, 255, 0.10)',
   },
   totalAmount: {
     color: colors.text,
@@ -731,5 +1007,45 @@ const s = StyleSheet.create({
     fontWeight: '700',
     letterSpacing: 0.5,
     textTransform: 'uppercase',
+  },
+
+  /* Action menu */
+  menuOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.35)',
+  },
+  menuPopover: {
+    position: 'absolute',
+    borderRadius: 12,
+    backgroundColor: '#1A1F25',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.10)',
+    paddingVertical: 4,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.45,
+    shadowRadius: 16,
+    elevation: 20,
+  },
+  menuAction: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+  },
+  menuActionBorder: {
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: 'rgba(255, 255, 255, 0.06)',
+  },
+  menuActionPressed: {
+    backgroundColor: 'rgba(255, 255, 255, 0.06)',
+  },
+  menuActionIcon: {
+    width: 28,
+  },
+  menuActionLabel: {
+    color: colors.textSecondary,
+    fontSize: 15,
+    fontWeight: '500',
   },
 });

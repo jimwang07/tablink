@@ -1,6 +1,8 @@
 import { getSupabaseClient } from '@/src/lib/supabaseClient';
+import Purchases from 'react-native-purchases';
 
-const FREE_SCAN_LIMIT = 5;
+const FREE_SCAN_LIMIT = 15;
+const ENTITLEMENT_ID = 'Tablink Premium';
 
 export type ScanUsage = {
   used: number;
@@ -10,22 +12,21 @@ export type ScanUsage = {
 };
 
 export async function getScanUsage(userId: string): Promise<ScanUsage> {
-  const supabase = getSupabaseClient();
-
-  // Check subscription tier
-  const { data: profile } = await supabase
-    .from('user_profiles')
-    .select('subscription_tier')
-    .eq('user_id', userId)
-    .single();
-
-  const isSubscribed = profile?.subscription_tier === 'pro';
+  // Check subscription via RevenueCat entitlements
+  let isSubscribed = false;
+  try {
+    const customerInfo = await Purchases.getCustomerInfo();
+    isSubscribed = typeof customerInfo.entitlements.active[ENTITLEMENT_ID] !== 'undefined';
+  } catch (err) {
+    console.warn('[scanLimitService] RevenueCat check failed, falling back to free tier:', err);
+  }
 
   if (isSubscribed) {
     return { used: 0, limit: Infinity, remaining: Infinity, isSubscribed: true };
   }
 
   // Count scans for current calendar month
+  const supabase = getSupabaseClient();
   const now = new Date();
   const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
 

@@ -630,7 +630,7 @@ export default function ReceiptReviewScreen() {
           >
             <Ionicons name="share-outline" size={16} color="#04110D" />
             <Text style={s.shareButtonText}>
-              {isSharing ? 'Sharing...' : 'Share Receipt'}
+              {isSharing ? 'Sharing...' : 'Share Tablink'}
             </Text>
             <Ionicons name="arrow-forward" size={16} color="#04110D" />
           </Pressable>

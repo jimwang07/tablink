@@ -8,6 +8,7 @@ import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { TablinkDarkTheme, colors } from '@/src/theme';
 import { ScreenPlaceholder } from '@/src/components/Skeleton';
 import { AuthProvider } from '@/src/providers/AuthProvider';
+import { RevenueCatProvider } from '@/src/providers/RevenueCatProvider';
 import { PendingReceiptProvider } from '@/src/providers/PendingReceiptProvider';
 import { useAuth } from '@/src/hooks/useAuth';
 import { ThemeProvider } from '@react-navigation/native';
@@ -90,9 +91,11 @@ export default function RootLayout() {
       <ThemeProvider value={TablinkDarkTheme}>
         <StatusBar style="light" />
         <AuthProvider>
-          <PendingReceiptProvider>
-            <AuthAwareStack />
-          </PendingReceiptProvider>
+          <RevenueCatProvider>
+            <PendingReceiptProvider>
+              <AuthAwareStack />
+            </PendingReceiptProvider>
+          </RevenueCatProvider>
         </AuthProvider>
       </ThemeProvider>
     </GestureHandlerRootView>

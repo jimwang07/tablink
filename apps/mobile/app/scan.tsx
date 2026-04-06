@@ -22,7 +22,15 @@ import { colors } from '@/src/theme';
 import { uploadReceiptImage } from '@/src/lib/imageUpload';
 import { useAuth } from '@/src/hooks/useAuth';
 import { usePendingReceipt } from '@/src/hooks/usePendingReceipt';
-import { invokeParseReceipt } from '@/src/lib/api/parseReceipt';
+import {
+  getParseFunctionName,
+  invokeParseReceipt,
+  PARSE_FUNCTIONS,
+  setParseFunctionOverride,
+  type ParseFunctionName,
+} from '@/src/lib/api/parseReceipt';
+import { getScanUsage, recordScan, type ScanUsage } from '@/src/services/scanLimitService';
+import { ScanLimitPaywall } from '@/src/components/ScanLimitPaywall';
 import type { ParsedReceipt } from '@/src/types/receipt';
 
 const FOOTER_OVERLAY_SPACE = 220;
@@ -47,9 +55,31 @@ export default function ScanReceiptScreen() {
   const continueStartRef = useRef<number | null>(null);
   const stageStartedAtRef = useRef<number>(0);
   const [processingStage, setProcessingStage] = useState<ProcessingStage>('upload');
+  const [parseFunction, setParseFunction] = useState<ParseFunctionName>('parse-receipt-groq');
 
   const { session } = useAuth();
   const { setPendingReceipt } = usePendingReceipt();
+  const [scanUsage, setScanUsage] = useState<ScanUsage | null>(null);
+  const [showPaywall, setShowPaywall] = useState(false);
+
+  useEffect(() => {
+    if (session?.user?.id) {
+      getScanUsage(session.user.id).then(setScanUsage);
+    }
+  }, [session?.user?.id]);
+
+  useEffect(() => {
+    if (!__DEV__) return;
+
+    let isMounted = true;
+    getParseFunctionName().then((name) => {
+      if (isMounted) setParseFunction(name);
+    });
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
 
   const logFlowTiming = useCallback(
     (event: string) => {
@@ -76,7 +106,16 @@ export default function ScanReceiptScreen() {
     }
   }, [requestCameraPermission]);
 
+  const checkScanLimit = useCallback((): boolean => {
+    if (!scanUsage) return true; // Still loading, allow optimistically
+    if (scanUsage.isSubscribed) return true;
+    if (scanUsage.remaining > 0) return true;
+    setShowPaywall(true);
+    return false;
+  }, [scanUsage]);
+
   const handleImport = useCallback(async () => {
+    if (!checkScanLimit()) return;
     const ensurePermission = async () => {
       if (!mediaPermission || mediaPermission.status !== 'granted') {
         const { status } = await requestMediaPermission();
@@ -106,7 +145,7 @@ export default function ScanReceiptScreen() {
       setLastPhoto(null);
       setFlowState('preview');
     }
-  }, [mediaPermission, requestMediaPermission]);
+  }, [checkScanLimit, mediaPermission, requestMediaPermission]);
 
   const cropToGuide = useCallback(async (photo: { uri: string; width: number; height: number }) => {
     const targetAspect = 3 / 4; // width:height to mirror the on-screen guide
@@ -139,6 +178,7 @@ export default function ScanReceiptScreen() {
     if (!cameraRef.current || isCapturing) {
       return;
     }
+    if (!checkScanLimit()) return;
 
     try {
       setIsCapturing(true);
@@ -157,7 +197,7 @@ export default function ScanReceiptScreen() {
     } finally {
       setIsCapturing(false);
     }
-  }, [cropToGuide, isCapturing]);
+  }, [checkScanLimit, cropToGuide, isCapturing]);
 
   const ensureStageDuration = useCallback(async () => {
     const elapsed = Date.now() - stageStartedAtRef.current;
@@ -230,7 +270,15 @@ export default function ScanReceiptScreen() {
         stageStartedAtRef.current = Date.now();
         await new Promise((resolve) => setTimeout(resolve, 450));
 
-        // 4. Put it in PendingReceipt so /receipt/review can render
+        // 4. Record scan usage
+        recordScan(userId);
+        setScanUsage((prev) =>
+          prev && !prev.isSubscribed
+            ? { ...prev, used: prev.used + 1, remaining: Math.max(0, prev.remaining - 1) }
+            : prev
+        );
+
+        // 5. Put it in PendingReceipt so /receipt/review can render
         setPendingReceipt({
           localUri: uploadResult.localPreviewUri || localUri,
           storagePath: uploadResult.storagePath ?? null,
@@ -238,7 +286,7 @@ export default function ScanReceiptScreen() {
           parsed: receipt,
         });
 
-        // 5. Reset camera flow + navigate
+        // 6. Reset camera flow + navigate
         setFlowState('idle');
         setLastPhoto(null);
         setImportPreview(null);
@@ -264,6 +312,11 @@ export default function ScanReceiptScreen() {
     },
     [footerHeight]
   );
+
+  const handleParseFunctionChange = useCallback(async (nextFunction: ParseFunctionName) => {
+    await setParseFunctionOverride(nextFunction);
+    setParseFunction(nextFunction);
+  }, []);
 
   if (cameraPermission?.granted === false) {
     return (
@@ -402,6 +455,39 @@ export default function ScanReceiptScreen() {
           </View>
         ) : (
           <View style={styles.footerButtons}>
+            {__DEV__ && (
+              <View style={styles.devParserCard}>
+                <Text style={styles.devParserLabel}>Parser for testing</Text>
+                <View style={styles.devParserOptions}>
+                  {PARSE_FUNCTIONS.map((option) => {
+                    const isSelected = option === parseFunction;
+                    return (
+                      <Pressable
+                        key={option}
+                        style={({ pressed }) => [
+                          styles.devParserChip,
+                          isSelected && styles.devParserChipSelected,
+                          pressed && styles.pressed,
+                        ]}
+                        onPress={() => {
+                          void handleParseFunctionChange(option);
+                        }}
+                      >
+                        <Text
+                          style={[
+                            styles.devParserChipText,
+                            isSelected && styles.devParserChipTextSelected,
+                          ]}
+                        >
+                          {option === 'parse-receipt-groq' ? 'Groq' : 'OpenAI'}
+                        </Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+                <Text style={styles.devParserHint}>{parseFunction}</Text>
+              </View>
+            )}
             <Pressable
               style={({ pressed }) => [
                 styles.captureButton,
@@ -424,6 +510,13 @@ export default function ScanReceiptScreen() {
           </View>
         )}
       </SafeAreaView>
+
+      {showPaywall && scanUsage && (
+        <ScanLimitPaywall
+          usage={scanUsage}
+          onDismiss={() => setShowPaywall(false)}
+        />
+      )}
     </View>
   );
 }
@@ -547,6 +640,51 @@ const styles = StyleSheet.create({
     gap: 16,
     marginTop: 24,
     marginBottom: 32,
+  },
+  devParserCard: {
+    width: '100%',
+    maxWidth: 320,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.08)',
+    backgroundColor: colors.surface,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    gap: 10,
+  },
+  devParserLabel: {
+    color: colors.text,
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  devParserOptions: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  devParserChip: {
+    flex: 1,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.08)',
+    paddingVertical: 10,
+    alignItems: 'center',
+    backgroundColor: 'rgba(255, 255, 255, 0.03)',
+  },
+  devParserChipSelected: {
+    borderColor: colors.primary,
+    backgroundColor: 'rgba(52, 211, 153, 0.12)',
+  },
+  devParserChipText: {
+    color: colors.textSecondary,
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  devParserChipTextSelected: {
+    color: colors.text,
+  },
+  devParserHint: {
+    color: colors.muted,
+    fontSize: 12,
   },
   captureButton: {
     width: 72,
