@@ -3,28 +3,32 @@
 import OpenAI from "npm:openai";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
-/** Config */
-const VISION_MODEL = "gpt-4o-mini";
-
 /** CORS */
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
-/** Env check */
-const REQUIRED_ENV = ["OPENAI_API_KEY", "SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY"];
+/** Required ENV */
+const REQUIRED_ENV = ["GROQ_API_KEY", "SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY"];
 const missing = REQUIRED_ENV.filter((k) => !Deno.env.get(k));
-if (missing.length) throw new Error(`missing env vars: ${missing.join(", ")}`);
+if (missing.length) {
+  throw new Error(`parse-receipt (groq-chat-b64) missing env vars: ${missing.join(", ")}`);
+}
 
-/** Supabase + OpenAI */
+/** Setup */
 const BUCKET = "receipts";
 const supabaseAdmin = createClient(
   Deno.env.get("SUPABASE_URL")!,
   Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
-  { auth: { persistSession: false } }
+  { auth: { persistSession: false } },
 );
-const openai = new OpenAI({ apiKey: Deno.env.get("OPENAI_API_KEY")! });
+
+// Groq via OpenAI-compatible client, using chat.completions
+const groq = new OpenAI({
+  apiKey: Deno.env.get("GROQ_API_KEY")!,
+  baseURL: "https://api.groq.com/openai/v1",
+});
 
 /** Types */
 type ReceiptRequest = { imagePath: string; userId?: string };
@@ -42,6 +46,7 @@ type ModelExtract = {
   items?: ModelExtractItem[] | null;
   notes?: string | null;
 };
+
 type ParsedReceiptResponse = {
   success: boolean;
   data?: {
@@ -49,7 +54,7 @@ type ParsedReceiptResponse = {
     merchantAddress: string | null;
     purchaseDate: string | null;
     currency: string;
-    items: ModelExtractItem[];
+    items: { name: string; price: number; quantity: number }[];
     totals: { subtotal: number; tax: number; tip: number; total: number; itemsTotal: number };
     notes: string | null;
     raw: { userId: string | null; model: string; imagePath: string };
@@ -57,79 +62,69 @@ type ParsedReceiptResponse = {
   error?: string;
 };
 
-/** Small helpers */
-function json(status: number, obj: ParsedReceiptResponse) {
+/** Utils */
+function json(status: number, obj: ParsedReceiptResponse, extraHeaders: Record<string, string> = {}) {
   return new Response(JSON.stringify(obj), {
     status,
-    headers: { ...corsHeaders, "Content-Type": "application/json" },
+    headers: { ...corsHeaders, "Content-Type": "application/json", ...extraHeaders },
   });
 }
+
 function bytesToBase64(u8: Uint8Array): string {
-  let s = "";
-  const c = 0x8000;
-  for (let i = 0; i < u8.length; i += c) s += String.fromCharCode(...u8.subarray(i, i + c));
-  return btoa(s);
+  let binary = "";
+  const chunk = 0x8000;
+  for (let i = 0; i < u8.length; i += chunk) {
+    binary += String.fromCharCode.apply(null, u8.subarray(i, i + chunk) as unknown as number[]);
+  }
+  return btoa(binary);
 }
-function coerceAmount(v: unknown): number {
-  if (typeof v === "number" && isFinite(v)) return Number(v.toFixed(2));
-  if (typeof v === "string") {
-    const n = parseFloat(v.replace(/[^\d.-]/g, ""));
-    if (!Number.isNaN(n)) return Number(n.toFixed(2));
+
+type ReconcileInput = { subtotal: number; tax: number; tip: number; total: number; items: ModelExtractItem[] };
+
+function coerceAmount(value: unknown): number {
+  if (typeof value === "number" && isFinite(value)) return Number(value.toFixed(2));
+  if (typeof value === "string") {
+    const parsed = Number.parseFloat(value.replace(/[^\d.-]/g, ""));
+    if (!Number.isNaN(parsed)) return Number(parsed.toFixed(2));
   }
   return 0;
 }
-function safeDate(v: string | null | undefined): string | null {
-  if (!v) return null;
-  const t = Date.parse(v);
-  return Number.isNaN(t) ? null : new Date(t).toISOString();
+
+function safeDate(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const t = Date.parse(value);
+  if (Number.isNaN(t)) return null;
+  return new Date(t).toISOString();
 }
-function reconcileTotals({
-  subtotal,
-  tax,
-  tip,
-  total,
-  items,
-}: {
-  subtotal: number;
-  tax: number;
-  tip: number;
-  total: number;
-  items: ModelExtractItem[];
-}) {
+
+function reconcileTotals({ subtotal, tax, tip, total, items }: ReconcileInput) {
   // `price` is the line total shown on the receipt, not the unit price.
   const itemsSum = items.reduce((a, i) => a + i.price, 0);
-  let s = subtotal || itemsSum;
-  const tx = tax || 0;
-  const tp = tip || 0;
-  let tot = total || s + tx + tp;
-  const exp = s + tx + tp;
-  if (tot === 0 || Math.abs(tot - exp) > 0.05) tot = Number(exp.toFixed(2));
+  let nextSubtotal = subtotal || itemsSum;
+  const nextTax = tax || 0;
+  const nextTip = tip || 0;
+  let nextTotal = total || nextSubtotal + nextTax + nextTip;
+  const expected = nextSubtotal + nextTax + nextTip;
+  if (nextTotal === 0 || Math.abs(nextTotal - expected) > 0.05) {
+    nextTotal = Number(expected.toFixed(2));
+  }
   return {
-    subtotal: Number(s.toFixed(2)),
-    tax: Number(tx.toFixed(2)),
-    tip: Number(tp.toFixed(2)),
-    total: Number(tot.toFixed(2)),
+    subtotal: Number(nextSubtotal.toFixed(2)),
+    tax: Number(nextTax.toFixed(2)),
+    tip: Number(nextTip.toFixed(2)),
+    total: Number(nextTotal.toFixed(2)),
     itemsTotal: Number(itemsSum.toFixed(2)),
   };
 }
-/** Extract JSON from Responses payload (covers common shapes) */
-function extractJson(resp: any): any | null {
-  if (resp?.output_parsed) return resp.output_parsed;
-  const parts = resp?.output?.[0]?.content ?? [];
-  for (const p of parts) {
-    if (p?.json) return p.json;
-    if (typeof p?.text === "string") {
-      try {
-        return JSON.parse(p.text);
-      } catch {}
-    }
-  }
-  if (typeof resp?.output_text === "string" && resp.output_text) {
-    try {
-      return JSON.parse(resp.output_text);
-    } catch {}
-  }
-  return null;
+
+function buildUserContent(schemaText: string, transport: "data-url" | "signed-url", value: string) {
+  return [
+    { type: "text", text: "Parse this receipt image into the exact JSON schema described." },
+    { type: "text", text: schemaText.trim() },
+    transport === "data-url"
+      ? { type: "image_url", image_url: { url: `data:image/jpeg;base64,${value}` } }
+      : { type: "image_url", image_url: { url: value } },
+  ] as any;
 }
 
 /** Handler */
@@ -139,91 +134,135 @@ Deno.serve(async (req) => {
     if (req.method !== "POST") return json(405, { success: false, error: "Method Not Allowed" });
 
     const body = (await req.json()) as ReceiptRequest;
-    if (!body?.imagePath || typeof body.imagePath !== "string" || body.imagePath.includes("..")) {
+    if (!body?.imagePath || typeof body.imagePath !== "string") {
+      return json(400, { success: false, error: "Missing or invalid imagePath" });
+    }
+    if (body.imagePath.includes("..")) {
       return json(400, { success: false, error: "Invalid imagePath" });
     }
 
-    // Signed URL → fetch → base64 → data URL
+    // 1) Signed URL
     const signed = await supabaseAdmin.storage.from(BUCKET).createSignedUrl(body.imagePath, 60);
-    if (signed.error || !signed.data?.signedUrl)
+    if (signed.error || !signed.data?.signedUrl) {
       return json(400, { success: false, error: "Unable to sign image URL" });
+    }
+    const signedUrl = signed.data.signedUrl;
 
-    const imgRes = await fetch(signed.data.signedUrl, { redirect: "follow" });
-    if (!imgRes.ok) return json(400, { success: false, error: `Failed to fetch image (${imgRes.status})` });
-    const buf = new Uint8Array(await imgRes.arrayBuffer());
-    const dataUrl = `data:image/jpeg;base64,${bytesToBase64(buf)}`;
+    // 2) Fetch image
+    const imgRes = await fetch(signedUrl, { redirect: "follow" });
+    if (!imgRes.ok) {
+      return json(400, { success: false, error: `Failed to fetch image (${imgRes.status})` });
+    }
+    const arrayBuffer = await imgRes.arrayBuffer();
 
-    // Schema
-    const schema = {
-      type: "object",
-      properties: {
-        isValidReceipt: { type: "boolean" },
-        merchantName: { type: "string", nullable: true },
-        merchantAddress: { type: "string", nullable: true },
-        purchaseDate: { type: "string", nullable: true },
-        currency: { type: "string", nullable: true },
-        subtotal: { type: "number", nullable: true },
-        tax: { type: "number", nullable: true },
-        tip: { type: "number", nullable: true },
-        total: { type: "number", nullable: true },
-        items: {
-          type: "array",
-          items: {
-            type: "object",
-            properties: { name: { type: "string" }, price: { type: "number" }, quantity: { type: "number" } },
-            required: ["name", "price", "quantity"],
-            additionalProperties: false,
-          },
-          nullable: true,
+    // 3) Base64 encode
+    const u8 = new Uint8Array(arrayBuffer);
+    const b64 = bytesToBase64(u8);
+
+    // 4) Schema prompt
+    const schemaText = `
+Return ONLY a valid JSON object with this shape:
+
+{
+  "isValidReceipt": boolean,
+  "merchantName": string | null,
+  "merchantAddress": string | null,
+  "purchaseDate": string | null,
+  "currency": string | null,
+  "subtotal": number | null,
+  "tax": number | null,
+  "tip": number | null,
+  "total": number | null,
+  "items": [{"name": string, "price": number, "quantity": number}] | [],
+  "notes": string | null
+}
+
+Rules:
+- Output JSON ONLY (no prose, no code fences).
+- Numbers must be plain numbers (no "$").
+- If not a receipt, set isValidReceipt=false, items=[], and explain in "notes".
+- If date or totals are missing, use null (not strings like "N/A").
+- For each item, set "price" to the line total shown on the receipt, not the unit price.
+- Example: if a line reads "3 @ 4.69" and the rightmost amount is "14.07", return {"quantity": 3, "price": 14.07}.
+- If quantity is unclear, default to 1.
+`;
+
+    // 5) Groq Chat: try DATA-URL first
+    let completion = await groq.chat.completions.create({
+      model: "meta-llama/llama-4-scout-17b-16e-instruct",
+      temperature: 0,
+      max_tokens: 700,
+      messages: [
+        {
+          role: "system",
+          content: "You are a strict receipt parsing assistant. Always return valid JSON only, matching the requested shape.",
         },
-        notes: { type: "string", nullable: true },
-      },
-      required: [
-        "isValidReceipt",
-        "merchantName",
-        "merchantAddress",
-        "purchaseDate",
-        "currency",
-        "subtotal",
-        "tax",
-        "tip",
-        "total",
-        "items",
-        "notes",
-      ],
-      additionalProperties: false,
-    } as const;
-
-    const instructions = `You are a receipt parsing assistant. If not a receipt, set isValidReceipt=false and items=[] with an explanation in notes. Extract fields; numbers must be plain numbers (no $). For each item, set price to the line total shown on the receipt, not the unit price. If a line reads like "3 @ 4.69" with "14.07" on the right, return quantity=3 and price=14.07. Default quantity=1 when unclear.`;
-
-    // Responses API (base64 via data URL)
-    const resp = await openai.responses.create({
-      model: VISION_MODEL,
-      instructions,
-      input: [
         {
           role: "user",
-          content: [
-            { type: "input_text", text: "Parse this receipt image into the structured schema." },
-            { type: "input_image", image_url: dataUrl, detail: "low" },
-          ],
+          content: buildUserContent(schemaText, "data-url", b64),
         },
       ],
-      text: {
-        format: { type: "json_schema", name: "receipt_parser_response", schema, strict: true },
-      },
-      max_output_tokens: 600,
-      temperature: 0,
     });
 
-    const parsed = extractJson(resp) as ModelExtract | null;
-    if (!parsed) return json(502, { success: false, error: "Model did not return valid JSON" });
+    let content = completion?.choices?.[0]?.message?.content || "";
+
+    // If empty / invalid JSON, retry ONCE with SIGNED URL
+    const needRetry =
+      !content ||
+      typeof content !== "string" ||
+      (() => {
+        try {
+          JSON.parse(content);
+          return false;
+        } catch {
+          return true;
+        }
+      })();
+
+    if (needRetry) {
+      completion = await groq.chat.completions.create({
+        model: "meta-llama/llama-4-scout-17b-16e-instruct",
+        temperature: 0,
+        max_tokens: 700,
+        messages: [
+          {
+            role: "system",
+            content:
+              "You are a strict receipt parsing assistant. Always return valid JSON only, matching the requested shape.",
+          },
+          {
+            role: "user",
+            content: buildUserContent(schemaText, "signed-url", signedUrl),
+          },
+        ],
+      });
+      content = completion?.choices?.[0]?.message?.content || "";
+    }
+
+    if (!content || typeof content !== "string") {
+      return json(502, { success: false, error: "Empty content from model" });
+    }
+
+    let parsed: ModelExtract;
+    try {
+      parsed = JSON.parse(content) as ModelExtract;
+    } catch {
+      return json(502, { success: false, error: "Model did not return valid JSON" });
+    }
 
     if (!parsed.isValidReceipt) {
-      return json(200, { success: false, error: parsed.notes || "Image did not contain a valid receipt." });
+      return json(200, {
+        success: false,
+        error: parsed.notes || "Image did not contain a valid receipt.",
+      });
     }
 
     // Normalize
+    const subtotal = coerceAmount(parsed.subtotal);
+    const tax = coerceAmount(parsed.tax);
+    const tip = coerceAmount(parsed.tip);
+    const total = coerceAmount(parsed.total);
+
     const items = Array.isArray(parsed.items)
       ? parsed.items
           .filter((i) => i && i.name)
@@ -233,13 +272,8 @@ Deno.serve(async (req) => {
             quantity: i.quantity && i.quantity > 0 ? Math.round(i.quantity) : 1,
           }))
       : [];
-    const totals = reconcileTotals({
-      subtotal: coerceAmount(parsed.subtotal),
-      tax: coerceAmount(parsed.tax),
-      tip: coerceAmount(parsed.tip),
-      total: coerceAmount(parsed.total),
-      items,
-    });
+
+    const totals = reconcileTotals({ subtotal, tax, tip, total, items });
 
     const payload = {
       merchantName: parsed.merchantName?.trim() || null,
@@ -249,12 +283,16 @@ Deno.serve(async (req) => {
       items,
       totals,
       notes: parsed.notes?.trim() || null,
-      raw: { userId: body.userId ?? null, model: VISION_MODEL, imagePath: body.imagePath },
+      raw: {
+        userId: body.userId ?? null,
+        model: "meta-llama/llama-4-scout-17b-16e-instruct",
+        imagePath: body.imagePath,
+      },
     };
 
     return json(200, { success: true, data: payload });
   } catch (err) {
-    const msg = err instanceof Error ? err.message : "Unknown error";
+    const msg = err instanceof Error ? err.message : String(err);
     return json(500, { success: false, error: msg });
   }
 });
