@@ -1,5 +1,5 @@
 import { getSupabaseClient } from '@/src/lib/supabaseClient';
-import type { PendingReceipt, Receipt } from '@/src/types/receipt';
+import type { PendingReceipt, Receipt, ParsedReceipt } from '@/src/types/receipt';
 import 'react-native-get-random-values';
 import { v4 as uuidv4 } from 'uuid';
 
@@ -173,7 +173,7 @@ export async function saveReceipt(
       tip_cents: dollarsToCents(parsed.totals.tip),
       total_cents: dollarsToCents(parsed.totals.total),
       status: 'draft',
-      raw_payload: parsed.raw ?? null,
+      raw_payload: parsed,
     });
 
   if (receiptError || !receiptId) {
@@ -279,6 +279,7 @@ export async function fetchReceipt(receiptId: string): Promise<FetchReceiptResul
     success: true,
     receipt: {
       ...receipt,
+      raw_payload: (receipt.raw_payload as Receipt['raw_payload']) ?? null,
       celebration_shown:
         typeof (receipt as { celebration_shown?: unknown }).celebration_shown === 'boolean'
           ? ((receipt as { celebration_shown?: boolean }).celebration_shown ?? false)
@@ -297,6 +298,7 @@ export async function updateReceipt(
     tax_cents?: number;
     tip_cents?: number;
     total_cents?: number;
+    raw_payload?: ParsedReceipt | null;
     status?: Receipt['status'];
   }
 ): Promise<{ success: boolean; error?: string }> {
@@ -419,6 +421,7 @@ export async function duplicateReceipt(
     tax_cents: original.tax_cents,
     tip_cents: original.tip_cents,
     total_cents: original.total_cents,
+    raw_payload: original.raw_payload,
     status: 'draft',
   });
 

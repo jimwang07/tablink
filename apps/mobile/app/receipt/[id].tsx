@@ -41,6 +41,7 @@ import {
   type ReceiptItem,
 } from '@/src/services/receiptService';
 import type { RealtimePostgresChangesPayload } from '@supabase/supabase-js';
+import type { ParsedReceiptAdjustment } from '@/src/types/receipt';
 
 /* ── Types ─────────────────────────────────────────────────── */
 
@@ -70,6 +71,13 @@ type EditableItem = {
   name: string;
   price: string;
   quantity: string;
+};
+
+type EditableAdjustment = {
+  key: string;
+  type: ParsedReceiptAdjustment['type'];
+  label: string;
+  amount: string;
 };
 
 /* ── Status config (matches home screen) ───────────────────── */
@@ -172,6 +180,31 @@ function buildEditableItems(items: ReceiptItem[]): EditableItem[] {
     price: toCurrencyString(centsToDollars(item.price_cents)),
     quantity: item.quantity.toString(),
   }));
+}
+
+function buildEditableAdjustments(adjustments: ParsedReceiptAdjustment[]): EditableAdjustment[] {
+  return adjustments
+    .filter((adjustment) => adjustment.type !== 'discount')
+    .map((adjustment, index) => ({
+    key: `${adjustment.type}-${adjustment.label}-${index}`,
+    type: adjustment.type,
+    label: formatAdjustmentLabel(adjustment),
+    amount: toCurrencyString(Math.abs(adjustment.amount)),
+    }));
+}
+
+function getSignedAdjustmentAmount(adjustment: ParsedReceiptAdjustment): number {
+  return adjustment.type === 'discount' ? -Math.abs(adjustment.amount) : adjustment.amount;
+}
+
+function formatAdjustmentLabel(adjustment: ParsedReceiptAdjustment): string {
+  return adjustment.label.trim() || adjustment.type.replace(/_/g, ' ');
+}
+
+function getDiscountTotal(adjustments: ParsedReceiptAdjustment[]): number {
+  return adjustments
+    .filter((adjustment) => adjustment.type === 'discount')
+    .reduce((sum, adjustment) => sum + Math.abs(adjustment.amount), 0);
 }
 
 /* ── Skeleton loading ──────────────────────────────────────── */
@@ -302,8 +335,11 @@ export default function ReceiptDetailScreen() {
   const [merchantName, setMerchantName] = useState('');
   const [taxInput, setTaxInput] = useState('0.00');
   const [tipInput, setTipInput] = useState('0.00');
+  const [discountInput, setDiscountInput] = useState('0.00');
+  const [showExtraCharges, setShowExtraCharges] = useState(false);
   const [customTipPercentInput, setCustomTipPercentInput] = useState('');
   const [editableItems, setEditableItems] = useState<EditableItem[]>([]);
+  const [editableAdjustments, setEditableAdjustments] = useState<EditableAdjustment[]>([]);
   const [hasChanges, setHasChanges] = useState(false);
 
   // Claims and participants for realtime updates
@@ -365,7 +401,11 @@ export default function ReceiptDetailScreen() {
         setMerchantName(r.merchant_name || '');
         setTaxInput(toCurrencyString(centsToDollars(r.tax_cents)));
         setTipInput(toCurrencyString(centsToDollars(r.tip_cents)));
+        const parsedAdjustments = r.raw_payload?.adjustments ?? [];
+        setDiscountInput(toCurrencyString(getDiscountTotal(parsedAdjustments)));
         setEditableItems(buildEditableItems(r.items));
+        setEditableAdjustments(buildEditableAdjustments(parsedAdjustments));
+        setShowExtraCharges(getDiscountTotal(parsedAdjustments) > 0 || buildEditableAdjustments(parsedAdjustments).length > 0);
 
         if (r.image_path) {
           const supabase = getSupabaseClient();
@@ -494,7 +534,7 @@ export default function ReceiptDetailScreen() {
   // Track changes
   useEffect(() => {
     setHasChanges(true);
-  }, [merchantName, taxInput, tipInput, editableItems]);
+  }, [merchantName, taxInput, tipInput, discountInput, editableItems, editableAdjustments]);
 
   // Computed values
   const subtotal = useMemo(() => {
@@ -504,9 +544,20 @@ export default function ReceiptDetailScreen() {
     }, 0);
   }, [editableItems]);
 
+  const adjustmentsTotal = useMemo(() => {
+    const otherAdjustmentsTotal = editableAdjustments.reduce((sum, adjustment) => {
+      const amount = parseCurrencyInput(adjustment.amount);
+      return sum + (adjustment.type === 'discount' ? -amount : amount);
+    }, 0);
+    return otherAdjustmentsTotal - parseCurrencyInput(discountInput);
+  }, [discountInput, editableAdjustments]);
   const taxAmount = useMemo(() => parseCurrencyInput(taxInput), [taxInput]);
   const tipAmount = useMemo(() => parseCurrencyInput(tipInput), [tipInput]);
-  const grandTotal = useMemo(() => subtotal + taxAmount + tipAmount, [subtotal, taxAmount, tipAmount]);
+  const discountAmount = useMemo(() => parseCurrencyInput(discountInput), [discountInput]);
+  const grandTotal = useMemo(
+    () => subtotal + adjustmentsTotal + taxAmount + tipAmount,
+    [subtotal, adjustmentsTotal, taxAmount, tipAmount]
+  );
   const currentTipPercent = useMemo(() => {
     if (subtotal <= 0 || tipAmount <= 0) return 0;
     return Number(((tipAmount / subtotal) * 100).toFixed(2));
@@ -539,6 +590,12 @@ export default function ReceiptDetailScreen() {
     setCustomTipPercentInput(value);
     setTipInput(toCurrencyString(subtotal * (parsePercentInput(value) / 100)));
   }, [subtotal]);
+
+  const updateAdjustmentAmount = useCallback((key: string, value: string) => {
+    setEditableAdjustments((current) =>
+      current.map((adjustment) => (adjustment.key === key ? { ...adjustment, amount: value } : adjustment))
+    );
+  }, []);
 
   const effectiveStatus = useMemo((): ReceiptStatus => {
     if (!receipt) return 'draft';
@@ -633,6 +690,38 @@ export default function ReceiptDetailScreen() {
         tax_cents: dollarsToCents(taxAmount),
         tip_cents: dollarsToCents(tipAmount),
         total_cents: dollarsToCents(grandTotal),
+        raw_payload: receipt.raw_payload
+          ? {
+              ...receipt.raw_payload,
+              merchantName: merchantName.trim() || null,
+              items: editableItems.map((item) => ({
+                name: item.name.trim() || 'Untitled item',
+                price: parseCurrencyInput(item.price),
+                quantity: parseQuantityInput(item.quantity),
+              })),
+              adjustments: editableAdjustments.map((adjustment) => ({
+                type: adjustment.type,
+                label: adjustment.label.trim() || formatAdjustmentLabel({ type: adjustment.type, label: '', amount: 0 }),
+                amount: parseCurrencyInput(adjustment.amount),
+              })).concat(
+                parseCurrencyInput(discountInput) > 0
+                  ? [{
+                      type: 'discount' as const,
+                      label: 'Discounts',
+                      amount: parseCurrencyInput(discountInput),
+                    }]
+                  : []
+              ),
+              totals: {
+                ...receipt.raw_payload.totals,
+                subtotal,
+                tax: taxAmount,
+                tip: tipAmount,
+                total: grandTotal,
+                itemsTotal: subtotal,
+              },
+            }
+          : null,
       });
 
       if (!receiptResult.success) {
@@ -663,7 +752,7 @@ export default function ReceiptDetailScreen() {
     } finally {
       setIsSaving(false);
     }
-  }, [id, receipt, merchantName, subtotal, taxAmount, tipAmount, grandTotal, editableItems]);
+  }, [id, receipt, merchantName, subtotal, taxAmount, tipAmount, discountInput, grandTotal, editableItems, editableAdjustments]);
 
   const handleDelete = useCallback(() => {
     if (!id) return;
@@ -1196,6 +1285,42 @@ export default function ReceiptDetailScreen() {
               </View>
             </View>
           </View>
+          {(showExtraCharges || discountAmount > 0 || editableAdjustments.length > 0) && (
+            <>
+              <View style={s.summaryRow}>
+                <Text style={s.summaryLabel}>Discounts</Text>
+                <TextInput
+                  value={discountInput}
+                  onChangeText={setDiscountInput}
+                  placeholder="0.00"
+                  placeholderTextColor={colors.muted}
+                  keyboardType="decimal-pad"
+                  style={[s.textInput, s.summaryInput]}
+                />
+              </View>
+              {editableAdjustments.map((adjustment) => (
+                <View key={adjustment.key} style={s.summaryRow}>
+                  <Text style={s.summaryLabel}>{adjustment.label}</Text>
+                  <TextInput
+                    value={adjustment.amount}
+                    onChangeText={(value) => updateAdjustmentAmount(adjustment.key, value)}
+                    placeholder="0.00"
+                    placeholderTextColor={colors.muted}
+                    keyboardType="decimal-pad"
+                    style={[s.textInput, s.summaryInput]}
+                  />
+                </View>
+              ))}
+            </>
+          )}
+          {!showExtraCharges && discountAmount <= 0 && editableAdjustments.length === 0 ? (
+            <Pressable
+              style={({ pressed }) => [s.extraChargesButton, pressed && s.pressed]}
+              onPress={() => setShowExtraCharges(true)}
+            >
+              <Text style={s.extraChargesButtonText}>+ Add discount or fee</Text>
+            </Pressable>
+          ) : null}
           <View style={[s.summaryRow, s.totalRow]}>
             <Text style={s.totalLabel}>Total</Text>
             <Text style={s.totalValue}>{formatCurrency(grandTotal)}</Text>
@@ -1246,9 +1371,9 @@ export default function ReceiptDetailScreen() {
                   return sum + dollarsToCents(price);
                 }, 0);
                 const share = itemsTotal > 0 ? claimsTotal / itemsTotal : 0;
-                const pTax = Math.round(parseCurrencyInput(taxInput) * 100 * share);
-                const pTip = Math.round(parseCurrencyInput(tipInput) * 100 * share);
-                const participantTotal = claimsTotal + pTax + pTip;
+                const extrasCents = dollarsToCents(grandTotal) - itemsTotal;
+                const participantExtras = Math.round(extrasCents * share);
+                const participantTotal = claimsTotal + participantExtras;
 
                 const isOwner = p.role === 'owner';
 
@@ -1634,6 +1759,17 @@ const s = StyleSheet.create({
   addButtonText: {
     color: colors.primary,
     fontSize: 14,
+    fontWeight: '600',
+  },
+  extraChargesButton: {
+    alignSelf: 'flex-start',
+    marginTop: 4,
+    marginBottom: 4,
+    paddingVertical: 4,
+  },
+  extraChargesButtonText: {
+    color: colors.textSecondary,
+    fontSize: 13,
     fontWeight: '600',
   },
 

@@ -32,29 +32,38 @@ const groq = new OpenAI({
 
 /** Types */
 type ReceiptRequest = { imagePath: string; userId?: string };
-type ModelExtractItem = { name: string; price: number; quantity: number };
+type ModelExtractItem = {
+  name: string;
+  lineTotal: number;
+  quantity: number;
+};
+type ModelAdjustment = {
+  type: "discount" | "fee" | "other";
+  label: string;
+  amount: number;
+};
 type ModelExtract = {
   isValidReceipt: boolean;
   merchantName?: string | null;
-  merchantAddress?: string | null;
-  purchaseDate?: string | null;
+  purchaseDateRaw?: string | null;
+  currency?: string | null;
   subtotal?: number | null;
   tax?: number | null;
   tip?: number | null;
   total?: number | null;
-  currency?: string | null;
   items?: ModelExtractItem[] | null;
-  notes?: string | null;
+  adjustments?: ModelAdjustment[] | null;
+  unparsedLines?: string[] | null;
 };
 
 type ParsedReceiptResponse = {
   success: boolean;
   data?: {
     merchantName: string | null;
-    merchantAddress: string | null;
     purchaseDate: string | null;
     currency: string;
     items: { name: string; price: number; quantity: number }[];
+    adjustments: ModelAdjustment[];
     totals: { subtotal: number; tax: number; tip: number; total: number; itemsTotal: number };
     notes: string | null;
     raw: { userId: string | null; model: string; imagePath: string };
@@ -79,12 +88,32 @@ function bytesToBase64(u8: Uint8Array): string {
   return btoa(binary);
 }
 
-type ReconcileInput = { subtotal: number; tax: number; tip: number; total: number; items: ModelExtractItem[] };
+type ReconcileInput = {
+  subtotal: number;
+  tax: number;
+  tip: number;
+  total: number;
+  items: Array<{ lineTotal: number }>;
+  adjustments: ModelAdjustment[];
+};
+
+type NormalizedItem = {
+  name: string;
+  price: number;
+  quantity: number;
+};
 
 function coerceAmount(value: unknown): number {
   if (typeof value === "number" && isFinite(value)) return Number(value.toFixed(2));
   if (typeof value === "string") {
-    const parsed = Number.parseFloat(value.replace(/[^\d.-]/g, ""));
+    const trimmed = value.trim();
+    const isNegative =
+      /^-/.test(trimmed) ||
+      /-\s*[A-Za-z]*$/.test(trimmed) ||
+      /^\(.*\)$/.test(trimmed);
+    const numeric = trimmed.replace(/[^\d.]/g, "");
+    if (!numeric) return 0;
+    const parsed = Number.parseFloat(`${isNegative ? "-" : ""}${numeric}`);
     if (!Number.isNaN(parsed)) return Number(parsed.toFixed(2));
   }
   return 0;
@@ -97,14 +126,69 @@ function safeDate(value: string | null | undefined): string | null {
   return new Date(t).toISOString();
 }
 
-function reconcileTotals({ subtotal, tax, tip, total, items }: ReconcileInput) {
-  // `price` is the line total shown on the receipt, not the unit price.
-  const itemsSum = items.reduce((a, i) => a + i.price, 0);
+function looksLikeDiscountLabel(value: string): boolean {
+  const normalized = value.trim().toLowerCase();
+  if (!normalized) return false;
+
+  return [
+    "disc",
+    "discount",
+    "coupon",
+    "rebate",
+    "promo",
+    "promotion",
+    "savings",
+    "reward",
+    "markdown",
+    "member",
+    "instant",
+    "less",
+    "off",
+  ].some((token) => normalized.includes(token));
+}
+
+function normalizeAdjustmentLabel(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) return "Discount";
+  return trimmed.replace(/\s+/g, " ");
+}
+
+function extractDiscountAdjustmentsFromItems(items: NormalizedItem[]) {
+  const nextItems: NormalizedItem[] = [];
+  const derivedAdjustments: ModelAdjustment[] = [];
+
+  for (const item of items) {
+    if (item.price < 0 || looksLikeDiscountLabel(item.name)) {
+      const amount = Math.abs(item.price);
+      if (amount > 0) {
+        derivedAdjustments.push({
+          type: "discount",
+          label: normalizeAdjustmentLabel(item.name),
+          amount,
+        });
+        continue;
+      }
+    }
+
+    nextItems.push(item);
+  }
+
+  return { items: nextItems, adjustments: derivedAdjustments };
+}
+
+function reconcileTotals({ subtotal, tax, tip, total, items, adjustments }: ReconcileInput) {
+  // `lineTotal` is the total shown on the receipt line, not the unit price.
+  const itemsSum = items.reduce((a, i) => a + i.lineTotal, 0);
+  const nonTaxNonTipAdjustments = adjustments.reduce((sum, adjustment) => {
+    const amount = coerceAmount(adjustment.amount);
+    if (adjustment.type === "discount") return sum - amount;
+    return sum + amount;
+  }, 0);
   let nextSubtotal = subtotal || itemsSum;
   const nextTax = tax || 0;
   const nextTip = tip || 0;
-  let nextTotal = total || nextSubtotal + nextTax + nextTip;
-  const expected = nextSubtotal + nextTax + nextTip;
+  let nextTotal = total || nextSubtotal + nonTaxNonTipAdjustments + nextTax + nextTip;
+  const expected = nextSubtotal + nonTaxNonTipAdjustments + nextTax + nextTip;
   if (nextTotal === 0 || Math.abs(nextTotal - expected) > 0.05) {
     nextTotal = Number(expected.toFixed(2));
   }
@@ -127,6 +211,34 @@ function buildUserContent(schemaText: string, transport: "data-url" | "signed-ur
   ] as any;
 }
 
+function isLikelyImageTransportError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  const normalized = message.toLowerCase();
+
+  return [
+    "image",
+    "url",
+    "fetch",
+    "download",
+    "unsupported",
+    "invalid",
+    "timeout",
+    "timed out",
+    "connection",
+    "redirect",
+    "403",
+    "404",
+    "415",
+  ].some((token) => normalized.includes(token));
+}
+
+function logPerf(event: string, details: Record<string, string | number | boolean | null>) {
+  const suffix = Object.entries(details)
+    .map(([key, value]) => `${key}=${value}`)
+    .join(" ");
+  console.log(`[perf][parse-receipt-groq] ${event}${suffix ? ` ${suffix}` : ""}`);
+}
+
 /** Handler */
 Deno.serve(async (req) => {
   try {
@@ -147,79 +259,96 @@ Deno.serve(async (req) => {
       return json(400, { success: false, error: "Unable to sign image URL" });
     }
     const signedUrl = signed.data.signedUrl;
+    const requestStartedAt = Date.now();
 
-    // 2) Fetch image
-    const imgRes = await fetch(signedUrl, { redirect: "follow" });
-    if (!imgRes.ok) {
-      return json(400, { success: false, error: `Failed to fetch image (${imgRes.status})` });
-    }
-    const arrayBuffer = await imgRes.arrayBuffer();
-
-    // 3) Base64 encode
-    const u8 = new Uint8Array(arrayBuffer);
-    const b64 = bytesToBase64(u8);
-
-    // 4) Schema prompt
+    // 2) Schema prompt
     const schemaText = `
-Return ONLY a valid JSON object with this shape:
+Return ONLY a valid JSON object with this exact shape:
 
 {
   "isValidReceipt": boolean,
   "merchantName": string | null,
-  "merchantAddress": string | null,
-  "purchaseDate": string | null,
+  "purchaseDateRaw": string | null,
   "currency": string | null,
   "subtotal": number | null,
   "tax": number | null,
   "tip": number | null,
   "total": number | null,
-  "items": [{"name": string, "price": number, "quantity": number}] | [],
-  "notes": string | null
+  "items": [{"name": string, "lineTotal": number, "quantity": number}],
+  "adjustments": [{"type": "discount" | "fee" | "other", "label": string, "amount": number}],
+  "unparsedLines": string[]
 }
 
-Rules:
-- Output JSON ONLY (no prose, no code fences).
-- Numbers must be plain numbers (no "$").
-- If not a receipt, set isValidReceipt=false, items=[], and explain in "notes".
-- If date or totals are missing, use null (not strings like "N/A").
-- For each item, set "price" to the line total shown on the receipt, not the unit price.
-- Example: if a line reads "3 @ 4.69" and the rightmost amount is "14.07", return {"quantity": 3, "price": 14.07}.
-- If quantity is unclear, default to 1.
+Priorities:
+1. Do not silently drop visible monetary lines.
+2. If a line is uncertain, include it in "unparsedLines" instead of omitting it.
+3. When choosing between "adjustments" and omission, prefer "adjustments" if the line clearly represents money.
+
+General rules:
+- Output JSON ONLY. No prose. No markdown. No code fences.
+- Numbers must be plain numbers with decimal points and no currency symbols.
+- If not a receipt, set isValidReceipt=false and return empty arrays.
+- If a scalar value is missing, use null. Arrays must always be present and use [] when empty.
+- Read conservatively. Do not invent values that are not visibly supported by the image.
+
+Items:
+- Put only purchasable goods or services in "items".
+- For each item, set "lineTotal" to the total shown for that line, not the unit price.
+- If a line reads like "3 @ 4.69" with a rightmost total of "14.07", return quantity=3 and lineTotal=14.07.
+- If quantity is unclear but the line is clearly an item, default quantity to 1.
+- Do not classify clearly negative monetary lines as items.
+
+Adjustments:
+- Put discounts, coupons, promotions, rebates, credits, markdowns, member savings, and non-item fees in "adjustments".
+- For discount adjustments, return type="discount" and return "amount" as a positive magnitude.
+- If a receipt prints a discount as "-4.30", "4.30-", "4.30-A", or "(4.30)", return amount=4.30.
+- If a standalone line has a negative amount, a trailing-minus amount, or a minus-plus-suffix amount, treat it as an adjustment rather than an item.
+- If a line has a code-like or numeric label and a negative amount, prefer classifying it as a discount adjustment rather than omitting it.
+- Use type="fee" for service charges, surcharges, deposits, delivery fees, and similar non-tax extras.
+- Put tax and tip only in the top-level "tax" and "tip" fields, never in "adjustments".
+
+Do not classify these as items:
+- payment/tender lines such as VISA, MASTERCARD, CASH, CHANGE, AUTH, REF, PAYMENT, BALANCE DUE
+- summary lines such as SUBTOTAL, TAX, TIP, TOTAL
+- standalone negative or trailing-minus monetary lines
+
+Ambiguity:
+- If a visible line with text and/or an amount cannot be safely classified, copy that line into "unparsedLines".
+- Do not omit visible discount-like lines just because the label is short, numeric, or code-like.
+
+Examples:
+- "123456  4.30-" => adjustment { type: "discount", label: "123456", amount: 4.30 }
+- "Member Savings  -2.15" => adjustment { type: "discount", label: "Member Savings", amount: 2.15 }
+- "Service Fee 3.00" => adjustment { type: "fee", label: "Service Fee", amount: 3.00 }
 `;
 
-    // 5) Groq Chat: try DATA-URL first
-    let completion = await groq.chat.completions.create({
-      model: "meta-llama/llama-4-scout-17b-16e-instruct",
-      temperature: 0,
-      max_tokens: 700,
-      messages: [
-        {
-          role: "system",
-          content: "You are a strict receipt parsing assistant. Always return valid JSON only, matching the requested shape.",
-        },
-        {
-          role: "user",
-          content: buildUserContent(schemaText, "data-url", b64),
-        },
-      ],
-    });
+    const createCompletion = async (transport: "data-url" | "signed-url", value: string) =>
+      groq.chat.completions.create({
+        model: "meta-llama/llama-4-scout-17b-16e-instruct",
+        temperature: 0,
+        max_tokens: 700,
+        messages: [
+          {
+            role: "system",
+            content:
+              "You are a strict receipt parser for messy real-world receipts. Capture every visible monetary line. Never silently drop discount-like lines. Always return valid JSON only.",
+          },
+          {
+            role: "user",
+            content: buildUserContent(schemaText, transport, value),
+          },
+        ],
+      });
 
-    let content = completion?.choices?.[0]?.message?.content || "";
+    // 3) Groq Chat: try SIGNED URL first
+    let completion;
+    let content = "";
+    let transportUsed: "signed-url" | "data-url" = "signed-url";
+    let usedFallback = false;
+    let fallbackReason: string | null = null;
 
-    // If empty / invalid JSON, retry ONCE with SIGNED URL
-    const needRetry =
-      !content ||
-      typeof content !== "string" ||
-      (() => {
-        try {
-          JSON.parse(content);
-          return false;
-        } catch {
-          return true;
-        }
-      })();
-
-    if (needRetry) {
+    try {
+      const modelStartedAt = Date.now();
       completion = await groq.chat.completions.create({
         model: "meta-llama/llama-4-scout-17b-16e-instruct",
         temperature: 0,
@@ -228,7 +357,7 @@ Rules:
           {
             role: "system",
             content:
-              "You are a strict receipt parsing assistant. Always return valid JSON only, matching the requested shape.",
+              "You are a strict receipt parser for messy real-world receipts. Capture every visible monetary line. Never silently drop discount-like lines. Always return valid JSON only.",
           },
           {
             role: "user",
@@ -237,9 +366,78 @@ Rules:
         ],
       });
       content = completion?.choices?.[0]?.message?.content || "";
+      logPerf("model_attempt", {
+        transport: "signed-url",
+        duration_ms: Date.now() - modelStartedAt,
+        content_length: typeof content === "string" ? content.length : 0,
+      });
+    } catch (error) {
+      if (!isLikelyImageTransportError(error)) {
+        logPerf("model_error", {
+          transport: "signed-url",
+          reason: "non_transport_error",
+          duration_ms: Date.now() - requestStartedAt,
+        });
+        throw error;
+      }
+
+      // Fall back to base64 only when URL transport likely failed.
+      usedFallback = true;
+      fallbackReason = "signed_url_transport_error";
+      const imgRes = await fetch(signedUrl, { redirect: "follow" });
+      if (!imgRes.ok) {
+        return json(400, { success: false, error: `Failed to fetch image (${imgRes.status})` });
+      }
+      const arrayBuffer = await imgRes.arrayBuffer();
+      const u8 = new Uint8Array(arrayBuffer);
+      const b64 = bytesToBase64(u8);
+
+      transportUsed = "data-url";
+      const fallbackStartedAt = Date.now();
+      completion = await createCompletion("data-url", b64);
+      content = completion?.choices?.[0]?.message?.content || "";
+      logPerf("model_attempt", {
+        transport: "data-url",
+        duration_ms: Date.now() - fallbackStartedAt,
+        content_length: typeof content === "string" ? content.length : 0,
+        fallback: true,
+        fallback_reason: fallbackReason,
+      });
+    }
+
+    // If signed URL returns empty content, retry once with base64.
+    if (!content || typeof content !== "string") {
+      usedFallback = true;
+      fallbackReason = "empty_content";
+      const imgRes = await fetch(signedUrl, { redirect: "follow" });
+      if (!imgRes.ok) {
+        return json(400, { success: false, error: `Failed to fetch image (${imgRes.status})` });
+      }
+      const arrayBuffer = await imgRes.arrayBuffer();
+      const u8 = new Uint8Array(arrayBuffer);
+      const b64 = bytesToBase64(u8);
+
+      transportUsed = "data-url";
+      const fallbackStartedAt = Date.now();
+      completion = await createCompletion("data-url", b64);
+      content = completion?.choices?.[0]?.message?.content || "";
+      logPerf("model_attempt", {
+        transport: "data-url",
+        duration_ms: Date.now() - fallbackStartedAt,
+        content_length: typeof content === "string" ? content.length : 0,
+        fallback: true,
+        fallback_reason: fallbackReason,
+      });
     }
 
     if (!content || typeof content !== "string") {
+      logPerf("request_complete", {
+        success: false,
+        transport: transportUsed,
+        fallback: usedFallback,
+        fallback_reason: fallbackReason,
+        duration_ms: Date.now() - requestStartedAt,
+      });
       return json(502, { success: false, error: "Empty content from model" });
     }
 
@@ -247,13 +445,28 @@ Rules:
     try {
       parsed = JSON.parse(content) as ModelExtract;
     } catch {
+      logPerf("request_complete", {
+        success: false,
+        transport: transportUsed,
+        fallback: usedFallback,
+        fallback_reason: fallbackReason,
+        duration_ms: Date.now() - requestStartedAt,
+      });
       return json(502, { success: false, error: "Model did not return valid JSON" });
     }
 
     if (!parsed.isValidReceipt) {
+      logPerf("request_complete", {
+        success: false,
+        transport: transportUsed,
+        fallback: usedFallback,
+        fallback_reason: fallbackReason,
+        duration_ms: Date.now() - requestStartedAt,
+        valid_receipt: false,
+      });
       return json(200, {
         success: false,
-        error: parsed.notes || "Image did not contain a valid receipt.",
+        error: "Image did not contain a valid receipt.",
       });
     }
 
@@ -263,26 +476,52 @@ Rules:
     const tip = coerceAmount(parsed.tip);
     const total = coerceAmount(parsed.total);
 
-    const items = Array.isArray(parsed.items)
+    const parsedAdjustments = Array.isArray(parsed.adjustments)
+      ? parsed.adjustments
+          .filter((adjustment) => adjustment && adjustment.label && adjustment.type)
+          .map((adjustment) => ({
+            type: adjustment.type,
+            label: adjustment.label.trim(),
+            amount:
+              adjustment.type === "discount"
+                ? Math.abs(coerceAmount(adjustment.amount))
+                : coerceAmount(adjustment.amount),
+          }))
+      : [];
+
+    const normalizedItems = Array.isArray(parsed.items)
       ? parsed.items
           .filter((i) => i && i.name)
           .map((i) => ({
             name: i.name.trim(),
-            price: coerceAmount(i.price),
+            price: coerceAmount(i.lineTotal),
             quantity: i.quantity && i.quantity > 0 ? Math.round(i.quantity) : 1,
           }))
       : [];
 
-    const totals = reconcileTotals({ subtotal, tax, tip, total, items });
+    const derivedDiscounts = extractDiscountAdjustmentsFromItems(normalizedItems);
+    const items = derivedDiscounts.items;
+    const adjustments = [...parsedAdjustments, ...derivedDiscounts.adjustments];
+
+    const totals = reconcileTotals({
+      subtotal,
+      tax,
+      tip,
+      total,
+      items: items.map((item) => ({ lineTotal: item.price })),
+      adjustments,
+    });
 
     const payload = {
       merchantName: parsed.merchantName?.trim() || null,
-      merchantAddress: parsed.merchantAddress?.trim() || null,
-      purchaseDate: parsed.purchaseDate ? safeDate(parsed.purchaseDate) : null,
+      purchaseDate: parsed.purchaseDateRaw ? safeDate(parsed.purchaseDateRaw) : null,
       currency: (parsed.currency?.trim() || "USD") as string,
       items,
+      adjustments,
       totals,
-      notes: parsed.notes?.trim() || null,
+      notes: Array.isArray(parsed.unparsedLines) && parsed.unparsedLines.length > 0
+        ? `Unparsed lines: ${parsed.unparsedLines.join(" | ")}`
+        : null,
       raw: {
         userId: body.userId ?? null,
         model: "meta-llama/llama-4-scout-17b-16e-instruct",
@@ -290,9 +529,24 @@ Rules:
       },
     };
 
+    logPerf("request_complete", {
+      success: true,
+      transport: transportUsed,
+      fallback: usedFallback,
+      fallback_reason: fallbackReason,
+      duration_ms: Date.now() - requestStartedAt,
+      item_count: items.length,
+    });
     return json(200, { success: true, data: payload });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
+    logPerf("request_complete", {
+      success: false,
+      transport: null,
+      fallback: false,
+      fallback_reason: "handler_exception",
+      duration_ms: 0,
+    });
     return json(500, { success: false, error: msg });
   }
 });

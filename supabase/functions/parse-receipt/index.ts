@@ -55,6 +55,7 @@ type ParsedReceiptResponse = {
     purchaseDate: string | null;
     currency: string;
     items: { name: string; price: number; quantity: number }[];
+    adjustments: { type: "discount" | "service_fee" | "fee" | "other"; label: string; amount: number }[];
     totals: { subtotal: number; tax: number; tip: number; total: number; itemsTotal: number };
     notes: string | null;
     raw: { userId: string | null; model: string; imagePath: string };
@@ -127,6 +128,34 @@ function buildUserContent(schemaText: string, transport: "data-url" | "signed-ur
   ] as any;
 }
 
+function isLikelyImageTransportError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  const normalized = message.toLowerCase();
+
+  return [
+    "image",
+    "url",
+    "fetch",
+    "download",
+    "unsupported",
+    "invalid",
+    "timeout",
+    "timed out",
+    "connection",
+    "redirect",
+    "403",
+    "404",
+    "415",
+  ].some((token) => normalized.includes(token));
+}
+
+function logPerf(event: string, details: Record<string, string | number | boolean | null>) {
+  const suffix = Object.entries(details)
+    .map(([key, value]) => `${key}=${value}`)
+    .join(" ");
+  console.log(`[perf][parse-receipt] ${event}${suffix ? ` ${suffix}` : ""}`);
+}
+
 /** Handler */
 Deno.serve(async (req) => {
   try {
@@ -147,19 +176,9 @@ Deno.serve(async (req) => {
       return json(400, { success: false, error: "Unable to sign image URL" });
     }
     const signedUrl = signed.data.signedUrl;
+    const requestStartedAt = Date.now();
 
-    // 2) Fetch image
-    const imgRes = await fetch(signedUrl, { redirect: "follow" });
-    if (!imgRes.ok) {
-      return json(400, { success: false, error: `Failed to fetch image (${imgRes.status})` });
-    }
-    const arrayBuffer = await imgRes.arrayBuffer();
-
-    // 3) Base64 encode
-    const u8 = new Uint8Array(arrayBuffer);
-    const b64 = bytesToBase64(u8);
-
-    // 4) Schema prompt
+    // 2) Schema prompt
     const schemaText = `
 Return ONLY a valid JSON object with this shape:
 
@@ -187,40 +206,8 @@ Rules:
 - If quantity is unclear, default to 1.
 `;
 
-    // 5) Groq Chat: try DATA-URL first
-    let completion = await groq.chat.completions.create({
-      model: "meta-llama/llama-4-scout-17b-16e-instruct",
-      temperature: 0,
-      max_tokens: 700,
-      messages: [
-        {
-          role: "system",
-          content: "You are a strict receipt parsing assistant. Always return valid JSON only, matching the requested shape.",
-        },
-        {
-          role: "user",
-          content: buildUserContent(schemaText, "data-url", b64),
-        },
-      ],
-    });
-
-    let content = completion?.choices?.[0]?.message?.content || "";
-
-    // If empty / invalid JSON, retry ONCE with SIGNED URL
-    const needRetry =
-      !content ||
-      typeof content !== "string" ||
-      (() => {
-        try {
-          JSON.parse(content);
-          return false;
-        } catch {
-          return true;
-        }
-      })();
-
-    if (needRetry) {
-      completion = await groq.chat.completions.create({
+    const createCompletion = async (transport: "data-url" | "signed-url", value: string) =>
+      groq.chat.completions.create({
         model: "meta-llama/llama-4-scout-17b-16e-instruct",
         temperature: 0,
         max_tokens: 700,
@@ -232,14 +219,87 @@ Rules:
           },
           {
             role: "user",
-            content: buildUserContent(schemaText, "signed-url", signedUrl),
+            content: buildUserContent(schemaText, transport, value),
           },
         ],
       });
+
+    // 3) Fetch + encode once so this baseline uses DATA URL first.
+    const imgRes = await fetch(signedUrl, { redirect: "follow" });
+    if (!imgRes.ok) {
+      return json(400, { success: false, error: `Failed to fetch image (${imgRes.status})` });
+    }
+    const arrayBuffer = await imgRes.arrayBuffer();
+    const u8 = new Uint8Array(arrayBuffer);
+    const b64 = bytesToBase64(u8);
+
+    // 4) Groq Chat: try DATA URL first
+    let completion;
+    let content = "";
+    let transportUsed: "signed-url" | "data-url" = "data-url";
+    let usedFallback = false;
+    let fallbackReason: string | null = null;
+
+    try {
+      const modelStartedAt = Date.now();
+      completion = await createCompletion("data-url", b64);
       content = completion?.choices?.[0]?.message?.content || "";
+      logPerf("model_attempt", {
+        transport: "data-url",
+        duration_ms: Date.now() - modelStartedAt,
+        content_length: typeof content === "string" ? content.length : 0,
+      });
+    } catch (error) {
+      if (!isLikelyImageTransportError(error)) {
+        logPerf("model_error", {
+          transport: "data-url",
+          reason: "non_transport_error",
+          duration_ms: Date.now() - requestStartedAt,
+        });
+        throw error;
+      }
+
+      // Fall back to signed URL when the data URL transport likely failed.
+      usedFallback = true;
+      fallbackReason = "data_url_transport_error";
+      transportUsed = "signed-url";
+      const fallbackStartedAt = Date.now();
+      completion = await createCompletion("signed-url", signedUrl);
+      content = completion?.choices?.[0]?.message?.content || "";
+      logPerf("model_attempt", {
+        transport: "signed-url",
+        duration_ms: Date.now() - fallbackStartedAt,
+        content_length: typeof content === "string" ? content.length : 0,
+        fallback: true,
+        fallback_reason: fallbackReason,
+      });
+    }
+
+    // If data URL returns empty content, retry once with signed URL.
+    if (!content || typeof content !== "string") {
+      usedFallback = true;
+      fallbackReason = "empty_content";
+      transportUsed = "signed-url";
+      const fallbackStartedAt = Date.now();
+      completion = await createCompletion("signed-url", signedUrl);
+      content = completion?.choices?.[0]?.message?.content || "";
+      logPerf("model_attempt", {
+        transport: "signed-url",
+        duration_ms: Date.now() - fallbackStartedAt,
+        content_length: typeof content === "string" ? content.length : 0,
+        fallback: true,
+        fallback_reason: fallbackReason,
+      });
     }
 
     if (!content || typeof content !== "string") {
+      logPerf("request_complete", {
+        success: false,
+        transport: transportUsed,
+        fallback: usedFallback,
+        fallback_reason: fallbackReason,
+        duration_ms: Date.now() - requestStartedAt,
+      });
       return json(502, { success: false, error: "Empty content from model" });
     }
 
@@ -247,10 +307,25 @@ Rules:
     try {
       parsed = JSON.parse(content) as ModelExtract;
     } catch {
+      logPerf("request_complete", {
+        success: false,
+        transport: transportUsed,
+        fallback: usedFallback,
+        fallback_reason: fallbackReason,
+        duration_ms: Date.now() - requestStartedAt,
+      });
       return json(502, { success: false, error: "Model did not return valid JSON" });
     }
 
     if (!parsed.isValidReceipt) {
+      logPerf("request_complete", {
+        success: false,
+        transport: transportUsed,
+        fallback: usedFallback,
+        fallback_reason: fallbackReason,
+        duration_ms: Date.now() - requestStartedAt,
+        valid_receipt: false,
+      });
       return json(200, {
         success: false,
         error: parsed.notes || "Image did not contain a valid receipt.",
@@ -281,6 +356,7 @@ Rules:
       purchaseDate: parsed.purchaseDate ? safeDate(parsed.purchaseDate) : null,
       currency: (parsed.currency?.trim() || "USD") as string,
       items,
+      adjustments: [],
       totals,
       notes: parsed.notes?.trim() || null,
       raw: {
@@ -290,9 +366,24 @@ Rules:
       },
     };
 
+    logPerf("request_complete", {
+      success: true,
+      transport: transportUsed,
+      fallback: usedFallback,
+      fallback_reason: fallbackReason,
+      duration_ms: Date.now() - requestStartedAt,
+      item_count: items.length,
+    });
     return json(200, { success: true, data: payload });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
+    logPerf("request_complete", {
+      success: false,
+      transport: null,
+      fallback: false,
+      fallback_reason: "handler_exception",
+      duration_ms: 0,
+    });
     return json(500, { success: false, error: msg });
   }
 });

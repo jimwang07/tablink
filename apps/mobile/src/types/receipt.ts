@@ -1,15 +1,24 @@
+export type ParsedReceiptAdjustmentType = 'discount' | 'service_fee' | 'fee' | 'other';
+
+export type ParsedReceiptAdjustment = {
+  type: ParsedReceiptAdjustmentType;
+  label: string;
+  amount: number;
+};
+
 export type ParsedReceipt = {
   merchantName: string | null;
   merchantAddress: string | null;
   purchaseDate: string | null;
   currency: string;
   items: ParsedReceiptItem[];
+  adjustments: ParsedReceiptAdjustment[];
   totals: ReceiptTotals;
   notes: string | null;
   raw: {
     userId: string | null;
     model: string;
-    imageUrl: string;
+    imagePath: string;
   };
 };
 
@@ -46,9 +55,9 @@ export type Receipt = {
   tax_cents: number;
   tip_cents: number;
   total_cents: number;
+  raw_payload?: ParsedReceipt | null;
   status: ReceiptStatus;
   celebration_shown: boolean;
   created_at: string;
   updated_at: string;
 };
-

@@ -36,7 +36,20 @@ type Receipt = {
   tax_cents: number;
   tip_cents: number;
   total_cents: number;
+  raw_payload: {
+    adjustments?: Array<{
+      type: 'discount' | 'fee' | 'other';
+      label: string;
+      amount: number;
+    }>;
+  } | null;
   status: string;
+};
+
+type ReceiptAdjustment = {
+  type: 'discount' | 'fee' | 'other';
+  label: string;
+  amount: number;
 };
 
 type ItemClaim = {
@@ -81,6 +94,16 @@ function formatDate(dateString: string | null): string {
   if (!dateString) return '';
   const date = new Date(dateString);
   return date.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+}
+
+function formatAdjustmentLabel(adjustment: ReceiptAdjustment): string {
+  const trimmed = adjustment.label.trim();
+  return trimmed || adjustment.type.replace(/_/g, ' ');
+}
+
+function getSignedAdjustmentCents(adjustment: ReceiptAdjustment): number {
+  const amountCents = Math.round(Math.abs(adjustment.amount) * 100);
+  return adjustment.type === 'discount' ? -amountCents : amountCents;
 }
 
 function pickUniqueEmoji(usedEmojis: string[]): string {
@@ -477,9 +500,20 @@ export function ClaimPageClient({
 
   const itemsTotal = items.reduce((sum, item) => sum + item.price_cents, 0);
   const myShare = itemsTotal > 0 ? myTotal / itemsTotal : 0;
+  const parsedAdjustments = receipt.raw_payload?.adjustments ?? [];
+  const adjustmentBreakdown = parsedAdjustments.map((adjustment) => ({
+    ...adjustment,
+    signedCents: getSignedAdjustmentCents(adjustment),
+    myCents: Math.round(getSignedAdjustmentCents(adjustment) * myShare),
+  }));
   const myTax = Math.round(receipt.tax_cents * myShare);
   const myTip = Math.round(receipt.tip_cents * myShare);
-  const myGrandTotal = myTotal + myTax + myTip;
+  const myAdjustments = adjustmentBreakdown.reduce((sum, adjustment) => sum + adjustment.myCents, 0);
+  const totalExtrasCents = receipt.total_cents - receipt.subtotal_cents;
+  const myExtrasFallback = Math.round(totalExtrasCents * myShare);
+  const myKnownExtras = myTax + myTip + myAdjustments;
+  const myUnknownExtras = myExtrasFallback - myKnownExtras;
+  const myGrandTotal = myTotal + myKnownExtras + myUnknownExtras;
 
   const handleMarkPaid = useCallback(
     async (method: string) => {
@@ -624,8 +658,8 @@ export function ClaimPageClient({
                 <span className="tablink-detail-value">{items.length}</span>
               </div>
               <div className="tablink-detail-row">
-                <span className="tablink-detail-label">Tax + Tip</span>
-                <span className="tablink-detail-value">{formatCents(receipt.tax_cents + receipt.tip_cents)}</span>
+                <span className="tablink-detail-label">Extras</span>
+                <span className="tablink-detail-value">{formatCents(receipt.total_cents - receipt.subtotal_cents)}</span>
               </div>
             </div>
           </section>
@@ -753,8 +787,8 @@ export function ClaimPageClient({
               <span className="tablink-detail-value">{formatCents(receipt.subtotal_cents)}</span>
             </div>
             <div className="tablink-detail-row">
-              <span className="tablink-detail-label">Tax + Tip</span>
-              <span className="tablink-detail-value">{formatCents(receipt.tax_cents + receipt.tip_cents)}</span>
+              <span className="tablink-detail-label">Extras</span>
+              <span className="tablink-detail-value">{formatCents(receipt.total_cents - receipt.subtotal_cents)}</span>
             </div>
           </div>
         </section>
@@ -879,6 +913,18 @@ export function ClaimPageClient({
               <div className="tablink-total-line">
                 <span>Tip (Proportional)</span>
                 <span>{formatCents(myTip)}</span>
+              </div>
+            ) : null}
+            {adjustmentBreakdown.map((adjustment) => (
+              <div key={`${adjustment.type}-${adjustment.label}`} className="tablink-total-line">
+                <span>{formatAdjustmentLabel(adjustment)} (Proportional)</span>
+                <span>{formatCents(adjustment.myCents)}</span>
+              </div>
+            ))}
+            {myUnknownExtras !== 0 ? (
+              <div className="tablink-total-line">
+                <span>Other Extras (Proportional)</span>
+                <span>{formatCents(myUnknownExtras)}</span>
               </div>
             ) : null}
             <div className="tablink-total-grand">

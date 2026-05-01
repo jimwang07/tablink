@@ -24,7 +24,7 @@ import { useAuth } from '@/src/hooks/useAuth';
 import { getOrCreateShareLink, saveReceipt, updateReceipt } from '@/src/services/receiptService';
 import { getSupabaseClient } from '@/src/lib/supabaseClient';
 import { colors } from '@/src/theme';
-import type { ParsedReceiptItem } from '@/src/types/receipt';
+import type { ParsedReceiptAdjustment, ParsedReceiptItem } from '@/src/types/receipt';
 
 const TIP_PRESET_PERCENTS = [15, 18, 20] as const;
 
@@ -33,6 +33,13 @@ type EditableItem = {
   name: string;
   price: string;
   quantity: string;
+};
+
+type EditableAdjustment = {
+  key: string;
+  type: ParsedReceiptAdjustment['type'];
+  label: string;
+  amount: string;
 };
 
 function createItemKey() {
@@ -103,6 +110,31 @@ function buildEditableItems(items: ParsedReceiptItem[]): EditableItem[] {
   }));
 }
 
+function buildEditableAdjustments(adjustments: ParsedReceiptAdjustment[]): EditableAdjustment[] {
+  return adjustments
+    .filter((adjustment) => adjustment.type !== 'discount')
+    .map((adjustment, index) => ({
+    key: `${adjustment.type}-${adjustment.label}-${index}`,
+    type: adjustment.type,
+    label: formatAdjustmentLabel(adjustment),
+    amount: toCurrencyString(Math.abs(adjustment.amount)),
+    }));
+}
+
+function getSignedAdjustmentAmount(adjustment: ParsedReceiptAdjustment): number {
+  return adjustment.type === 'discount' ? -Math.abs(adjustment.amount) : adjustment.amount;
+}
+
+function formatAdjustmentLabel(adjustment: ParsedReceiptAdjustment): string {
+  return adjustment.label.trim() || adjustment.type.replace(/_/g, ' ');
+}
+
+function getDiscountTotal(adjustments: ParsedReceiptAdjustment[]): number {
+  return adjustments
+    .filter((adjustment) => adjustment.type === 'discount')
+    .reduce((sum, adjustment) => sum + Math.abs(adjustment.amount), 0);
+}
+
 export default function ReceiptReviewScreen() {
   const router = useRouter();
   const { pendingReceipt, setPendingReceipt } = usePendingReceipt();
@@ -158,9 +190,14 @@ export default function ReceiptReviewScreen() {
   const [merchantName, setMerchantName] = useState(parsed?.merchantName ?? '');
   const [taxInput, setTaxInput] = useState(toCurrencyString(parsed?.totals.tax ?? 0));
   const [tipInput, setTipInput] = useState(toCurrencyString(parsed?.totals.tip ?? 0));
+  const [showExtraCharges, setShowExtraCharges] = useState(getDiscountTotal(parsed?.adjustments ?? []) > 0);
   const [customTipPercentInput, setCustomTipPercentInput] = useState('');
   const [editableItems, setEditableItems] = useState<EditableItem[]>(() =>
     buildEditableItems(parsed?.items ?? [])
+  );
+  const [discountInput, setDiscountInput] = useState(toCurrencyString(getDiscountTotal(parsed?.adjustments ?? [])));
+  const [editableAdjustments, setEditableAdjustments] = useState<EditableAdjustment[]>(() =>
+    buildEditableAdjustments(parsed?.adjustments ?? [])
   );
 
   // Computed values (price is already the line total, not unit price)
@@ -171,9 +208,20 @@ export default function ReceiptReviewScreen() {
     }, 0);
   }, [editableItems]);
 
+  const adjustmentsTotal = useMemo(() => {
+    const otherAdjustmentsTotal = editableAdjustments.reduce((sum, adjustment) => {
+      const amount = parseCurrencyInput(adjustment.amount);
+      return sum + (adjustment.type === 'discount' ? -amount : amount);
+    }, 0);
+    return otherAdjustmentsTotal - parseCurrencyInput(discountInput);
+  }, [discountInput, editableAdjustments]);
   const taxAmount = useMemo(() => parseCurrencyInput(taxInput), [taxInput]);
   const tipAmount = useMemo(() => parseCurrencyInput(tipInput), [tipInput]);
-  const grandTotal = useMemo(() => subtotal + taxAmount + tipAmount, [subtotal, taxAmount, tipAmount]);
+  const discountAmount = useMemo(() => parseCurrencyInput(discountInput), [discountInput]);
+  const grandTotal = useMemo(
+    () => subtotal + adjustmentsTotal + taxAmount + tipAmount,
+    [subtotal, adjustmentsTotal, taxAmount, tipAmount]
+  );
   const currentTipPercent = useMemo(() => {
     if (subtotal <= 0 || tipAmount <= 0) return 0;
     return Number(((tipAmount / subtotal) * 100).toFixed(2));
@@ -213,6 +261,12 @@ export default function ReceiptReviewScreen() {
     );
   }, []);
 
+  const updateAdjustmentAmount = useCallback((key: string, value: string) => {
+    setEditableAdjustments((current) =>
+      current.map((adjustment) => (adjustment.key === key ? { ...adjustment, amount: value } : adjustment))
+    );
+  }, []);
+
   const removeItem = useCallback((key: string) => {
     setEditableItems((current) => {
       const next = current.filter((item) => item.key !== key);
@@ -235,11 +289,24 @@ export default function ReceiptReviewScreen() {
       price: parseCurrencyInput(item.price),
       quantity: parseQuantityInput(item.quantity),
     }));
+    const adjustments = editableAdjustments.map((adjustment) => ({
+      type: adjustment.type,
+      label: adjustment.label.trim() || formatAdjustmentLabel({ type: adjustment.type, label: '', amount: 0 }),
+      amount: parseCurrencyInput(adjustment.amount),
+    }));
+    if (discountAmount > 0) {
+      adjustments.unshift({
+        type: 'discount',
+        label: 'Discounts',
+        amount: discountAmount,
+      });
+    }
 
     return {
       ...parsed,
       merchantName: merchantName.trim() || null,
       items,
+      adjustments,
       totals: {
         ...parsed.totals,
         subtotal,
@@ -249,7 +316,7 @@ export default function ReceiptReviewScreen() {
         itemsTotal: subtotal,
       },
     };
-  }, [parsed, editableItems, merchantName, subtotal, taxAmount, tipAmount, grandTotal]);
+  }, [parsed, editableItems, editableAdjustments, discountInput, merchantName, subtotal, taxAmount, tipAmount, grandTotal]);
 
   const closeReviewFlow = useCallback(
     (onComplete?: () => void) => {
@@ -611,6 +678,42 @@ export default function ReceiptReviewScreen() {
               </View>
             </View>
           </View>
+          {(showExtraCharges || discountAmount > 0 || editableAdjustments.length > 0) && (
+            <>
+              <View style={s.summaryRow}>
+                <Text style={s.summaryLabel}>Discounts</Text>
+                <TextInput
+                  value={discountInput}
+                  onChangeText={setDiscountInput}
+                  placeholder="0.00"
+                  placeholderTextColor={placeholderColor}
+                  keyboardType="decimal-pad"
+                  style={[s.textInput, s.summaryInput]}
+                />
+              </View>
+              {editableAdjustments.map((adjustment) => (
+                <View key={adjustment.key} style={s.summaryRow}>
+                  <Text style={s.summaryLabel}>{adjustment.label}</Text>
+                  <TextInput
+                    value={adjustment.amount}
+                    onChangeText={(value) => updateAdjustmentAmount(adjustment.key, value)}
+                    placeholder="0.00"
+                    placeholderTextColor={placeholderColor}
+                    keyboardType="decimal-pad"
+                    style={[s.textInput, s.summaryInput]}
+                  />
+                </View>
+              ))}
+            </>
+          )}
+          {!showExtraCharges && discountAmount <= 0 && editableAdjustments.length === 0 ? (
+            <Pressable
+              style={({ pressed }) => [s.extraChargesButton, pressed && s.pressed]}
+              onPress={() => setShowExtraCharges(true)}
+            >
+              <Text style={s.extraChargesButtonText}>+ Add discount or fee</Text>
+            </Pressable>
+          ) : null}
           <View style={[s.summaryRow, s.totalRow]}>
             <Text style={s.totalLabel}>Total</Text>
             <Text style={s.totalValue}>{formatCurrency(grandTotal)}</Text>
@@ -812,6 +915,17 @@ const s = StyleSheet.create({
   addButtonText: {
     color: colors.primary,
     fontSize: 14,
+    fontWeight: '600',
+  },
+  extraChargesButton: {
+    alignSelf: 'flex-start',
+    marginTop: 4,
+    marginBottom: 4,
+    paddingVertical: 4,
+  },
+  extraChargesButtonText: {
+    color: colors.textSecondary,
+    fontSize: 13,
     fontWeight: '600',
   },
 

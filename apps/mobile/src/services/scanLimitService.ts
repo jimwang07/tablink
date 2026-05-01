@@ -1,7 +1,7 @@
 import { getSupabaseClient } from '@/src/lib/supabaseClient';
 import Purchases from 'react-native-purchases';
 
-const FREE_SCAN_LIMIT = 15;
+const FREE_SCAN_LIMIT = 300;
 const ENTITLEMENT_ID = 'Tablink Premium';
 
 export type ScanUsage = {

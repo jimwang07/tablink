@@ -73,7 +73,7 @@ function calculateProgress(receipt: ReceiptWithDetails): ProgressData {
     typeof receipt.subtotal_cents === 'number' && receipt.subtotal_cents > 0
       ? receipt.subtotal_cents
       : items.reduce((sum, item) => sum + item.price_cents, 0);
-  const taxAndTipCents = (receipt.tax_cents || 0) + (receipt.tip_cents || 0);
+  const extrasCents = (receipt.total_cents || 0) - receiptSubtotalCents;
 
   const participantPaymentStatus = new Map<string, string>();
   for (const p of participants) {
@@ -95,14 +95,14 @@ function calculateProgress(receipt: ReceiptWithDetails): ProgressData {
 
   const claimedExtrasCents =
     receiptSubtotalCents > 0
-      ? Math.round((taxAndTipCents * claimedSubtotalCents) / receiptSubtotalCents)
+      ? Math.round((extrasCents * claimedSubtotalCents) / receiptSubtotalCents)
       : 0;
   const paidExtrasCents =
     receiptSubtotalCents > 0
-      ? Math.round((taxAndTipCents * paidSubtotalCents) / receiptSubtotalCents)
+      ? Math.round((extrasCents * paidSubtotalCents) / receiptSubtotalCents)
       : 0;
 
-  const totalCents = receipt.total_cents || receiptSubtotalCents + taxAndTipCents;
+  const totalCents = receipt.total_cents || receiptSubtotalCents + extrasCents;
   const claimedCents = claimedSubtotalCents + claimedExtrasCents;
   const paidCents = paidSubtotalCents + paidExtrasCents;
 

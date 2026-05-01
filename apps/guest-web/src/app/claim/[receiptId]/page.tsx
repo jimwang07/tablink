@@ -17,6 +17,13 @@ type Receipt = {
   tax_cents: number;
   tip_cents: number;
   total_cents: number;
+  raw_payload: {
+    adjustments?: Array<{
+      type: 'discount' | 'fee' | 'other';
+      label: string;
+      amount: number;
+    }>;
+  } | null;
   status: string;
   owner_id: string;
 };
@@ -86,7 +93,7 @@ async function getReceiptData(receiptId: string) {
   // Fetch receipt
   const { data: receipt, error: receiptError } = await supabase
     .from('receipts')
-    .select('id, merchant_name, receipt_date, subtotal_cents, tax_cents, tip_cents, total_cents, status, owner_id')
+    .select('id, merchant_name, receipt_date, subtotal_cents, tax_cents, tip_cents, total_cents, raw_payload, status, owner_id')
     .eq('id', receiptId)
     .single();
 
