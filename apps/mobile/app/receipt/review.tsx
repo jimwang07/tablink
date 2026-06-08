@@ -8,7 +8,6 @@ import {
   Platform,
   Pressable,
   ScrollView,
-  Share,
   StyleSheet,
   Text,
   TextInput,
@@ -20,9 +19,6 @@ import Animated, { FadeInDown, FadeOut, LinearTransition } from 'react-native-re
 import { Ionicons } from '@expo/vector-icons';
 
 import { usePendingReceipt } from '@/src/hooks/usePendingReceipt';
-import { useAuth } from '@/src/hooks/useAuth';
-import { getOrCreateShareLink, saveReceipt, updateReceipt } from '@/src/services/receiptService';
-import { getSupabaseClient } from '@/src/lib/supabaseClient';
 import { colors } from '@/src/theme';
 import type { ParsedReceiptAdjustment, ParsedReceiptItem } from '@/src/types/receipt';
 
@@ -121,10 +117,6 @@ function buildEditableAdjustments(adjustments: ParsedReceiptAdjustment[]): Edita
     }));
 }
 
-function getSignedAdjustmentAmount(adjustment: ParsedReceiptAdjustment): number {
-  return adjustment.type === 'discount' ? -Math.abs(adjustment.amount) : adjustment.amount;
-}
-
 function formatAdjustmentLabel(adjustment: ParsedReceiptAdjustment): string {
   return adjustment.label.trim() || adjustment.type.replace(/_/g, ' ');
 }
@@ -138,44 +130,8 @@ function getDiscountTotal(adjustments: ParsedReceiptAdjustment[]): number {
 export default function ReceiptReviewScreen() {
   const router = useRouter();
   const { pendingReceipt, setPendingReceipt } = usePendingReceipt();
-  const { session } = useAuth();
-  const [isSaving, setIsSaving] = useState(false);
-  const [isSharing, setIsSharing] = useState(false);
   const [isImageExpanded, setIsImageExpanded] = useState(false);
-  const [showShareSuccess, setShowShareSuccess] = useState(false);
-  const [sharedReceiptId, setSharedReceiptId] = useState<string | null>(null);
-  const [hasPaymentMethods, setHasPaymentMethods] = useState<boolean | null>(null);
   const isClosingRef = useRef(false);
-
-  // Check if user has payment methods set up
-  useEffect(() => {
-    async function checkPaymentMethods() {
-      if (!session?.user?.id) return;
-
-      const supabase = getSupabaseClient();
-      const { data } = await supabase
-        .from('user_profiles')
-        .select('venmo_handle, cashapp_handle, paypal_handle, zelle_identifier')
-        .eq('user_id', session.user.id)
-        .single();
-
-      if (data) {
-        const hasAny = !!(
-          data.venmo_handle ||
-          data.cashapp_handle ||
-          data.paypal_handle ||
-          data.zelle_identifier
-        );
-        setHasPaymentMethods(hasAny);
-      } else {
-        setHasPaymentMethods(false);
-      }
-    }
-
-    checkPaymentMethods();
-  }, [session?.user?.id]);
-
-  const TABLINK_BASE_URL = process.env.EXPO_PUBLIC_TABLINK_URL;
 
   useEffect(() => {
     if (!pendingReceipt && !isClosingRef.current) {
@@ -185,6 +141,7 @@ export default function ReceiptReviewScreen() {
 
   const parsed = pendingReceipt?.parsed;
   const imageUri = pendingReceipt?.localUri || pendingReceipt?.publicUrl || '';
+  const uploadedAt = pendingReceipt?.uploadedAt ?? null;
 
   // Editable state
   const [merchantName, setMerchantName] = useState(parsed?.merchantName ?? '');
@@ -316,7 +273,7 @@ export default function ReceiptReviewScreen() {
         itemsTotal: subtotal,
       },
     };
-  }, [parsed, editableItems, editableAdjustments, discountInput, merchantName, subtotal, taxAmount, tipAmount, grandTotal]);
+  }, [parsed, editableItems, editableAdjustments, discountAmount, merchantName, subtotal, taxAmount, tipAmount, grandTotal]);
 
   const closeReviewFlow = useCallback(
     (onComplete?: () => void) => {
@@ -331,146 +288,19 @@ export default function ReceiptReviewScreen() {
     [router, setPendingReceipt]
   );
 
-  const handleSaveDraft = useCallback(async () => {
-    if (!pendingReceipt || !session?.user?.id) {
-      Alert.alert('Error', 'You must be signed in to save a receipt.');
+  const handleConfirmReceipt = useCallback(() => {
+    const updatedParsed = buildUpdatedParsed();
+    if (!updatedParsed) return;
+    if (updatedParsed.items.length === 0 || updatedParsed.items.every((item) => item.price <= 0)) {
+      Alert.alert('Add Items', 'Add at least one receipt item before continuing.');
       return;
     }
-
-    setIsSaving(true);
-    try {
-      const updatedParsed = buildUpdatedParsed();
-      if (!updatedParsed) return;
-
-      const updatedReceipt = { ...pendingReceipt, parsed: updatedParsed };
-      const result = await saveReceipt(updatedReceipt, session.user.id);
-
-      if (!result.success) {
-        Alert.alert('Error', result.error);
-        return;
-      }
-
-      closeReviewFlow();
-    } catch (error) {
-      console.error('[review] Failed to save draft:', error);
-      Alert.alert('Error', 'Failed to save receipt. Please try again.');
-    } finally {
-      setIsSaving(false);
+    if (pendingReceipt) {
+      setPendingReceipt({ ...pendingReceipt, parsed: updatedParsed });
     }
-  }, [buildUpdatedParsed, closeReviewFlow, pendingReceipt, session]);
-
-  const handleShareReceipt = useCallback(async () => {
-    if (!pendingReceipt || !session?.user?.id) {
-      Alert.alert('Error', 'You must be signed in to share a receipt.');
-      return;
-    }
-
-    // Check if user has payment methods set up
-    if (!hasPaymentMethods) {
-      Alert.alert(
-        'Set Up Payment Methods',
-        'Before sharing a receipt, add your payment info (Venmo, CashApp, etc.) so guests can pay you.',
-        [
-          { text: 'Cancel', style: 'cancel' },
-          {
-            text: 'Go to Settings',
-            onPress: async () => {
-              // Auto-save receipt as draft before navigating to settings
-              try {
-                const updatedParsed = buildUpdatedParsed();
-                if (updatedParsed) {
-                  const updatedReceipt = { ...pendingReceipt, parsed: updatedParsed };
-                  const result = await saveReceipt(updatedReceipt, session.user.id);
-                  if (result.success) {
-                    closeReviewFlow(() => {
-                      Alert.alert(
-                        'Receipt Saved',
-                        'Your receipt has been saved as a draft. You can find it on the home screen after setting up your payment info.',
-                        [{ text: 'OK', onPress: () => router.push('/(host)/settings') }]
-                      );
-                    });
-                    return;
-                  }
-                }
-              } catch (err) {
-                console.error('[review] Failed to auto-save receipt:', err);
-              }
-              router.push('/(host)/settings');
-            },
-          },
-        ]
-      );
-      return;
-    }
-
-    setIsSharing(true);
-    try {
-      const updatedParsed = buildUpdatedParsed();
-      if (!updatedParsed) return;
-      if (!TABLINK_BASE_URL) {
-        Alert.alert('Configuration Error', 'Missing Tablink share URL configuration.');
-        return;
-      }
-
-      // Save the receipt first
-      const updatedReceipt = { ...pendingReceipt, parsed: updatedParsed };
-      const result = await saveReceipt(updatedReceipt, session.user.id);
-
-      if (!result.success) {
-        Alert.alert('Error', result.error);
-        return;
-      }
-
-      // Update status to shared
-      const updateResult = await updateReceipt(result.receiptId, { status: 'shared' });
-      if (!updateResult.success) {
-        Alert.alert('Error', updateResult.error || 'Failed to share receipt');
-        return;
-      }
-
-      const linkResult = await getOrCreateShareLink(result.receiptId);
-      if (!linkResult.success) {
-        Alert.alert('Error', linkResult.error || 'Failed to generate share link');
-        return;
-      }
-
-      // Generate and share the tablink
-      const tablinkUrl = `${TABLINK_BASE_URL}/claim/${linkResult.shortCode}`;
-      const merchantDisplay = updatedParsed.merchantName ? ` (${updatedParsed.merchantName})` : '';
-
-      await Share.share({
-        message: `Split the bill with me!${merchantDisplay}\n${tablinkUrl}`,
-        url: tablinkUrl,
-        title: 'Share Tablink',
-      });
-
-      // Store the receipt ID and show success modal
-      setSharedReceiptId(result.receiptId);
-      setShowShareSuccess(true);
-    } catch (error) {
-      console.error('[review] Failed to share receipt:', error);
-      Alert.alert('Error', 'Failed to share receipt. Please try again.');
-    } finally {
-      setIsSharing(false);
-    }
-  }, [buildUpdatedParsed, closeReviewFlow, pendingReceipt, session, TABLINK_BASE_URL, hasPaymentMethods, router]);
-
-  const handleViewReceipt = useCallback(() => {
-    setShowShareSuccess(false);
-    if (sharedReceiptId) {
-      closeReviewFlow(() => {
-        router.push({
-          pathname: '/receipt/[id]',
-          params: { id: sharedReceiptId },
-        });
-      });
-    }
-  }, [closeReviewFlow, router, sharedReceiptId]);
-
-  const handleGoHome = useCallback(() => {
-    setShowShareSuccess(false);
-    closeReviewFlow();
-  }, [closeReviewFlow]);
+    Keyboard.dismiss();
+    router.push('/receipt/your-items');
+  }, [buildUpdatedParsed, pendingReceipt, router, setPendingReceipt]);
 
   const handleDiscard = useCallback(() => {
     Alert.alert(
@@ -515,242 +345,222 @@ export default function ReceiptReviewScreen() {
             <Text style={s.title} numberOfLines={1}>
               {merchantName || 'New Receipt'}
             </Text>
-            <Text style={s.subtitle}>{formatDate(parsed.purchaseDate)}</Text>
+            <Text style={s.subtitle}>{formatDate(uploadedAt)}</Text>
           </View>
           <Text style={[s.statusLabel, { color: colors.primary }]}>NEW</Text>
         </Animated.View>
 
         {/* Receipt Image */}
-        {imageUri ? (
-          <Animated.View entering={FadeInDown.delay(50).duration(400)} style={s.imageCard}>
-            <Image source={{ uri: imageUri }} style={s.receiptImage} resizeMode="cover" />
-            <Pressable
-              style={({ pressed }) => [s.expandButton, pressed && s.pressed]}
-              onPress={() => setIsImageExpanded(true)}
-            >
-              <Text style={s.expandButtonText}>View full receipt</Text>
-            </Pressable>
-          </Animated.View>
-        ) : null}
+            {imageUri ? (
+              <Animated.View entering={FadeInDown.delay(50).duration(400)} style={s.imageCard}>
+                <Image source={{ uri: imageUri }} style={s.receiptImage} resizeMode="cover" />
+                <Pressable
+                  style={({ pressed }) => [s.expandButton, pressed && s.pressed]}
+                  onPress={() => setIsImageExpanded(true)}
+                >
+                  <Text style={s.expandButtonText}>View full receipt</Text>
+                </Pressable>
+              </Animated.View>
+            ) : null}
 
-        {/* Merchant */}
-        <Animated.View entering={FadeInDown.delay(100).duration(400)} style={s.section}>
-          <Text style={s.sectionLabel}>MERCHANT</Text>
-          <TextInput
-            value={merchantName}
-            onChangeText={setMerchantName}
-            placeholder="Add merchant name"
-            placeholderTextColor={placeholderColor}
-            style={s.textInput}
-          />
-        </Animated.View>
-
-        {/* Items */}
-        <Animated.View entering={FadeInDown.delay(150).duration(400)} style={s.section}>
-          <View style={s.cardHeader}>
-            <Text style={s.sectionLabel}>ITEMS</Text>
-            <Pressable onPress={addItem}>
-              <Text style={s.addButtonText}>+ Add item</Text>
-            </Pressable>
-          </View>
-          {editableItems.map((item) => (
-            <Animated.View
-              key={item.key}
-              style={s.itemWrapper}
-              exiting={FadeOut.duration(200)}
-              layout={LinearTransition.duration(200)}
-            >
-              <View style={s.swipeDeleteBehind} />
-              <Swipeable
-                overshootRight={false}
-                rightThreshold={60}
-                friction={2}
-                onSwipeableWillOpen={() => {
-                  Keyboard.dismiss();
-                }}
-                onSwipeableOpen={(direction) => {
-                  if (direction === 'right') {
-                    removeItem(item.key);
-                  }
-                }}
-                renderRightActions={() => (
-                  <View style={s.swipeDeleteButton}>
-                    <Ionicons name="trash" size={22} color="#fff" />
-                  </View>
-                )}
-              >
-                <View style={s.itemRow}>
-                  <View style={s.itemMainContent}>
-                    <View style={s.itemNameRow}>
-                      <TextInput
-                        value={item.name}
-                        onChangeText={(value) => updateItemField(item.key, 'name', value)}
-                        placeholder="Item name"
-                        placeholderTextColor={placeholderColor}
-                        style={s.itemNameInput}
-                      />
-                      <View style={s.itemQtyGroup}>
-                        <Text style={s.itemQtyPrefix}>×</Text>
-                        <TextInput
-                          value={item.quantity}
-                          onChangeText={(value) => updateItemField(item.key, 'quantity', value)}
-                          placeholder="1"
-                          placeholderTextColor={placeholderColor}
-                          keyboardType="decimal-pad"
-                          style={s.itemQtyInput}
-                        />
-                      </View>
-                    </View>
-                  </View>
-                  <TextInput
-                    value={item.price}
-                    onChangeText={(value) => updateItemField(item.key, 'price', value)}
-                    placeholder="0.00"
-                    placeholderTextColor={placeholderColor}
-                    keyboardType="decimal-pad"
-                    style={s.itemPriceInput}
-                  />
-                </View>
-              </Swipeable>
+            {/* Merchant */}
+            <Animated.View entering={FadeInDown.delay(100).duration(400)} style={s.section}>
+              <Text style={s.sectionLabel}>MERCHANT</Text>
+              <TextInput
+                value={merchantName}
+                onChangeText={setMerchantName}
+                placeholder="Add merchant name"
+                placeholderTextColor={placeholderColor}
+                style={s.textInput}
+              />
             </Animated.View>
-          ))}
-          <Text style={s.hint}>Swipe left to delete an item.</Text>
-        </Animated.View>
 
-        {/* Totals */}
-        <Animated.View entering={FadeInDown.delay(200).duration(400)} style={s.section}>
-          <Text style={s.sectionLabel}>TOTALS</Text>
-          <View style={s.summaryRow}>
-            <Text style={s.summaryLabel}>Items subtotal</Text>
-            <Text style={s.summaryValue}>{formatCurrency(subtotal)}</Text>
-          </View>
-          <View style={s.summaryRow}>
-            <Text style={s.summaryLabel}>Tax</Text>
-            <TextInput
-              value={taxInput}
-              onChangeText={setTaxInput}
-              placeholder="0.00"
-              placeholderTextColor={placeholderColor}
-              keyboardType="decimal-pad"
-              style={[s.textInput, s.summaryInput]}
-            />
-          </View>
-          <View style={s.summaryRow}>
-            <Text style={s.summaryLabel}>Tip</Text>
-            <TextInput
-              value={tipInput}
-              onChangeText={setTipInput}
-              placeholder="0.00"
-              placeholderTextColor={placeholderColor}
-              keyboardType="decimal-pad"
-              style={[s.textInput, s.summaryInput]}
-            />
-          </View>
-          <View style={s.tipControls}>
-            <View style={s.tipPresetRow}>
-              {TIP_PRESET_PERCENTS.map((percent) => {
-                const isActive = activeTipPreset === percent;
-                return (
-                  <Pressable
-                    key={percent}
-                    onPress={() => applyTipPercent(percent)}
-                    style={({ pressed }) => [
-                      s.tipPresetButton,
-                      isActive && s.tipPresetButtonActive,
-                      pressed && s.pressed,
-                    ]}
-                  >
-                    <Text style={[s.tipPresetText, isActive && s.tipPresetTextActive]}>{percent}%</Text>
-                  </Pressable>
-                );
-              })}
-              <View style={s.tipCustomButton}>
-                <Text style={s.tipPresetText}>Custom</Text>
-                <TextInput
-                  value={customTipPercentInput}
-                  onChangeText={handleCustomTipPercentChange}
-                  placeholder="0"
-                  placeholderTextColor={placeholderColor}
-                  keyboardType="decimal-pad"
-                  style={s.tipPercentInput}
-                />
-                <Text style={s.tipPresetText}>%</Text>
+            {/* Items */}
+            <Animated.View entering={FadeInDown.delay(150).duration(400)} style={s.section}>
+              <View style={s.cardHeader}>
+                <Text style={s.sectionLabel}>ITEMS</Text>
+                <Pressable onPress={addItem}>
+                  <Text style={s.addButtonText}>+ Add item</Text>
+                </Pressable>
               </View>
-            </View>
-          </View>
-          {(showExtraCharges || discountAmount > 0 || editableAdjustments.length > 0) && (
-            <>
+              <Text style={s.hint}>Swipe left to delete an item.</Text>
+              {editableItems.map((item) => (
+                <Animated.View
+                  key={item.key}
+                  style={s.itemWrapper}
+                  exiting={FadeOut.duration(200)}
+                  layout={LinearTransition.duration(200)}
+                >
+                  <View style={s.swipeDeleteBehind} />
+                  <Swipeable
+                    overshootRight={false}
+                    rightThreshold={60}
+                    friction={2}
+                    onSwipeableWillOpen={() => {
+                      Keyboard.dismiss();
+                    }}
+                    onSwipeableOpen={(direction) => {
+                      if (direction === 'right') {
+                        removeItem(item.key);
+                      }
+                    }}
+                    renderRightActions={() => (
+                      <View style={s.swipeDeleteButton}>
+                        <Ionicons name="trash" size={22} color="#fff" />
+                      </View>
+                    )}
+                  >
+                    <View style={s.itemRow}>
+                      <View style={s.itemMainContent}>
+                        <View style={s.itemNameRow}>
+                          <TextInput
+                            value={item.name}
+                            onChangeText={(value) => updateItemField(item.key, 'name', value)}
+                            placeholder="Item name"
+                            placeholderTextColor={placeholderColor}
+                            style={s.itemNameInput}
+                          />
+                          <View style={s.itemQtyGroup}>
+                            <Text style={s.itemQtyPrefix}>×</Text>
+                            <TextInput
+                              value={item.quantity}
+                              onChangeText={(value) => updateItemField(item.key, 'quantity', value)}
+                              placeholder="1"
+                              placeholderTextColor={placeholderColor}
+                              keyboardType="decimal-pad"
+                              style={s.itemQtyInput}
+                            />
+                          </View>
+                        </View>
+                      </View>
+                      <TextInput
+                        value={item.price}
+                        onChangeText={(value) => updateItemField(item.key, 'price', value)}
+                        placeholder="0.00"
+                        placeholderTextColor={placeholderColor}
+                        keyboardType="decimal-pad"
+                        style={s.itemPriceInput}
+                      />
+                    </View>
+                  </Swipeable>
+                </Animated.View>
+              ))}
+            </Animated.View>
+
+            {/* Totals */}
+            <Animated.View entering={FadeInDown.delay(200).duration(400)} style={s.section}>
+              <Text style={s.sectionLabel}>TOTALS</Text>
               <View style={s.summaryRow}>
-                <Text style={s.summaryLabel}>Discounts</Text>
+                <Text style={s.summaryLabel}>Items subtotal</Text>
+                <Text style={s.summaryValue}>{formatCurrency(subtotal)}</Text>
+              </View>
+              <View style={s.summaryRow}>
+                <Text style={s.summaryLabel}>Tax</Text>
                 <TextInput
-                  value={discountInput}
-                  onChangeText={setDiscountInput}
+                  value={taxInput}
+                  onChangeText={setTaxInput}
                   placeholder="0.00"
                   placeholderTextColor={placeholderColor}
                   keyboardType="decimal-pad"
                   style={[s.textInput, s.summaryInput]}
                 />
               </View>
-              {editableAdjustments.map((adjustment) => (
-                <View key={adjustment.key} style={s.summaryRow}>
-                  <Text style={s.summaryLabel}>{adjustment.label}</Text>
-                  <TextInput
-                    value={adjustment.amount}
-                    onChangeText={(value) => updateAdjustmentAmount(adjustment.key, value)}
-                    placeholder="0.00"
-                    placeholderTextColor={placeholderColor}
-                    keyboardType="decimal-pad"
-                    style={[s.textInput, s.summaryInput]}
-                  />
+              <View style={s.summaryRow}>
+                <Text style={s.summaryLabel}>Tip</Text>
+                <TextInput
+                  value={tipInput}
+                  onChangeText={setTipInput}
+                  placeholder="0.00"
+                  placeholderTextColor={placeholderColor}
+                  keyboardType="decimal-pad"
+                  style={[s.textInput, s.summaryInput]}
+                />
+              </View>
+              <View style={s.tipControls}>
+                <View style={s.tipPresetRow}>
+                  {TIP_PRESET_PERCENTS.map((percent) => {
+                    const isActive = activeTipPreset === percent;
+                    return (
+                      <Pressable
+                        key={percent}
+                        onPress={() => applyTipPercent(percent)}
+                        style={({ pressed }) => [
+                          s.tipPresetButton,
+                          isActive && s.tipPresetButtonActive,
+                          pressed && s.pressed,
+                        ]}
+                      >
+                        <Text style={[s.tipPresetText, isActive && s.tipPresetTextActive]}>{percent}%</Text>
+                      </Pressable>
+                    );
+                  })}
+                  <View style={s.tipCustomButton}>
+                    <Text style={s.tipPresetText}>Custom</Text>
+                    <TextInput
+                      value={customTipPercentInput}
+                      onChangeText={handleCustomTipPercentChange}
+                      placeholder="0"
+                      placeholderTextColor={placeholderColor}
+                      keyboardType="decimal-pad"
+                      style={s.tipPercentInput}
+                    />
+                    <Text style={s.tipPresetText}>%</Text>
+                  </View>
                 </View>
-              ))}
-            </>
-          )}
-          {!showExtraCharges && discountAmount <= 0 && editableAdjustments.length === 0 ? (
-            <Pressable
-              style={({ pressed }) => [s.extraChargesButton, pressed && s.pressed]}
-              onPress={() => setShowExtraCharges(true)}
-            >
-              <Text style={s.extraChargesButtonText}>+ Add discount or fee</Text>
-            </Pressable>
-          ) : null}
-          <View style={[s.summaryRow, s.totalRow]}>
-            <Text style={s.totalLabel}>Total</Text>
-            <Text style={s.totalValue}>{formatCurrency(grandTotal)}</Text>
-          </View>
-        </Animated.View>
+              </View>
+              {(showExtraCharges || discountAmount > 0 || editableAdjustments.length > 0) && (
+                <>
+                  <View style={s.summaryRow}>
+                    <Text style={s.summaryLabel}>Discounts</Text>
+                    <TextInput
+                      value={discountInput}
+                      onChangeText={setDiscountInput}
+                      placeholder="0.00"
+                      placeholderTextColor={placeholderColor}
+                      keyboardType="decimal-pad"
+                      style={[s.textInput, s.summaryInput]}
+                    />
+                  </View>
+                  {editableAdjustments.map((adjustment) => (
+                    <View key={adjustment.key} style={s.summaryRow}>
+                      <Text style={s.summaryLabel}>{adjustment.label}</Text>
+                      <TextInput
+                        value={adjustment.amount}
+                        onChangeText={(value) => updateAdjustmentAmount(adjustment.key, value)}
+                        placeholder="0.00"
+                        placeholderTextColor={placeholderColor}
+                        keyboardType="decimal-pad"
+                        style={[s.textInput, s.summaryInput]}
+                      />
+                    </View>
+                  ))}
+                </>
+              )}
+              {!showExtraCharges && discountAmount <= 0 && editableAdjustments.length === 0 ? (
+                <Pressable
+                  style={({ pressed }) => [s.extraChargesButton, pressed && s.pressed]}
+                  onPress={() => setShowExtraCharges(true)}
+                >
+                  <Text style={s.extraChargesButtonText}>+ Add discount or fee</Text>
+                </Pressable>
+              ) : null}
+              <View style={[s.summaryRow, s.totalRow]}>
+                <Text style={s.totalLabel}>Total</Text>
+                <Text style={s.totalValue}>{formatCurrency(grandTotal)}</Text>
+              </View>
+            </Animated.View>
 
-        {/* Actions */}
-        <Animated.View entering={FadeInDown.delay(250).duration(400)} style={s.actions}>
-          <Pressable
-            style={({ pressed }) => [
-              s.shareButton,
-              isSharing && s.buttonDisabled,
-              pressed && s.pressed,
-            ]}
-            onPress={handleShareReceipt}
-            disabled={isSharing || isSaving}
-          >
-            <Ionicons name="share-outline" size={16} color="#04110D" />
-            <Text style={s.shareButtonText}>
-              {isSharing ? 'Sharing...' : 'Share Tablink'}
-            </Text>
-            <Ionicons name="arrow-forward" size={16} color="#04110D" />
-          </Pressable>
-          <Pressable
-            style={({ pressed }) => [
-              s.saveDraftButton,
-              isSaving && s.buttonDisabled,
-              pressed && s.pressed,
-            ]}
-            onPress={handleSaveDraft}
-            disabled={isSaving || isSharing}
-          >
-            <Text style={s.saveDraftButtonText}>
-              {isSaving ? 'Saving...' : 'Save as Draft'}
-            </Text>
-          </Pressable>
-        </Animated.View>
+            {/* Actions */}
+            <Animated.View entering={FadeInDown.delay(250).duration(400)} style={s.actions}>
+              <Pressable
+                style={({ pressed }) => [s.shareButton, pressed && s.pressed]}
+                onPress={handleConfirmReceipt}
+              >
+                <Ionicons name="checkmark-circle-outline" size={16} color="#04110D" />
+                <Text style={s.shareButtonText}>Looks Good</Text>
+                <Ionicons name="arrow-forward" size={16} color="#04110D" />
+              </Pressable>
+            </Animated.View>
       </ScrollView>
 
       {/* Full Image Modal */}
@@ -779,41 +589,6 @@ export default function ReceiptReviewScreen() {
         </View>
       </Modal>
 
-      {/* Share Success Modal */}
-      <Modal
-        visible={showShareSuccess}
-        animationType="fade"
-        transparent
-        onRequestClose={handleGoHome}
-      >
-        <View style={s.successModalBackdrop}>
-          <View style={s.successModalContent}>
-            <View style={s.successIconContainer}>
-              <Ionicons name="checkmark-circle" size={56} color={colors.primary} />
-            </View>
-            <Text style={s.successTitle}>Receipt Shared!</Text>
-            <Text style={s.successMessage}>
-              Your tablink has been created. View your receipt to see claims update in real-time as friends claim their items.
-            </Text>
-            <View style={s.successActions}>
-              <Pressable
-                style={({ pressed }) => [s.shareButton, pressed && s.pressed]}
-                onPress={handleViewReceipt}
-              >
-                <Ionicons name="receipt-outline" size={16} color="#04110D" />
-                <Text style={s.shareButtonText}>View Receipt</Text>
-                <Ionicons name="arrow-forward" size={16} color="#04110D" />
-              </Pressable>
-              <Pressable
-                style={({ pressed }) => [s.saveDraftButton, pressed && s.pressed]}
-                onPress={handleGoHome}
-              >
-                <Text style={s.saveDraftButtonText}>Go Home</Text>
-              </Pressable>
-            </View>
-          </View>
-        </View>
-      </Modal>
     </KeyboardAvoidingView>
   );
 }
@@ -946,6 +721,7 @@ const s = StyleSheet.create({
     color: colors.muted,
     fontSize: 12,
     marginTop: 4,
+    textAlign: 'center',
   },
   itemWrapper: {
     position: 'relative',
@@ -1020,7 +796,6 @@ const s = StyleSheet.create({
     paddingHorizontal: 0,
     backgroundColor: 'transparent',
   },
-
   /* Totals */
   summaryRow: {
     flexDirection: 'row',
@@ -1145,24 +920,6 @@ const s = StyleSheet.create({
     letterSpacing: 0.5,
     textTransform: 'uppercase',
   },
-  saveDraftButton: {
-    backgroundColor: colors.surface,
-    borderRadius: 10,
-    paddingVertical: 13,
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.05)',
-  },
-  saveDraftButtonText: {
-    color: colors.text,
-    fontSize: 12,
-    fontWeight: '700',
-    letterSpacing: 0.4,
-    textTransform: 'uppercase',
-  },
-  buttonDisabled: {
-    opacity: 0.5,
-  },
   pressed: {
     opacity: 0.7,
   },
@@ -1199,45 +956,5 @@ const s = StyleSheet.create({
     color: colors.text,
     fontSize: 15,
     fontWeight: '600',
-  },
-
-  /* Share success modal */
-  successModalBackdrop: {
-    flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.7)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: 24,
-  },
-  successModalContent: {
-    backgroundColor: colors.surface,
-    borderRadius: 16,
-    padding: 32,
-    alignItems: 'center',
-    maxWidth: 320,
-    width: '100%',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.05)',
-  },
-  successIconContainer: {
-    marginBottom: 16,
-  },
-  successTitle: {
-    color: colors.primary,
-    fontSize: 24,
-    fontWeight: '800',
-    letterSpacing: -0.5,
-    marginBottom: 12,
-  },
-  successMessage: {
-    color: colors.textSecondary,
-    fontSize: 15,
-    lineHeight: 22,
-    textAlign: 'center',
-    marginBottom: 24,
-  },
-  successActions: {
-    width: '100%',
-    gap: 10,
   },
 });

@@ -74,7 +74,6 @@ type OwnerProfile = {
   venmo_handle: string | null;
   cashapp_handle: string | null;
   paypal_handle: string | null;
-  zelle_identifier: string | null;
 };
 
 type Props = {
@@ -90,6 +89,15 @@ function formatCents(cents: number): string {
   return `$${(cents / 100).toFixed(2)}`;
 }
 
+function formatQuantity(value: number): string {
+  return Number.isInteger(value) ? String(value) : value.toFixed(2).replace(/\.?0+$/, '');
+}
+
+function calculateClaimAmountCents(item: ReceiptItem, portion: number): number {
+  const quantity = item.quantity > 0 ? item.quantity : 1;
+  return Math.round((item.price_cents * portion) / quantity);
+}
+
 function formatDate(dateString: string | null): string {
   if (!dateString) return '';
   const date = new Date(dateString);
@@ -99,6 +107,29 @@ function formatDate(dateString: string | null): string {
 function formatAdjustmentLabel(adjustment: ReceiptAdjustment): string {
   const trimmed = adjustment.label.trim();
   return trimmed || adjustment.type.replace(/_/g, ' ');
+}
+
+function buildVenmoPaymentUrl(username: string, amountDollars: string, note: string): string {
+  const params = new URLSearchParams({
+    txn: 'pay',
+    recipients: username,
+    amount: amountDollars,
+    note,
+  });
+
+  return `https://venmo.com/?${params.toString()}`;
+}
+
+function normalizePaypalMeUsername(value: string): string | null {
+  const cleaned = value
+    .trim()
+    .replace(/^https?:\/\/(www\.)?paypal\.me\//i, '')
+    .replace(/^paypal\.me\//i, '')
+    .replace(/^@/, '')
+    .split(/[/?#]/)[0];
+
+  if (!cleaned || cleaned.includes('@')) return null;
+  return cleaned;
 }
 
 function getSignedAdjustmentCents(adjustment: ReceiptAdjustment): number {
@@ -145,7 +176,15 @@ function CopyIcon({ className = 'h-4 w-4' }: { className?: string }) {
   );
 }
 
-type PaymentProvider = 'venmo' | 'cashapp' | 'paypal' | 'zelle';
+function EditIcon({ className = 'h-3.5 w-3.5' }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <path strokeLinecap="round" strokeLinejoin="round" d="m16.9 4.7 2.4 2.4M4 20h4.7L19.9 8.8a1.7 1.7 0 0 0 0-2.4l-2.3-2.3a1.7 1.7 0 0 0-2.4 0L4 15.3V20Z" />
+    </svg>
+  );
+}
+
+type PaymentProvider = 'venmo' | 'cashapp' | 'paypal';
 
 function PaymentLogo({ provider }: { provider: PaymentProvider }) {
   switch (provider) {
@@ -163,10 +202,17 @@ function PaymentLogo({ provider }: { provider: PaymentProvider }) {
       return (
         <svg className="tablink-payment-logo" viewBox="0 0 64 64" aria-hidden="true">
           <rect width="64" height="64" rx="18" fill="#00D632" />
-          <path
-            d="M36.9 17.2c-4.4 0-7.7 2.2-8.8 6.3l-2.3 8.2h-4.6c-1.6 0-2.9 1.3-2.9 2.9s1.3 2.9 2.9 2.9h3.1l-1.9 6.7h7.1l1.9-6.7h7.9l-1.9 6.7h7.1l1.9-6.7h3.4c1.6 0 2.9-1.3 2.9-2.9s-1.3-2.9-2.9-2.9h-1.8l2.1-7.4c1.7-6-2.1-10.7-9.2-10.7Zm2.3 8.4-1.7 6.1h-7.9l1.7-6.1c.4-1.4 1.6-2.4 3.6-2.4 2.9 0 4.7.9 4.3 2.4Z"
+          <text
+            x="32"
+            y="42"
+            textAnchor="middle"
+            fontFamily="Arial, Helvetica, sans-serif"
+            fontSize="32"
+            fontWeight="800"
             fill="#fff"
-          />
+          >
+            $
+          </text>
         </svg>
       );
     case 'paypal':
@@ -180,16 +226,6 @@ function PaymentLogo({ provider }: { provider: PaymentProvider }) {
           <path
             d="M40.6 24.1h6.8c4.3 0 7.2 3.4 6.5 7.7-.9 5.5-5.3 8.6-10.6 8.6h-4.2L37.4 49h-7.1l4.3-24.9Z"
             fill="#009CDE"
-          />
-        </svg>
-      );
-    case 'zelle':
-      return (
-        <svg className="tablink-payment-logo" viewBox="0 0 64 64" aria-hidden="true">
-          <rect width="64" height="64" rx="18" fill="#6D1ED4" />
-          <path
-            d="M20 21.5c0-2 1.6-3.5 3.5-3.5h17c1.9 0 3.5 1.5 3.5 3.5V26l-12.5 12H44v4.5c0 2-1.6 3.5-3.5 3.5h-17c-1.9 0-3.5-1.5-3.5-3.5V38l12.5-12H20v-4.5Z"
-            fill="#fff"
           />
         </svg>
       );
@@ -291,14 +327,58 @@ export function ClaimPageClient({
   const [error, setError] = useState<string | null>(null);
   const [isMarkingPaid, setIsMarkingPaid] = useState(false);
   const [paymentStatus, setPaymentStatus] = useState<'unpaid' | 'paid'>('unpaid');
-  const [copiedZelle, setCopiedZelle] = useState(false);
   const [copiedAmount, setCopiedAmount] = useState(false);
   const [showPaymentModal, setShowPaymentModal] = useState(false);
+  const [coverEditor, setCoverEditor] = useState<{ itemId: string; claimId: string } | null>(null);
+  const [customCoverInput, setCustomCoverInput] = useState('');
+  const itemIds = useMemo(() => items.map((item) => item.id), [items]);
+  const itemIdSet = useMemo(() => new Set(itemIds), [itemIds]);
+
+  const coverEditorItem = coverEditor ? items.find((item) => item.id === coverEditor.itemId) : undefined;
+  const coverEditorClaim = coverEditor ? claims.find((claim) => claim.id === coverEditor.claimId) : undefined;
+  const coverEditorMaxCents =
+    coverEditor && coverEditorItem && coverEditorClaim
+      ? Math.max(
+          0,
+          coverEditorItem.price_cents -
+            claims
+              .filter((claim) => claim.item_id === coverEditor.itemId && claim.id !== coverEditor.claimId)
+              .reduce((sum, claim) => sum + claim.amount_cents, 0)
+        )
+      : 0;
+
+  const refreshRealtimeState = useCallback(async () => {
+    const supabase = getSupabaseClient();
+
+    const [claimsResult, participantsResult] = await Promise.all([
+      itemIds.length > 0
+        ? supabase
+            .from('item_claims')
+            .select('id, item_id, participant_id, portion, amount_cents')
+            .in('item_id', itemIds)
+        : Promise.resolve({ data: [], error: null }),
+      supabase
+        .from('receipt_participants')
+        .select('id, display_name, emoji, color_token, role, payment_status')
+        .eq('receipt_id', receiptId),
+    ]);
+
+    if (!claimsResult.error && claimsResult.data) {
+      setClaims(claimsResult.data as ItemClaim[]);
+    }
+
+    if (!participantsResult.error && participantsResult.data) {
+      setParticipants(participantsResult.data as Participant[]);
+      setCurrentParticipant((current) => {
+        if (!current) return current;
+        const updated = (participantsResult.data as Participant[]).find((participant) => participant.id === current.id);
+        return updated ? { ...current, ...updated } : current;
+      });
+    }
+  }, [itemIds, receiptId]);
 
   useEffect(() => {
     const supabase = getSupabaseClient();
-    const itemIds = items.map((item) => item.id);
-
     const channel = supabase
       .channel(`receipt:${receiptId}`)
       .on(
@@ -307,15 +387,16 @@ export function ClaimPageClient({
         (payload: RealtimePostgresChangesPayload<ItemClaim>) => {
           if (payload.eventType === 'INSERT') {
             const newClaim = payload.new as ItemClaim;
-            if (itemIds.includes(newClaim.item_id)) {
+            if (itemIdSet.has(newClaim.item_id)) {
               setClaims((prev) => {
                 if (prev.some((claim) => claim.id === newClaim.id)) return prev;
                 return [...prev, newClaim];
               });
+              void refreshRealtimeState();
             }
           } else if (payload.eventType === 'UPDATE') {
             const updated = payload.new as ItemClaim;
-            if (itemIds.includes(updated.item_id)) {
+            if (itemIdSet.has(updated.item_id)) {
               setClaims((prev) => prev.map((claim) => (claim.id === updated.id ? { ...claim, ...updated } : claim)));
             }
           } else if (payload.eventType === 'DELETE') {
@@ -338,6 +419,7 @@ export function ClaimPageClient({
             if (prev.some((participant) => participant.id === newParticipant.id)) return prev;
             return [...prev, newParticipant];
           });
+          void refreshRealtimeState();
         }
       )
       .on(
@@ -361,7 +443,7 @@ export function ClaimPageClient({
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [items, receiptId]);
+  }, [itemIdSet, receiptId, refreshRealtimeState]);
 
   const handleJoin = useCallback(async () => {
     if (!guestName.trim()) {
@@ -416,6 +498,7 @@ export function ClaimPageClient({
       if (!item) return;
 
       const itemClaims = claims.filter((claim) => claim.item_id === itemId);
+      const existingClaim = itemClaims.find((claim) => claim.participant_id === currentParticipant.id);
       const claimerIds = itemClaims.map((claim) => claim.participant_id);
       const hasAnyPaid = participants.some(
         (participant) => claimerIds.includes(participant.id) && participant.payment_status === 'paid'
@@ -431,56 +514,36 @@ export function ClaimPageClient({
 
       try {
         const supabase = getSupabaseClient();
-        const existingClaim = claims.find(
-          (claim) => claim.item_id === itemId && claim.participant_id === currentParticipant.id
-        );
 
         if (existingClaim) {
           const { error: deleteError } = await supabase.from('item_claims').delete().eq('id', existingClaim.id);
           if (deleteError) throw deleteError;
 
-          const remainingClaims = claims.filter((claim) => claim.item_id === itemId && claim.id !== existingClaim.id);
-
-          if (remainingClaims.length > 0) {
-            const newAmount = Math.round(item.price_cents / remainingClaims.length);
-            await supabase.from('item_claims').update({ amount_cents: newAmount }).eq('item_id', itemId);
-            setClaims((prev) =>
-              prev
-                .filter((claim) => claim.id !== existingClaim.id)
-                .map((claim) => (claim.item_id === itemId ? { ...claim, amount_cents: newAmount } : claim))
-            );
-          } else {
-            setClaims((prev) => prev.filter((claim) => claim.id !== existingClaim.id));
-          }
+          setClaims((prev) => prev.filter((claim) => claim.id !== existingClaim.id));
         } else {
-          const existingClaimsCount = claims.filter((claim) => claim.item_id === itemId).length;
-          const newTotalClaimers = existingClaimsCount + 1;
-          const newAmount = Math.round(item.price_cents / newTotalClaimers);
+          const claimedPortion = itemClaims.reduce((sum, claim) => sum + Number(claim.portion || 0), 0);
+          const remainingPortion = Math.max(0, item.quantity - claimedPortion);
+          const defaultPortion = Math.min(1, remainingPortion);
+
+          if (defaultPortion <= 0) {
+            setError('This item has already been fully claimed.');
+            return;
+          }
 
           const { data, error: insertError } = await supabase
             .from('item_claims')
             .insert({
               item_id: itemId,
               participant_id: currentParticipant.id,
-              portion: 1,
-              amount_cents: newAmount,
+              portion: defaultPortion,
+              amount_cents: calculateClaimAmountCents(item, defaultPortion),
             })
             .select()
             .single();
 
           if (insertError) throw insertError;
 
-          if (existingClaimsCount > 0) {
-            await supabase.from('item_claims').update({ amount_cents: newAmount }).eq('item_id', itemId);
-          }
-
-          setClaims((prev) => {
-            const updated = prev.map((claim) =>
-              claim.item_id === itemId ? { ...claim, amount_cents: newAmount } : claim
-            );
-            if (updated.some((claim) => claim.id === data.id)) return updated;
-            return [...updated, data];
-          });
+          setClaims((prev) => (prev.some((claim) => claim.id === data.id) ? prev : [...prev, data]));
         }
       } catch (err) {
         console.error('Failed to update claim:', err);
@@ -491,6 +554,140 @@ export function ClaimPageClient({
     },
     [claimingItemId, claims, currentParticipant, items, participants]
   );
+
+  const handleAdjustClaimQuantity = useCallback(
+    async (itemId: string, nextPortion: number) => {
+      if (!currentParticipant || claimingItemId) return;
+
+      const item = items.find((entry) => entry.id === itemId);
+      if (!item) return;
+
+      const itemClaims = claims.filter((claim) => claim.item_id === itemId);
+      const existingClaim = itemClaims.find((claim) => claim.participant_id === currentParticipant.id);
+      if (!existingClaim) return;
+
+      const claimerIds = itemClaims.map((claim) => claim.participant_id);
+      const hasAnyPaid = participants.some(
+        (participant) => claimerIds.includes(participant.id) && participant.payment_status === 'paid'
+      );
+
+      if (hasAnyPaid) {
+        setError('This item has already been paid for and can no longer be changed.');
+        return;
+      }
+
+      const claimedByOthers = itemClaims
+        .filter((claim) => claim.participant_id !== currentParticipant.id)
+        .reduce((sum, claim) => sum + Number(claim.portion || 0), 0);
+      const maxPortion = Math.max(0, item.quantity - claimedByOthers);
+      const clampedPortion = Math.min(Math.max(0, nextPortion), maxPortion);
+
+      setClaimingItemId(itemId);
+      setError(null);
+
+      try {
+        const supabase = getSupabaseClient();
+
+        if (clampedPortion <= 0) {
+          const { error: deleteError } = await supabase.from('item_claims').delete().eq('id', existingClaim.id);
+          if (deleteError) throw deleteError;
+          setClaims((prev) => prev.filter((claim) => claim.id !== existingClaim.id));
+          return;
+        }
+
+        const amountCents = calculateClaimAmountCents(item, clampedPortion);
+        const { error: updateError } = await supabase
+          .from('item_claims')
+          .update({ portion: clampedPortion, amount_cents: amountCents })
+          .eq('id', existingClaim.id);
+
+        if (updateError) throw updateError;
+
+        setClaims((prev) =>
+          prev.map((claim) =>
+            claim.id === existingClaim.id
+              ? { ...claim, portion: clampedPortion, amount_cents: amountCents }
+              : claim
+          )
+        );
+      } catch (err) {
+        console.error('Failed to update claim quantity:', err);
+        setError('Failed to update claim. Please try again.');
+      } finally {
+        setClaimingItemId(null);
+      }
+    },
+    [claimingItemId, claims, currentParticipant, items, participants]
+  );
+
+  const handleOpenCoverEditor = useCallback((itemId: string, claim: ItemClaim) => {
+    setCoverEditor({ itemId, claimId: claim.id });
+    setCustomCoverInput((claim.amount_cents / 100).toFixed(2));
+  }, []);
+
+  const handleUpdateCoverAmount = useCallback(
+    async (amountCents: number) => {
+      if (!coverEditor || !coverEditorClaim || !coverEditorItem || !currentParticipant) return;
+
+      const itemClaims = claims.filter((claim) => claim.item_id === coverEditor.itemId);
+      const claimerIds = itemClaims.map((claim) => claim.participant_id);
+      const hasAnyPaid = participants.some(
+        (participant) => claimerIds.includes(participant.id) && participant.payment_status === 'paid'
+      );
+
+      if (hasAnyPaid) {
+        setError('This item has already been paid for and can no longer be changed.');
+        return;
+      }
+
+      const nextAmount = Math.min(Math.max(1, Math.round(amountCents)), coverEditorMaxCents);
+      if (nextAmount <= 0) return;
+
+      setClaimingItemId(coverEditor.itemId);
+      setError(null);
+
+      try {
+        const supabase = getSupabaseClient();
+        const { error: updateError } = await supabase
+          .from('item_claims')
+          .update({ amount_cents: nextAmount })
+          .eq('id', coverEditorClaim.id);
+
+        if (updateError) throw updateError;
+
+        setClaims((prev) =>
+          prev.map((claim) =>
+            claim.id === coverEditorClaim.id ? { ...claim, amount_cents: nextAmount } : claim
+          )
+        );
+        setCoverEditor(null);
+      } catch (err) {
+        console.error('Failed to update cover amount:', err);
+        setError('Failed to update cover amount. Please try again.');
+      } finally {
+        setClaimingItemId(null);
+      }
+    },
+    [
+      claims,
+      coverEditor,
+      coverEditorClaim,
+      coverEditorItem,
+      coverEditorMaxCents,
+      currentParticipant,
+      participants,
+    ]
+  );
+
+  const handleApplyCustomCover = useCallback(() => {
+    const parsed = Number.parseFloat(customCoverInput.replace(/[^0-9.]/g, ''));
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      setError('Enter a valid amount to cover.');
+      return;
+    }
+
+    void handleUpdateCoverAmount(Math.round(parsed * 100));
+  }, [customCoverInput, handleUpdateCoverAmount]);
 
   const myTotal = currentParticipant
     ? claims
@@ -553,14 +750,6 @@ export function ClaimPageClient({
     [currentParticipant, isMarkingPaid, myGrandTotal]
   );
 
-  const handleCopyZelle = useCallback(() => {
-    if (ownerProfile?.zelle_identifier) {
-      navigator.clipboard.writeText(ownerProfile.zelle_identifier);
-      setCopiedZelle(true);
-      setTimeout(() => setCopiedZelle(false), 2000);
-    }
-  }, [ownerProfile?.zelle_identifier]);
-
   const handleCopyAmount = useCallback(() => {
     navigator.clipboard.writeText((myGrandTotal / 100).toFixed(2));
     setCopiedAmount(true);
@@ -571,15 +760,16 @@ export function ClaimPageClient({
     if (!ownerProfile) return [];
 
     const amountDollars = (myGrandTotal / 100).toFixed(2);
-    const options: Array<{ name: string; provider: PaymentProvider; accent: string; url?: string; identifier?: string }> = [];
+    const options: { name: string; provider: PaymentProvider; accent: string; url: string }[] = [];
 
     if (ownerProfile.venmo_handle) {
       const username = ownerProfile.venmo_handle.replace(/^@/, '');
+      const note = receipt.merchant_name || 'Receipt split';
       options.push({
         name: 'Venmo',
         provider: 'venmo',
         accent: '#3D95CE',
-        url: `https://venmo.com/u/${username}`,
+        url: buildVenmoPaymentUrl(username, amountDollars, note),
       });
     }
 
@@ -594,25 +784,19 @@ export function ClaimPageClient({
     }
 
     if (ownerProfile.paypal_handle) {
+      const paypalUsername = normalizePaypalMeUsername(ownerProfile.paypal_handle);
+      if (!paypalUsername) return options;
+
       options.push({
         name: 'PayPal',
         provider: 'paypal',
         accent: '#003087',
-        url: `https://paypal.me/${ownerProfile.paypal_handle}/${amountDollars}`,
-      });
-    }
-
-    if (ownerProfile.zelle_identifier) {
-      options.push({
-        name: 'Zelle',
-        provider: 'zelle',
-        accent: '#6D1ED4',
-        identifier: ownerProfile.zelle_identifier,
+        url: `https://paypal.me/${paypalUsername}/${amountDollars}`,
       });
     }
 
     return options;
-  }, [myGrandTotal, ownerProfile]);
+  }, [myGrandTotal, ownerProfile, receipt.merchant_name]);
 
   const guestParticipants = participants.filter((participant) => participant.role !== 'owner');
   const otherParticipants = participants.filter((participant) => participant.id !== currentParticipant?.id);
@@ -625,14 +809,6 @@ export function ClaimPageClient({
         .filter(Boolean) as Participant[];
     },
     [claims, participants]
-  );
-
-  const isClaimedByMe = useCallback(
-    (itemId: string) => {
-      if (!currentParticipant) return false;
-      return claims.some((claim) => claim.item_id === itemId && claim.participant_id === currentParticipant.id);
-    },
-    [claims, currentParticipant]
   );
 
   if (!currentParticipant) {
@@ -806,56 +982,142 @@ export function ClaimPageClient({
 
           <div className="tablink-item-grid">
             {items.map((item) => {
+              const itemClaims = claims.filter((claim) => claim.item_id === item.id);
+              const myClaim = currentParticipant
+                ? itemClaims.find((claim) => claim.participant_id === currentParticipant.id)
+                : undefined;
+              const claimedPortion = itemClaims.reduce((sum, claim) => sum + Number(claim.portion || 0), 0);
+              const claimedByOthers = itemClaims
+                .filter((claim) => claim.participant_id !== currentParticipant?.id)
+                .reduce((sum, claim) => sum + Number(claim.portion || 0), 0);
+              const remainingPortion = Math.max(0, item.quantity - claimedPortion);
+              const maxMyPortion = Math.max(0, item.quantity - claimedByOthers);
               const claimers = getItemClaimers(item.id);
-              const isMine = isClaimedByMe(item.id);
+              const isMine = Boolean(myClaim);
               const isLoading = claimingItemId === item.id;
               const hasAnyPaid = claimers.some((claimer) => claimer.payment_status === 'paid');
               const isSettled = claimers.length > 0 && claimers.every((claimer) => claimer.payment_status === 'paid');
               const isClaimed = claimers.length > 0 && !isSettled;
+              const isFullyClaimed = remainingPortion <= 0;
+              const canClaim = !isLoading && paymentStatus !== 'paid' && !hasAnyPaid && (!isFullyClaimed || isMine);
+              const canDecrease = Boolean(myClaim) && !isLoading && paymentStatus !== 'paid' && !hasAnyPaid;
+              const canIncrease =
+                Boolean(myClaim) &&
+                !isLoading &&
+                paymentStatus !== 'paid' &&
+                !hasAnyPaid &&
+                Number(myClaim?.portion || 0) < maxMyPortion;
 
               return (
-                <button
+                <div
                   key={item.id}
-                  type="button"
-                  onClick={() => handleClaimItem(item.id)}
-                  disabled={isLoading || paymentStatus === 'paid' || hasAnyPaid}
                   className={`tablink-item-card${isMine ? ' is-mine' : ''}${isClaimed ? ' is-claimed' : ''}${isSettled ? ' is-settled' : ''}`}
                 >
-                  <div className="tablink-item-leading">
-                    <div className="tablink-item-check">
-                      {isMine || isSettled ? <CheckIcon className="h-3.5 w-3.5" /> : null}
-                    </div>
-                    <div className="tablink-item-copy">
-                      <div className="tablink-item-title-row">
-                        <span className="tablink-item-title">{item.label}</span>
-                        {item.quantity > 1 ? <span className="tablink-qty-pill">×{item.quantity}</span> : null}
-                      </div>
-
-                      {claimers.length > 0 ? (
-                        <div className="tablink-claimer-row">
-                          {claimers.map((claimer) => (
-                            <span
-                              key={claimer.id}
-                              className="tablink-claimer-pill"
-                              style={{ borderLeftColor: claimer.color_token ?? colors.primary }}
-                            >
-                              <span>{claimer.emoji}</span>
-                              <span>{claimer.display_name}</span>
-                              {claimer.payment_status === 'paid' ? <CheckIcon className="h-3 w-3" /> : null}
-                            </span>
-                          ))}
+                  <div className="tablink-item-row-content">
+                    <button
+                      type="button"
+                      onClick={() => handleClaimItem(item.id)}
+                      disabled={!canClaim}
+                      className="tablink-item-main-button"
+                    >
+                      <div className="tablink-item-leading">
+                        <div className="tablink-item-check">
+                          {isMine || isSettled ? <CheckIcon className="h-3.5 w-3.5" /> : null}
                         </div>
-                      ) : (
-                        <div className="tablink-item-subtitle">Unclaimed</div>
-                      )}
+                        <div className="tablink-item-copy">
+                          <div className="tablink-item-title-row">
+                            <span className="tablink-item-title">{item.label}</span>
+                            {item.quantity > 1 ? <span className="tablink-qty-pill">×{item.quantity}</span> : null}
+                          </div>
+
+                          {claimers.length > 0 ? (
+                            <div className="tablink-claimer-row">
+                              {itemClaims.map((claim) => {
+                                const claimer = participants.find((participant) => participant.id === claim.participant_id);
+                                if (!claimer) return null;
+                                return (
+                                  <span
+                                    key={claim.id}
+                                    className="tablink-claimer-pill"
+                                    style={{ borderLeftColor: claimer.color_token ?? colors.primary }}
+                                  >
+                                    <span>{claimer.emoji}</span>
+                                    <span>{claimer.display_name}</span>
+                                    {item.quantity > 1 ? <span>×{formatQuantity(Number(claim.portion || 0))}</span> : null}
+                                    {claimer.payment_status === 'paid' ? <CheckIcon className="h-3 w-3" /> : null}
+                                  </span>
+                                );
+                              })}
+                            </div>
+                          ) : (
+                            <div className="tablink-item-subtitle">Unclaimed</div>
+                          )}
+                          {item.quantity > 1 && !isFullyClaimed ? (
+                            <div className="tablink-item-subtitle">
+                              {formatQuantity(remainingPortion)} of {formatQuantity(item.quantity)} left
+                            </div>
+                          ) : null}
+                        </div>
+                      </div>
+                    </button>
+
+                    <div className="tablink-item-trailing">
+                      {isSettled ? <span className="tablink-paid-pill">Paid</span> : null}
+                      {myClaim && item.quantity > 1 ? (
+                        <div className="tablink-quantity-stack">
+                          <div className="tablink-quantity-stepper">
+                            <button
+                              type="button"
+                              onClick={() => handleAdjustClaimQuantity(item.id, Number(myClaim.portion || 0) - 1)}
+                              disabled={!canDecrease}
+                              className="tablink-quantity-button"
+                              aria-label={`Claim fewer ${item.label}`}
+                            >
+                              -
+                            </button>
+                            <span className="tablink-quantity-value">
+                              {formatQuantity(Number(myClaim.portion || 0))}/{formatQuantity(item.quantity)}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => handleAdjustClaimQuantity(item.id, Number(myClaim.portion || 0) + 1)}
+                              disabled={!canIncrease}
+                              className="tablink-quantity-button"
+                              aria-label={`Claim more ${item.label}`}
+                            >
+                              +
+                            </button>
+                          </div>
+                          <span className="tablink-covering-line">
+                            <span className="tablink-covering-amount">Covering {formatCents(myClaim.amount_cents)}</span>
+                            <button
+                              type="button"
+                              className="tablink-cover-edit-button"
+                              onClick={() => handleOpenCoverEditor(item.id, myClaim)}
+                              aria-label={`Edit amount covered for ${item.label}`}
+                            >
+                              <EditIcon />
+                            </button>
+                          </span>
+                        </div>
+                      ) : null}
+                      {myClaim && item.quantity <= 1 ? (
+                        <span className="tablink-covering-line tablink-covering-amount-inline">
+                          <span className="tablink-covering-amount">Covering {formatCents(myClaim.amount_cents)}</span>
+                          <button
+                            type="button"
+                            className="tablink-cover-edit-button"
+                            onClick={() => handleOpenCoverEditor(item.id, myClaim)}
+                            aria-label={`Edit amount covered for ${item.label}`}
+                          >
+                            <EditIcon />
+                          </button>
+                        </span>
+                      ) : null}
+                      <span className="tablink-item-price">{formatCents(item.price_cents)}</span>
                     </div>
                   </div>
-
-                  <div className="tablink-item-trailing">
-                    {isSettled ? <span className="tablink-paid-pill">Paid</span> : null}
-                    <span className="tablink-item-price">{isLoading ? 'Updating...' : formatCents(item.price_cents)}</span>
-                  </div>
-                </button>
+                </div>
               );
             })}
           </div>
@@ -980,8 +1242,7 @@ export function ClaimPageClient({
 
             {paymentOptions.length > 0 ? (
               <div className="tablink-payment-stack">
-                {paymentOptions.map((option) =>
-                  option.url ? (
+                {paymentOptions.map((option) => (
                     <PaymentLinkAction key={option.name} href={option.url} accent={option.accent}>
                       <span className="tablink-payment-link-label">
                         <PaymentLogo provider={option.provider} />
@@ -989,25 +1250,7 @@ export function ClaimPageClient({
                       </span>
                       <ArrowIcon />
                     </PaymentLinkAction>
-                  ) : (
-                    <button
-                      key={option.name}
-                      type="button"
-                      onClick={handleCopyZelle}
-                      className="tablink-payment-link"
-                      style={{
-                        borderColor: `${option.accent}55`,
-                        background: `linear-gradient(180deg, ${option.accent}20 0%, rgba(17,20,24,0.98) 100%)`,
-                      }}
-                    >
-                      <span className="tablink-payment-link-label">
-                        <PaymentLogo provider={option.provider} />
-                        <span>{copiedZelle ? 'Copied to clipboard' : `Zelle: ${option.identifier}`}</span>
-                      </span>
-                      <ArrowIcon />
-                    </button>
-                  )
-                )}
+                ))}
               </div>
             ) : (
               <div className="tablink-empty-note">
@@ -1025,6 +1268,70 @@ export function ClaimPageClient({
               >
                 <span>{isMarkingPaid ? 'Confirming...' : "I've already paid"}</span>
               </SecondaryAction>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {coverEditor && coverEditorItem && coverEditorClaim ? (
+        <div className="tablink-modal-backdrop" onClick={() => setCoverEditor(null)}>
+          <div className="tablink-modal" onClick={(event) => event.stopPropagation()}>
+            <div className="tablink-modal-head">
+              <div>
+                <div className="tablink-overline">Cover Amount</div>
+                <h2 className="tablink-section-title">{coverEditorItem.label}</h2>
+                <p className="tablink-section-body">Choose how much of this item you want to cover.</p>
+              </div>
+              <button type="button" className="tablink-icon-button" onClick={() => setCoverEditor(null)}>
+                <CloseIcon />
+              </button>
+            </div>
+
+            <div className="tablink-cover-option-grid">
+              {[
+                { label: '1/3', amount: Math.round(coverEditorItem.price_cents / 3) },
+                { label: 'Half', amount: Math.round(coverEditorItem.price_cents / 2) },
+                { label: 'Full', amount: coverEditorItem.price_cents },
+              ].map((option) => {
+                const amount = Math.min(option.amount, coverEditorMaxCents);
+                return (
+                  <button
+                    key={option.label}
+                    type="button"
+                    className="tablink-cover-option"
+                    onClick={() => handleUpdateCoverAmount(amount)}
+                    disabled={amount <= 0 || claimingItemId === coverEditor.itemId}
+                  >
+                    <span>{option.label}</span>
+                    <strong>{formatCents(amount)}</strong>
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="tablink-cover-custom">
+              <label className="tablink-input-label" htmlFor="custom-cover-amount">
+                Custom amount
+              </label>
+              <div className="tablink-cover-custom-row">
+                <input
+                  id="custom-cover-amount"
+                  className="tablink-input"
+                  inputMode="decimal"
+                  value={customCoverInput}
+                  onChange={(event) => setCustomCoverInput(event.target.value)}
+                  placeholder="0.00"
+                />
+                <button
+                  type="button"
+                  className="tablink-cover-apply-button"
+                  onClick={handleApplyCustomCover}
+                  disabled={claimingItemId === coverEditor.itemId}
+                >
+                  Apply
+                </button>
+              </div>
+              <div className="tablink-cover-max">Max {formatCents(coverEditorMaxCents)}</div>
             </div>
           </div>
         </div>

@@ -18,19 +18,14 @@ import Animated, {
 } from 'react-native-reanimated';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useFocusEffect } from 'expo-router';
 import { colors } from '@/src/theme';
 import { useAuth } from '@/src/hooks/useAuth';
-import { useSubscription } from '@/src/providers/RevenueCatProvider';
 import { getSupabaseClient } from '@/src/lib/supabaseClient';
-import { getScanUsage, type ScanUsage } from '@/src/services/scanLimitService';
-import { ScanLimitPaywall } from '@/src/components/ScanLimitPaywall';
 
 type PaymentHandles = {
   venmo_handle: string;
   cashapp_handle: string;
   paypal_handle: string;
-  zelle_identifier: string;
 };
 
 const PAYMENT_FIELDS: {
@@ -41,8 +36,7 @@ const PAYMENT_FIELDS: {
 }[] = [
   { key: 'venmo_handle', label: 'Venmo', placeholder: '@username', icon: 'logo-venmo' },
   { key: 'cashapp_handle', label: 'Cash App', placeholder: '$cashtag', icon: 'cash-outline' },
-  { key: 'paypal_handle', label: 'PayPal', placeholder: 'username or email', icon: 'logo-paypal' },
-  { key: 'zelle_identifier', label: 'Zelle', placeholder: 'email or phone', icon: 'send-outline' },
+  { key: 'paypal_handle', label: 'PayPal', placeholder: 'PayPal.Me username', icon: 'logo-paypal' },
 ];
 
 /* ── Skeleton ──────────────────────────────────────────────── */
@@ -75,7 +69,7 @@ function SettingsSkeleton() {
       <View style={{ gap: 20, paddingTop: 12 }}>
         <SkeletonBar width="40%" height={16} />
         <SkeletonBar width="90%" height={12} />
-        {[0, 1, 2, 3].map((i) => (
+        {[0, 1, 2].map((i) => (
           <View key={i} style={s.skeletonRow}>
             <SkeletonBar width={60} />
             <View style={{ flex: 1, alignItems: 'flex-end' }}>
@@ -93,31 +87,18 @@ function SettingsSkeleton() {
 export default function SettingsScreen() {
   const insets = useSafeAreaInsets();
   const { user, signOut, isAuthenticating } = useAuth();
-  const { isPremium, restorePurchases } = useSubscription();
 
   const [isLoading, setIsLoading] = useState(true);
-  const [showPaywall, setShowPaywall] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [showSaved, setShowSaved] = useState(false);
   const [handles, setHandles] = useState<PaymentHandles>({
     venmo_handle: '',
     cashapp_handle: '',
     paypal_handle: '',
-    zelle_identifier: '',
   });
-
-  const [scanUsage, setScanUsage] = useState<ScanUsage | null>(null);
 
   const displayName = user?.user_metadata?.full_name || user?.email || 'You';
   const hasLoadedRef = useRef(false);
-
-  useFocusEffect(
-    useCallback(() => {
-      if (user?.id) {
-        getScanUsage(user.id).then(setScanUsage);
-      }
-    }, [user?.id])
-  );
 
   // Load existing profile
   useEffect(() => {
@@ -127,7 +108,7 @@ export default function SettingsScreen() {
       const supabase = getSupabaseClient();
       const { data, error } = await supabase
         .from('user_profiles')
-        .select('venmo_handle, cashapp_handle, paypal_handle, zelle_identifier')
+        .select('venmo_handle, cashapp_handle, paypal_handle')
         .eq('user_id', user.id)
         .single();
 
@@ -136,7 +117,6 @@ export default function SettingsScreen() {
           venmo_handle: data.venmo_handle || '',
           cashapp_handle: data.cashapp_handle || '',
           paypal_handle: data.paypal_handle || '',
-          zelle_identifier: data.zelle_identifier || '',
         });
       }
       hasLoadedRef.current = true;
@@ -158,7 +138,6 @@ export default function SettingsScreen() {
         venmo_handle: handles.venmo_handle.trim() || null,
         cashapp_handle: handles.cashapp_handle.trim() || null,
         paypal_handle: handles.paypal_handle.trim() || null,
-        zelle_identifier: handles.zelle_identifier.trim() || null,
       })
       .eq('user_id', user.id);
 
@@ -217,65 +196,8 @@ export default function SettingsScreen() {
               </View>
             </Animated.View>
 
-            {/* Plan & usage section */}
-            <Animated.View entering={FadeInDown.delay(100).duration(400)} style={s.section}>
-              <Text style={s.sectionLabel}>PLAN</Text>
-              <View style={s.planCard}>
-                <View style={s.planHeader}>
-                  <View style={[s.planBadge, isPremium && s.planBadgePremium]}>
-                    <Text style={[s.planBadgeText, isPremium && s.planBadgeTextPremium]}>
-                      {isPremium ? 'Premium' : 'Free'}
-                    </Text>
-                  </View>
-                  {!isPremium && scanUsage && (
-                    <Text style={s.planUsage}>
-                      {scanUsage.used}/{scanUsage.limit} scans this month
-                    </Text>
-                  )}
-                </View>
-                {!isPremium && scanUsage && (
-                  <View style={s.usageBar}>
-                    <View
-                      style={[
-                        s.usageBarFill,
-                        { width: `${Math.min(100, (scanUsage.used / scanUsage.limit) * 100)}%` },
-                      ]}
-                    />
-                  </View>
-                )}
-                {isPremium ? (
-                  <Text style={s.planDetail}>Unlimited scans</Text>
-                ) : scanUsage ? (
-                  <Text style={s.planDetail}>
-                    {scanUsage.remaining > 0
-                      ? `${scanUsage.remaining} scan${scanUsage.remaining === 1 ? '' : 's'} remaining`
-                      : 'No scans remaining — resets next month'}
-                  </Text>
-                ) : null}
-
-                {!isPremium && (
-                  <Pressable
-                    style={({ pressed }) => [s.upgradeButton, pressed && s.pressed]}
-                    onPress={() => setShowPaywall(true)}
-                  >
-                    <Ionicons name="sparkles" size={16} color="#04110D" />
-                    <Text style={s.upgradeButtonText}>Upgrade to Premium</Text>
-                  </Pressable>
-                )}
-
-                {isPremium && (
-                  <Pressable
-                    style={({ pressed }) => [s.manageSubButton, pressed && s.pressed]}
-                    onPress={restorePurchases}
-                  >
-                    <Text style={s.manageSubText}>Restore Purchases</Text>
-                  </Pressable>
-                )}
-              </View>
-            </Animated.View>
-
             {/* Payment methods section */}
-            <Animated.View entering={FadeInDown.delay(200).duration(400)} style={s.section}>
+            <Animated.View entering={FadeInDown.delay(100).duration(400)} style={s.section}>
               <Text style={s.sectionLabel}>PAYMENT METHODS</Text>
               <Text style={s.sectionDescription}>
                 Add your payment handles so guests can easily pay you after splitting a receipt.
@@ -299,11 +221,7 @@ export default function SettingsScreen() {
                       placeholderTextColor={colors.muted}
                       autoCapitalize="none"
                       autoCorrect={false}
-                      keyboardType={
-                        field.key === 'paypal_handle' || field.key === 'zelle_identifier'
-                          ? 'email-address'
-                          : 'default'
-                      }
+                      keyboardType="default"
                     />
                   </View>
                 ))}
@@ -332,7 +250,7 @@ export default function SettingsScreen() {
             </Animated.View>
 
             {/* Sign out */}
-            <Animated.View entering={FadeInDown.delay(300).duration(400)} style={s.section}>
+            <Animated.View entering={FadeInDown.delay(200).duration(400)} style={s.section}>
               <Pressable
                 style={({ pressed }) => [s.signOutButton, pressed && s.pressed]}
                 onPress={signOut}
@@ -348,12 +266,6 @@ export default function SettingsScreen() {
         )}
       </ScrollView>
 
-      {showPaywall && scanUsage && (
-        <ScanLimitPaywall
-          usage={scanUsage}
-          onDismiss={() => setShowPaywall(false)}
-        />
-      )}
     </KeyboardAvoidingView>
   );
 }
@@ -453,86 +365,6 @@ const s = StyleSheet.create({
     color: colors.muted,
     fontSize: 13,
     marginTop: 2,
-  },
-
-  /* Plan card */
-  planCard: {
-    backgroundColor: colors.surface,
-    borderRadius: 12,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.05)',
-    gap: 10,
-  },
-  planHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  planBadge: {
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 6,
-    backgroundColor: 'rgba(255, 255, 255, 0.06)',
-  },
-  planBadgePremium: {
-    backgroundColor: 'rgba(52, 211, 153, 0.12)',
-  },
-  planBadgeText: {
-    color: colors.muted,
-    fontSize: 12,
-    fontWeight: '700',
-    letterSpacing: 0.5,
-    textTransform: 'uppercase',
-  },
-  planBadgeTextPremium: {
-    color: colors.primary,
-  },
-  planUsage: {
-    color: colors.muted,
-    fontSize: 13,
-    fontVariant: ['tabular-nums'],
-  },
-  usageBar: {
-    height: 4,
-    borderRadius: 2,
-    backgroundColor: 'rgba(255, 255, 255, 0.06)',
-    overflow: 'hidden',
-  },
-  usageBarFill: {
-    height: '100%',
-    borderRadius: 2,
-    backgroundColor: colors.primary,
-  },
-  planDetail: {
-    color: colors.muted,
-    fontSize: 13,
-  },
-  upgradeButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    backgroundColor: colors.primary,
-    paddingVertical: 12,
-    borderRadius: 10,
-    marginTop: 4,
-  },
-  upgradeButtonText: {
-    color: '#04110D',
-    fontSize: 14,
-    fontWeight: '700',
-    letterSpacing: 0.3,
-  },
-  manageSubButton: {
-    alignItems: 'center',
-    paddingVertical: 10,
-    marginTop: 2,
-  },
-  manageSubText: {
-    color: colors.muted,
-    fontSize: 13,
-    fontWeight: '500',
   },
 
   /* Input group */

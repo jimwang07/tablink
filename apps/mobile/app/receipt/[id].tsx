@@ -16,6 +16,7 @@ import {
 } from 'react-native';
 import { Confetti } from '@/src/components/Confetti';
 import { getSupabaseClient } from '@/src/lib/supabaseClient';
+import { shareTablink } from '@/src/lib/shareTablink';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Swipeable } from 'react-native-gesture-handler';
 import Animated, {
@@ -368,7 +369,7 @@ export default function ReceiptDetailScreen() {
       const supabase = getSupabaseClient();
       const { data } = await supabase
         .from('user_profiles')
-        .select('venmo_handle, cashapp_handle, paypal_handle, zelle_identifier')
+        .select('venmo_handle, cashapp_handle, paypal_handle')
         .eq('user_id', user.id)
         .single();
 
@@ -376,8 +377,7 @@ export default function ReceiptDetailScreen() {
         const hasAny = !!(
           data.venmo_handle ||
           data.cashapp_handle ||
-          data.paypal_handle ||
-          data.zelle_identifier
+          data.paypal_handle
         );
         setHasPaymentMethods(hasAny);
       } else {
@@ -833,11 +833,7 @@ export default function ReceiptDetailScreen() {
 
       const tablinkUrl = `${TABLINK_BASE_URL}/claim/${linkResult.shortCode}`;
 
-      const result = await Share.share({
-        message: `Split the bill with me! ${receipt.merchant_name ? `(${receipt.merchant_name})` : ''}\n${tablinkUrl}`,
-        url: tablinkUrl,
-        title: 'Share Tablink',
-      });
+      const result = await shareTablink({ tablinkUrl, merchantName: receipt.merchant_name });
 
       if (result.action === Share.sharedAction) {
         console.log('[ReceiptDetail] Shared successfully');

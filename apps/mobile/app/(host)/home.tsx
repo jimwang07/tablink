@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState, useMemo } from 'react';
-import { Alert, Dimensions, Modal, View, Text, StyleSheet, ScrollView, Pressable, Share } from 'react-native';
+import { Alert, Dimensions, Modal, View, Text, StyleSheet, ScrollView, Pressable } from 'react-native';
 import { Link, useRouter, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import Animated, { FadeInDown } from 'react-native-reanimated';
@@ -15,16 +15,17 @@ import {
   updateReceipt,
 } from '@/src/services/receiptService';
 import { getSupabaseClient } from '@/src/lib/supabaseClient';
+import { shareTablink } from '@/src/lib/shareTablink';
 import type { ReceiptStatus } from '@/src/types/receipt';
 
-type Tab = 'yours' | 'shared';
-type SortMode = 'date' | 'status' | 'added';
+type Tab = 'active' | 'completed';
+type SortMode = 'newest' | 'oldest' | 'status';
 
-const SORT_MODES: SortMode[] = ['date', 'status', 'added'];
+const SORT_MODES: SortMode[] = ['newest', 'oldest', 'status'];
 const SORT_LABEL: Record<SortMode, string> = {
-  date: 'Date',
+  newest: 'Newest',
+  oldest: 'Oldest',
   status: 'Status',
-  added: 'Added',
 };
 
 type ProgressData = {
@@ -54,7 +55,7 @@ const STATUS_LABEL: Record<ReceiptStatus, string> = {
   settled: 'Settled',
 };
 
-/* ── Helpers (logic unchanged) ─────────────────────────────── */
+/* ── Helpers ───────────────────────────────────────────────── */
 
 function formatCents(cents: number): string {
   return `$${(cents / 100).toFixed(2)}`;
@@ -121,6 +122,11 @@ function getEffectiveStatus(receipt: ReceiptWithDetails, progress: ProgressData)
     return 'settled';
   }
   return receipt.status;
+}
+
+function isReceiptCompleted(receipt: ReceiptWithDetails): boolean {
+  const progress = calculateProgress(receipt);
+  return getEffectiveStatus(receipt, progress) === 'settled';
 }
 
 /* ── Components ────────────────────────────────────────────── */
@@ -261,30 +267,25 @@ function ReceiptCard({
 }
 
 function EmptyState({ tab }: { tab: Tab }) {
-  const isYours = tab === 'yours';
+  const isActive = tab === 'active';
   return (
     <Animated.View entering={FadeInDown.duration(500)} style={s.emptyState}>
       <View style={s.emptyIcon}>
         <Ionicons
-          name={isYours ? 'receipt-outline' : 'people-outline'}
+          name={isActive ? 'receipt-outline' : 'checkmark-done-outline'}
           size={24}
           color={colors.muted}
         />
       </View>
-      {!isYours && (
-        <View style={s.comingSoonBadge}>
-          <Text style={s.comingSoonBadgeText}>Coming Soon</Text>
-        </View>
-      )}
       <Text style={s.emptyTitle}>
-        {isYours ? 'No receipts yet' : 'Shared receipts are coming'}
+        {isActive ? 'No active receipts' : 'No completed receipts'}
       </Text>
       <Text style={s.emptyDescription}>
-        {isYours
+        {isActive
           ? 'Scan or upload a receipt to start splitting with friends.'
-          : 'Soon you will be able to open receipts shared with you in the app and keep them here.'}
+          : 'Fully paid receipts will appear here.'}
       </Text>
-      {isYours && (
+      {isActive && (
         <Link href="/scan" asChild>
           <Pressable style={s.emptyButton}>
             <Ionicons name="scan-outline" size={16} color="#04110D" />
@@ -323,8 +324,9 @@ function OwedSummary({ receipts }: { receipts: ReceiptWithDetails[] }) {
     let activeCount = 0;
 
     for (const r of receipts) {
-      if (r.status === 'draft' || r.status === 'settled') continue;
       const progress = calculateProgress(r);
+      const effectiveStatus = getEffectiveStatus(r, progress);
+      if (effectiveStatus === 'draft' || effectiveStatus === 'settled') continue;
       if (progress.claimed > 0) {
         totalOwed += progress.claimed;
         activeCount++;
@@ -421,9 +423,9 @@ export default function HomeScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const { session } = useAuth();
-  const [activeTab, setActiveTab] = useState<Tab>('yours');
-  const [sortMode, setSortMode] = useState<SortMode>('added');
-  const { yourReceipts, sharedReceipts, isLoading, refresh, subscribe, unsubscribe } = useReceipts();
+  const [activeTab, setActiveTab] = useState<Tab>('active');
+  const [sortMode, setSortMode] = useState<SortMode>('newest');
+  const { yourReceipts, isLoading, refresh, subscribe, unsubscribe } = useReceipts();
   const [menuState, setMenuState] = useState<{
     receipt: ReceiptWithDetails;
     anchor: MenuAnchor;
@@ -437,21 +439,31 @@ export default function HomeScreen() {
     }, [refresh, subscribe, unsubscribe])
   );
 
-  const receipts = activeTab === 'yours' ? yourReceipts : sharedReceipts;
+  const activeReceipts = useMemo(
+    () => yourReceipts.filter((receipt) => !isReceiptCompleted(receipt)),
+    [yourReceipts]
+  );
+  const completedReceipts = useMemo(
+    () => yourReceipts.filter(isReceiptCompleted),
+    [yourReceipts]
+  );
+  const receipts = activeTab === 'active' ? activeReceipts : completedReceipts;
 
   const sortedReceipts = useMemo(() => {
     const list = [...receipts];
     switch (sortMode) {
-      case 'date':
+      case 'newest':
         return list.sort((a, b) => {
-          const dateA = a.receipt_date ? new Date(a.receipt_date).getTime() : 0;
-          const dateB = b.receipt_date ? new Date(b.receipt_date).getTime() : 0;
+          const dateA = new Date(a.receipt_date ?? a.created_at).getTime();
+          const dateB = new Date(b.receipt_date ?? b.created_at).getTime();
           return dateB - dateA;
         });
-      case 'added':
-        return list.sort((a, b) =>
-          new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
-        );
+      case 'oldest':
+        return list.sort((a, b) => {
+          const dateA = new Date(a.receipt_date ?? a.created_at).getTime();
+          const dateB = new Date(b.receipt_date ?? b.created_at).getTime();
+          return dateA - dateB;
+        });
       case 'status': {
         return list.sort((a, b) => {
           const pa = calculateProgress(a);
@@ -479,15 +491,14 @@ export default function HomeScreen() {
     const supabase = getSupabaseClient();
     const { data: profile } = await supabase
       .from('user_profiles')
-      .select('venmo_handle, cashapp_handle, paypal_handle, zelle_identifier')
+      .select('venmo_handle, cashapp_handle, paypal_handle')
       .eq('user_id', userId)
       .single();
 
     const hasPayment = !!(
       profile?.venmo_handle ||
       profile?.cashapp_handle ||
-      profile?.paypal_handle ||
-      profile?.zelle_identifier
+      profile?.paypal_handle
     );
 
     if (!hasPayment) {
@@ -523,11 +534,7 @@ export default function HomeScreen() {
       }
 
       const tablinkUrl = `${TABLINK_BASE_URL}/claim/${linkResult.shortCode}`;
-      await Share.share({
-        message: `Split the bill with me! ${receipt.merchant_name ? `(${receipt.merchant_name})` : ''}\n${tablinkUrl}`,
-        url: tablinkUrl,
-        title: 'Share Tablink',
-      });
+      await shareTablink({ tablinkUrl, merchantName: receipt.merchant_name });
     } catch (err) {
       console.error('[Home] Share error:', err);
       Alert.alert('Error', 'Failed to share tablink');
@@ -642,13 +649,13 @@ export default function HomeScreen() {
 
         {/* Tabs */}
         <View style={s.tabBar}>
-          {(['yours', 'shared'] as const).map((tab) => {
+          {(['active', 'completed'] as const).map((tab) => {
             const isActive = activeTab === tab;
-            const count = tab === 'yours' ? yourReceipts.length : sharedReceipts.length;
+            const count = tab === 'active' ? activeReceipts.length : completedReceipts.length;
             return (
               <Pressable key={tab} style={s.tab} onPress={() => setActiveTab(tab)}>
                 <Text style={[s.tabText, isActive && s.tabTextActive]}>
-                  {tab === 'yours' ? 'Yours' : 'Shared'}
+                  {tab === 'active' ? 'Active' : 'Completed'}
                   {count > 0 && (
                     <Text style={[s.tabCount, isActive && s.tabCountActive]}> {count}</Text>
                   )}
@@ -852,23 +859,6 @@ const s = StyleSheet.create({
     paddingHorizontal: 24,
     paddingBottom: 120,
     gap: 14,
-  },
-
-  comingSoonBadge: {
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 999,
-    backgroundColor: 'rgba(52, 211, 153, 0.08)',
-    borderWidth: 1,
-    borderColor: 'rgba(52, 211, 153, 0.16)',
-    marginBottom: 12,
-  },
-  comingSoonBadgeText: {
-    color: colors.primary,
-    fontSize: 11,
-    fontWeight: '700',
-    letterSpacing: 0.6,
-    textTransform: 'uppercase',
   },
 
   /* Receipt card */

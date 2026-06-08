@@ -29,8 +29,6 @@ import {
   setParseFunctionOverride,
   type ParseFunctionName,
 } from '@/src/lib/api/parseReceipt';
-import { getScanUsage, recordScan, type ScanUsage } from '@/src/services/scanLimitService';
-import { ScanLimitPaywall } from '@/src/components/ScanLimitPaywall';
 import type { ParsedReceipt } from '@/src/types/receipt';
 
 const FOOTER_OVERLAY_SPACE = 220;
@@ -59,14 +57,6 @@ export default function ScanReceiptScreen() {
 
   const { session } = useAuth();
   const { setPendingReceipt } = usePendingReceipt();
-  const [scanUsage, setScanUsage] = useState<ScanUsage | null>(null);
-  const [showPaywall, setShowPaywall] = useState(false);
-
-  useEffect(() => {
-    if (session?.user?.id) {
-      getScanUsage(session.user.id).then(setScanUsage);
-    }
-  }, [session?.user?.id]);
 
   useEffect(() => {
     if (!__DEV__) return;
@@ -106,16 +96,7 @@ export default function ScanReceiptScreen() {
     }
   }, [requestCameraPermission]);
 
-  const checkScanLimit = useCallback((): boolean => {
-    if (!scanUsage) return true; // Still loading, allow optimistically
-    if (scanUsage.isSubscribed) return true;
-    if (scanUsage.remaining > 0) return true;
-    setShowPaywall(true);
-    return false;
-  }, [scanUsage]);
-
   const handleImport = useCallback(async () => {
-    if (!checkScanLimit()) return;
     const ensurePermission = async () => {
       if (!mediaPermission || mediaPermission.status !== 'granted') {
         const { status } = await requestMediaPermission();
@@ -145,7 +126,7 @@ export default function ScanReceiptScreen() {
       setLastPhoto(null);
       setFlowState('preview');
     }
-  }, [checkScanLimit, mediaPermission, requestMediaPermission]);
+  }, [mediaPermission, requestMediaPermission]);
 
   const cropToGuide = useCallback(async (photo: { uri: string; width: number; height: number }) => {
     const targetAspect = 3 / 4; // width:height to mirror the on-screen guide
@@ -178,7 +159,6 @@ export default function ScanReceiptScreen() {
     if (!cameraRef.current || isCapturing) {
       return;
     }
-    if (!checkScanLimit()) return;
 
     try {
       setIsCapturing(true);
@@ -197,7 +177,7 @@ export default function ScanReceiptScreen() {
     } finally {
       setIsCapturing(false);
     }
-  }, [checkScanLimit, cropToGuide, isCapturing]);
+  }, [cropToGuide, isCapturing]);
 
   const ensureStageDuration = useCallback(async () => {
     const elapsed = Date.now() - stageStartedAtRef.current;
@@ -270,23 +250,16 @@ export default function ScanReceiptScreen() {
         stageStartedAtRef.current = Date.now();
         await new Promise((resolve) => setTimeout(resolve, 450));
 
-        // 4. Record scan usage
-        recordScan(userId);
-        setScanUsage((prev) =>
-          prev && !prev.isSubscribed
-            ? { ...prev, used: prev.used + 1, remaining: Math.max(0, prev.remaining - 1) }
-            : prev
-        );
-
-        // 5. Put it in PendingReceipt so /receipt/review can render
+        // 4. Put it in PendingReceipt so /receipt/review can render
         setPendingReceipt({
           localUri: uploadResult.localPreviewUri || localUri,
           storagePath: uploadResult.storagePath ?? null,
           publicUrl: uploadResult.publicUrl ?? null,
+          uploadedAt: new Date().toISOString(),
           parsed: receipt,
         });
 
-        // 6. Reset camera flow + navigate
+        // 5. Reset camera flow + navigate
         setFlowState('idle');
         setLastPhoto(null);
         setImportPreview(null);
@@ -510,13 +483,6 @@ export default function ScanReceiptScreen() {
           </View>
         )}
       </SafeAreaView>
-
-      {showPaywall && scanUsage && (
-        <ScanLimitPaywall
-          usage={scanUsage}
-          onDismiss={() => setShowPaywall(false)}
-        />
-      )}
     </View>
   );
 }

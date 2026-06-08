@@ -145,6 +145,7 @@ export async function saveReceipt(
 ): Promise<SaveReceiptResult> {
   const supabase = getSupabaseClient();
   const { parsed, storagePath } = pendingReceipt;
+  const uploadedAt = pendingReceipt.uploadedAt || new Date().toISOString();
 
   // Check session
   const { data: { session } } = await supabase.auth.getSession();
@@ -166,7 +167,7 @@ export async function saveReceipt(
       id: receiptId,
       owner_id: userId,
       merchant_name: parsed.merchantName,
-      receipt_date: parsed.purchaseDate,
+      receipt_date: uploadedAt,
       image_path: storagePath,
       subtotal_cents: dollarsToCents(parsed.totals.subtotal),
       tax_cents: dollarsToCents(parsed.totals.tax),

@@ -33,7 +33,6 @@ type OwnerProfile = {
   venmo_handle: string | null;
   cashapp_handle: string | null;
   paypal_handle: string | null;
-  zelle_identifier: string | null;
 };
 
 type ItemClaim = {
@@ -132,7 +131,7 @@ async function getReceiptData(receiptId: string) {
   // Fetch owner profile for payment handles
   const { data: ownerProfile } = await supabase
     .from('user_profiles')
-    .select('display_name, venmo_handle, cashapp_handle, paypal_handle, zelle_identifier')
+    .select('display_name, venmo_handle, cashapp_handle, paypal_handle')
     .eq('user_id', receipt.owner_id)
     .single();
 

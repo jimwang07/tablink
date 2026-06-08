@@ -40,6 +40,7 @@ export type PendingReceipt = {
   localUri: string;
   storagePath: string | null;
   publicUrl: string | null;
+  uploadedAt: string;
   parsed: ParsedReceipt;
 };
 

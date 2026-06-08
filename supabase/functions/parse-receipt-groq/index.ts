@@ -211,6 +211,64 @@ function buildUserContent(schemaText: string, transport: "data-url" | "signed-ur
   ] as any;
 }
 
+const MODEL_RESPONSE_SCHEMA = {
+  type: "object",
+  properties: {
+    isValidReceipt: { type: "boolean" },
+    merchantName: { type: ["string", "null"] },
+    purchaseDateRaw: { type: ["string", "null"] },
+    currency: { type: ["string", "null"] },
+    subtotal: { type: ["number", "null"] },
+    tax: { type: ["number", "null"] },
+    tip: { type: ["number", "null"] },
+    total: { type: ["number", "null"] },
+    items: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          name: { type: "string" },
+          lineTotal: { type: "number" },
+          quantity: { type: "number" },
+        },
+        required: ["name", "lineTotal", "quantity"],
+        additionalProperties: false,
+      },
+    },
+    adjustments: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          type: { type: "string", enum: ["discount", "fee", "other"] },
+          label: { type: "string" },
+          amount: { type: "number" },
+        },
+        required: ["type", "label", "amount"],
+        additionalProperties: false,
+      },
+    },
+    unparsedLines: {
+      type: "array",
+      items: { type: "string" },
+    },
+  },
+  required: [
+    "isValidReceipt",
+    "merchantName",
+    "purchaseDateRaw",
+    "currency",
+    "subtotal",
+    "tax",
+    "tip",
+    "total",
+    "items",
+    "adjustments",
+    "unparsedLines",
+  ],
+  additionalProperties: false,
+} as const;
+
 function isLikelyImageTransportError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error ?? "");
   const normalized = message.toLowerCase();
@@ -327,6 +385,14 @@ Examples:
         model: "meta-llama/llama-4-scout-17b-16e-instruct",
         temperature: 0,
         max_tokens: 700,
+        response_format: {
+          type: "json_schema",
+          json_schema: {
+            name: "receipt_extract",
+            strict: false,
+            schema: MODEL_RESPONSE_SCHEMA,
+          },
+        },
         messages: [
           {
             role: "system",
@@ -353,6 +419,14 @@ Examples:
         model: "meta-llama/llama-4-scout-17b-16e-instruct",
         temperature: 0,
         max_tokens: 700,
+        response_format: {
+          type: "json_schema",
+          json_schema: {
+            name: "receipt_extract",
+            strict: false,
+            schema: MODEL_RESPONSE_SCHEMA,
+          },
+        },
         messages: [
           {
             role: "system",

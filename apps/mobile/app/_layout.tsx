@@ -8,7 +8,6 @@ import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { TablinkDarkTheme, colors } from '@/src/theme';
 import { ScreenPlaceholder } from '@/src/components/Skeleton';
 import { AuthProvider } from '@/src/providers/AuthProvider';
-import { RevenueCatProvider } from '@/src/providers/RevenueCatProvider';
 import { PendingReceiptProvider } from '@/src/providers/PendingReceiptProvider';
 import { useAuth } from '@/src/hooks/useAuth';
 import { ThemeProvider } from '@react-navigation/native';
@@ -64,7 +63,17 @@ function AuthAwareStack() {
       <Stack.Screen
         name="receipt/review"
         options={{
-          title: 'Review Receipt',
+          title: 'Review & Edit',
+          presentation: 'modal',
+          headerStyle: { backgroundColor: colors.surface },
+          headerTintColor: colors.text,
+          headerShown: true,
+        }}
+      />
+      <Stack.Screen
+        name="receipt/your-items"
+        options={{
+          title: 'Your Items',
           presentation: 'modal',
           headerStyle: { backgroundColor: colors.surface },
           headerTintColor: colors.text,
@@ -91,11 +100,9 @@ export default function RootLayout() {
       <ThemeProvider value={TablinkDarkTheme}>
         <StatusBar style="light" />
         <AuthProvider>
-          <RevenueCatProvider>
-            <PendingReceiptProvider>
-              <AuthAwareStack />
-            </PendingReceiptProvider>
-          </RevenueCatProvider>
+          <PendingReceiptProvider>
+            <AuthAwareStack />
+          </PendingReceiptProvider>
         </AuthProvider>
       </ThemeProvider>
     </GestureHandlerRootView>
