@@ -138,6 +138,16 @@ function parseQuantityInput(value: string) {
   return Math.max(0.01, Number(parsed.toFixed(2)));
 }
 
+function calculateClaimAmountCents(itemPriceCents: number, itemQuantity: number, portion: number) {
+  const quantity = itemQuantity > 0 ? itemQuantity : 1;
+  return Math.round((itemPriceCents * portion) / quantity);
+}
+
+function calculateClaimPortion(itemPriceCents: number, itemQuantity: number, amountCents: number) {
+  if (itemPriceCents <= 0) return 0;
+  return (amountCents * (itemQuantity > 0 ? itemQuantity : 1)) / itemPriceCents;
+}
+
 function parsePercentInput(value: string) {
   if (!value) return 0;
   const cleaned = value.replace(/[^0-9.,]/g, '').replace(',', '.');
@@ -157,6 +167,10 @@ function formatCurrency(amount: number) {
     currency: 'USD',
     minimumFractionDigits: 2,
   }).format(amount);
+}
+
+function formatQuantity(value: number) {
+  return Number.isInteger(value) ? String(value) : value.toFixed(2).replace(/\.?0+$/, '');
 }
 
 function formatDate(dateString: string | null): string {
@@ -354,12 +368,20 @@ export default function ReceiptDetailScreen() {
   // Item assignment modal
   const [assigningItem, setAssigningItem] = useState<EditableItem | null>(null);
   const [isUpdatingClaim, setIsUpdatingClaim] = useState(false);
+  const [assignedCoverEditor, setAssignedCoverEditor] = useState<{ item: EditableItem; claimId: string } | null>(null);
+  const [customAssignedCoverInput, setCustomAssignedCoverInput] = useState('');
 
   // Confetti celebration for settled receipts
   const [showConfetti, setShowConfetti] = useState(false);
   const [showSettledModal, setShowSettledModal] = useState(false);
   const initialCheckDoneRef = useRef(false);
   const wasSettledRef = useRef(false);
+  const titleInputRef = useRef<TextInput>(null);
+
+  const closeAssignmentModal = useCallback(() => {
+    setAssignedCoverEditor(null);
+    setAssigningItem(null);
+  }, []);
 
   // Check if user has payment methods set up
   useEffect(() => {
@@ -566,6 +588,8 @@ export default function ReceiptDetailScreen() {
     () => TIP_PRESET_PERCENTS.find((percent) => Math.abs(currentTipPercent - percent) < 0.01) ?? null,
     [currentTipPercent]
   );
+  const canEditReceiptFields = receipt?.status === 'draft';
+  const lockedReceiptMessage = 'Receipt details are locked after sharing. You can still assign items to people.';
 
   useEffect(() => {
     if (subtotal <= 0 || tipAmount <= 0 || activeTipPreset) {
@@ -577,6 +601,7 @@ export default function ReceiptDetailScreen() {
   }, [activeTipPreset, currentTipPercent, subtotal, tipAmount]);
 
   const applyTipPercent = useCallback((percent: number) => {
+    if (!canEditReceiptFields) return;
     const safePercent = Math.max(0, Number(percent.toFixed(2)));
     setCustomTipPercentInput(
       TIP_PRESET_PERCENTS.includes(safePercent as (typeof TIP_PRESET_PERCENTS)[number])
@@ -584,18 +609,20 @@ export default function ReceiptDetailScreen() {
         : formatPercentInput(safePercent)
     );
     setTipInput(toCurrencyString(subtotal * (safePercent / 100)));
-  }, [subtotal]);
+  }, [canEditReceiptFields, subtotal]);
 
   const handleCustomTipPercentChange = useCallback((value: string) => {
+    if (!canEditReceiptFields) return;
     setCustomTipPercentInput(value);
     setTipInput(toCurrencyString(subtotal * (parsePercentInput(value) / 100)));
-  }, [subtotal]);
+  }, [canEditReceiptFields, subtotal]);
 
   const updateAdjustmentAmount = useCallback((key: string, value: string) => {
+    if (!canEditReceiptFields) return;
     setEditableAdjustments((current) =>
       current.map((adjustment) => (adjustment.key === key ? { ...adjustment, amount: value } : adjustment))
     );
-  }, []);
+  }, [canEditReceiptFields]);
 
   const effectiveStatus = useMemo((): ReceiptStatus => {
     if (!receipt) return 'draft';
@@ -660,27 +687,60 @@ export default function ReceiptDetailScreen() {
   }, [id, effectiveStatus, receipt]);
 
   const updateItemField = useCallback((key: string, field: keyof EditableItem, value: string) => {
+    if (!canEditReceiptFields) return;
     setEditableItems((current) =>
       current.map((item) => (item.key === key ? { ...item, [field]: value } : item))
     );
-  }, []);
+  }, [canEditReceiptFields]);
 
   const removeItem = useCallback((key: string) => {
+    if (!canEditReceiptFields) return;
     setEditableItems((current) => {
       const next = current.filter((item) => item.key !== key);
       return next.length ? next : [{ key: createItemKey(), name: '', price: '', quantity: '1' }];
     });
-  }, []);
+  }, [canEditReceiptFields]);
 
   const addItem = useCallback(() => {
+    if (!canEditReceiptFields) return;
     setEditableItems((current) => [
       { key: createItemKey(), name: '', price: '', quantity: '1' },
       ...current,
     ]);
-  }, []);
+  }, [canEditReceiptFields]);
 
   const handleSave = useCallback(async () => {
     if (!id || !receipt) return;
+
+    if (!canEditReceiptFields) {
+      setIsSaving(true);
+      try {
+        const metadataResult = await updateReceipt(id, {
+          merchant_name: merchantName.trim() || null,
+          raw_payload: receipt.raw_payload
+            ? {
+                ...receipt.raw_payload,
+                merchantName: merchantName.trim() || null,
+              }
+            : null,
+        });
+
+        if (!metadataResult.success) {
+          Alert.alert('Error', metadataResult.error || 'Failed to save receipt');
+          return;
+        }
+
+        setReceipt({ ...receipt, merchant_name: merchantName.trim() || null });
+        setHasChanges(false);
+        Alert.alert('Saved', 'Merchant name has been saved.');
+      } catch (err) {
+        console.error('[ReceiptDetail] Save merchant error:', err);
+        Alert.alert('Error', 'Failed to save merchant name');
+      } finally {
+        setIsSaving(false);
+      }
+      return;
+    }
 
     setIsSaving(true);
     try {
@@ -752,7 +812,7 @@ export default function ReceiptDetailScreen() {
     } finally {
       setIsSaving(false);
     }
-  }, [id, receipt, merchantName, subtotal, taxAmount, tipAmount, discountInput, grandTotal, editableItems, editableAdjustments]);
+  }, [id, receipt, canEditReceiptFields, merchantName, subtotal, taxAmount, tipAmount, discountInput, grandTotal, editableItems, editableAdjustments]);
 
   const handleDelete = useCallback(() => {
     if (!id) return;
@@ -929,9 +989,16 @@ export default function ReceiptDetailScreen() {
 
     const itemKey = assigningItem.key;
     const itemPrice = dollarsToCents(parseCurrencyInput(assigningItem.price));
+    const itemQuantity = parseQuantityInput(assigningItem.quantity);
     const existingClaim = claims.find(
       c => c.item_id === itemKey && c.participant_id === participantId
     );
+    const participant = participants.find(p => p.id === participantId);
+
+    if (participant?.payment_status === 'paid') {
+      Alert.alert('Already Paid', `${participant.display_name} has already paid, so their claims cannot be changed.`);
+      return;
+    }
 
     setIsUpdatingClaim(true);
     try {
@@ -945,50 +1012,42 @@ export default function ReceiptDetailScreen() {
 
         if (deleteError) throw deleteError;
 
-        const remainingClaims = claims.filter(c => c.item_id === itemKey && c.id !== existingClaim.id);
-        if (remainingClaims.length > 0) {
-          const newAmount = Math.round(itemPrice / remainingClaims.length);
-          await supabase
-            .from('item_claims')
-            .update({ amount_cents: newAmount })
-            .eq('item_id', itemKey);
-
-          setClaims(prev => prev
-            .filter(c => c.id !== existingClaim.id)
-            .map(c => c.item_id === itemKey ? { ...c, amount_cents: newAmount } : c)
-          );
-        } else {
-          setClaims(prev => prev.filter(c => c.id !== existingClaim.id));
-        }
+        setClaims(prev => prev.filter(c => c.id !== existingClaim.id));
       } else {
-        const existingClaimsCount = claims.filter(c => c.item_id === itemKey).length;
-        const newTotalClaimers = existingClaimsCount + 1;
-        const newAmount = Math.round(itemPrice / newTotalClaimers);
+        const itemClaims = claims.filter(c => c.item_id === itemKey);
+        const claimedPortion = itemClaims.reduce((sum, claim) => sum + Number(claim.portion || 0), 0);
+        const claimedAmountCents = itemClaims.reduce((sum, claim) => sum + claim.amount_cents, 0);
+        const remainingPortion = Math.max(0, itemQuantity - claimedPortion);
+        const remainingAmountCents = Math.max(0, itemPrice - claimedAmountCents);
+        const unitAmountCents = calculateClaimAmountCents(itemPrice, itemQuantity, 1);
+        const defaultAmountCents =
+          remainingPortion > 0
+            ? Math.min(unitAmountCents, remainingAmountCents)
+            : remainingAmountCents;
+        const defaultPortion =
+          remainingPortion > 0
+            ? Math.min(1, calculateClaimPortion(itemPrice, itemQuantity, defaultAmountCents))
+            : calculateClaimPortion(itemPrice, itemQuantity, defaultAmountCents);
+
+        if (defaultAmountCents <= 0 || defaultPortion <= 0) {
+          Alert.alert('Fully Claimed', 'This item has already been fully claimed.');
+          return;
+        }
 
         const { data, error: insertError } = await supabase
           .from('item_claims')
           .insert({
             item_id: itemKey,
             participant_id: participantId,
-            portion: 1,
-            amount_cents: newAmount,
+            portion: defaultPortion,
+            amount_cents: defaultAmountCents,
           })
           .select()
           .single();
 
         if (insertError) throw insertError;
 
-        if (existingClaimsCount > 0) {
-          await supabase
-            .from('item_claims')
-            .update({ amount_cents: newAmount })
-            .eq('item_id', itemKey);
-        }
-
-        setClaims(prev => [
-          ...prev.map(c => c.item_id === itemKey ? { ...c, amount_cents: newAmount } : c),
-          data,
-        ]);
+        setClaims(prev => [...prev, data]);
       }
     } catch (err) {
       console.error('[ReceiptDetail] Failed to update claim:', err);
@@ -996,7 +1055,136 @@ export default function ReceiptDetailScreen() {
     } finally {
       setIsUpdatingClaim(false);
     }
-  }, [assigningItem, claims, isUpdatingClaim]);
+  }, [assigningItem, claims, isUpdatingClaim, participants]);
+
+  const handleAdjustAssignedClaimPortion = useCallback(async (claim: ItemClaim, nextPortion: number) => {
+    if (!assigningItem || isUpdatingClaim) return;
+
+    const participant = participants.find(p => p.id === claim.participant_id);
+    if (participant?.payment_status === 'paid') {
+      Alert.alert('Already Paid', `${participant.display_name} has already paid, so their claims cannot be changed.`);
+      return;
+    }
+
+    const itemPrice = dollarsToCents(parseCurrencyInput(assigningItem.price));
+    const itemQuantity = parseQuantityInput(assigningItem.quantity);
+    const claimedByOthers = claims
+      .filter(c => c.item_id === assigningItem.key && c.id !== claim.id)
+      .reduce((sum, itemClaim) => sum + Number(itemClaim.portion || 0), 0);
+    const maxPortion = Math.max(0, itemQuantity - claimedByOthers);
+    const clampedPortion = Math.min(Math.max(0, nextPortion), maxPortion);
+
+    setIsUpdatingClaim(true);
+    try {
+      const supabase = getSupabaseClient();
+
+      if (clampedPortion <= 0) {
+        const { error: deleteError } = await supabase
+          .from('item_claims')
+          .delete()
+          .eq('id', claim.id);
+
+        if (deleteError) throw deleteError;
+        setClaims(prev => prev.filter(existingClaim => existingClaim.id !== claim.id));
+        return;
+      }
+
+      const amountCents = calculateClaimAmountCents(itemPrice, itemQuantity, clampedPortion);
+      const { error: updateError } = await supabase
+        .from('item_claims')
+        .update({ portion: clampedPortion, amount_cents: amountCents })
+        .eq('id', claim.id);
+
+      if (updateError) throw updateError;
+
+      setClaims(prev =>
+        prev.map(existingClaim =>
+          existingClaim.id === claim.id
+            ? { ...existingClaim, portion: clampedPortion, amount_cents: amountCents }
+            : existingClaim
+        )
+      );
+    } catch (err) {
+      console.error('[ReceiptDetail] Failed to adjust claim:', err);
+      Alert.alert('Error', 'Failed to update assignment');
+    } finally {
+      setIsUpdatingClaim(false);
+    }
+  }, [assigningItem, claims, isUpdatingClaim, participants]);
+
+  const handleOpenAssignedCoverEditor = useCallback((claim: ItemClaim) => {
+    const participant = participants.find(p => p.id === claim.participant_id);
+    if (participant?.payment_status === 'paid') {
+      Alert.alert('Already Paid', `${participant.display_name} has already paid, so their claims cannot be changed.`);
+      return;
+    }
+
+    Keyboard.dismiss();
+    if (assigningItem) {
+      setAssignedCoverEditor({ item: assigningItem, claimId: claim.id });
+    }
+    setCustomAssignedCoverInput((claim.amount_cents / 100).toFixed(2));
+  }, [assigningItem, participants]);
+
+  const handleUpdateAssignedCoverAmount = useCallback(async (claim: ItemClaim, amountCents: number) => {
+    if (!assigningItem || isUpdatingClaim) return;
+
+    const participant = participants.find(p => p.id === claim.participant_id);
+    if (participant?.payment_status === 'paid') {
+      Alert.alert('Already Paid', `${participant.display_name} has already paid, so their claims cannot be changed.`);
+      return;
+    }
+
+    const itemPrice = dollarsToCents(parseCurrencyInput(assigningItem.price));
+    const otherClaimedAmount = claims
+      .filter(c => c.item_id === assigningItem.key && c.id !== claim.id)
+      .reduce((sum, itemClaim) => sum + itemClaim.amount_cents, 0);
+    const maxAmountCents = Math.max(0, itemPrice - otherClaimedAmount);
+    const nextAmountCents = Math.min(Math.max(1, Math.round(amountCents)), maxAmountCents);
+
+    if (nextAmountCents <= 0) {
+      Alert.alert('Fully Claimed', 'No remaining amount is available for this claim.');
+      return;
+    }
+
+    setIsUpdatingClaim(true);
+    try {
+      const supabase = getSupabaseClient();
+      const { error: updateError } = await supabase
+        .from('item_claims')
+        .update({ amount_cents: nextAmountCents })
+        .eq('id', claim.id);
+
+      if (updateError) throw updateError;
+
+      setClaims(prev =>
+        prev.map(existingClaim =>
+          existingClaim.id === claim.id
+            ? { ...existingClaim, amount_cents: nextAmountCents }
+            : existingClaim
+        )
+      );
+      setAssignedCoverEditor(null);
+    } catch (err) {
+      console.error('[ReceiptDetail] Failed to update cover amount:', err);
+      Alert.alert('Error', 'Failed to update covered amount');
+    } finally {
+      setIsUpdatingClaim(false);
+    }
+  }, [assigningItem, claims, isUpdatingClaim, participants]);
+
+  const handleApplyCustomAssignedCoverAmount = useCallback(() => {
+    const claim = claims.find(itemClaim => itemClaim.id === assignedCoverEditor?.claimId);
+    if (!claim) return;
+
+    const parsedAmount = parseCurrencyInput(customAssignedCoverInput);
+    if (parsedAmount <= 0) {
+      Alert.alert('Invalid Amount', 'Enter an amount greater than $0.00.');
+      return;
+    }
+
+    void handleUpdateAssignedCoverAmount(claim, dollarsToCents(parsedAmount));
+  }, [assignedCoverEditor?.claimId, claims, customAssignedCoverInput, handleUpdateAssignedCoverAmount]);
 
   const handleItemLongPress = useCallback((item: EditableItem) => {
     Keyboard.dismiss();
@@ -1062,9 +1250,27 @@ export default function ReceiptDetailScreen() {
             <Ionicons name="arrow-back" size={24} color={colors.text} />
           </Pressable>
           <View style={s.headerContent}>
-            <Text style={s.title} numberOfLines={1}>
-              {receipt.merchant_name || 'Receipt'}
-            </Text>
+            <Text style={s.headerOverline}>MERCHANT</Text>
+            <View style={s.titleEditRow}>
+              <TextInput
+                ref={titleInputRef}
+                value={merchantName}
+                onChangeText={setMerchantName}
+                placeholder="Receipt"
+                placeholderTextColor={colors.textSecondary}
+                style={s.titleInput}
+                editable
+                returnKeyType="done"
+                selectTextOnFocus={merchantName.length === 0}
+              />
+              <Pressable
+                onPress={() => titleInputRef.current?.focus()}
+                style={({ pressed }) => [s.titleEditButton, pressed && s.pressed]}
+                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              >
+                <Ionicons name="pencil" size={14} color={colors.muted} />
+              </Pressable>
+            </View>
             <Text style={s.subtitle}>{formatDate(receipt.receipt_date)}</Text>
           </View>
           <Text style={[s.statusLabel, { color: statusColor }]}>
@@ -1072,50 +1278,22 @@ export default function ReceiptDetailScreen() {
           </Text>
         </View>
 
-        {/* ── Receipt image ── */}
-        {receipt.image_path && (
-          <View style={s.imageCard}>
-            {imageUrl ? (
-              <Image source={{ uri: imageUrl }} style={s.receiptImage} resizeMode="cover" />
-            ) : (
-              <View style={[s.receiptImage, s.imagePlaceholder]}>
-                <SkeletonPulse>
-                  <SkeletonBar width="100%" height={200} />
-                </SkeletonPulse>
-              </View>
-            )}
-            <Pressable
-              style={({ pressed }) => [s.expandButton, pressed && s.pressed]}
-              onPress={() => setIsImageExpanded(true)}
-              disabled={!imageUrl}
-            >
-              <Text style={s.expandButtonText}>View full receipt</Text>
-            </Pressable>
-          </View>
-        )}
-
-        {/* ── Merchant ── */}
-        <View style={s.section}>
-          <Text style={s.sectionLabel}>Merchant</Text>
-          <TextInput
-            value={merchantName}
-            onChangeText={setMerchantName}
-            placeholder="Add merchant name"
-            placeholderTextColor={colors.muted}
-            style={s.textInput}
-          />
-        </View>
-
         {/* ── Items ── */}
         <View style={s.section}>
           <View style={s.cardHeader}>
             <Text style={s.sectionLabel}>Items</Text>
-            <Pressable style={({ pressed }) => [pressed && s.pressed]} onPress={addItem}>
-              <Text style={s.addButtonText}>+ Add item</Text>
-            </Pressable>
+            {canEditReceiptFields ? (
+              <Pressable style={({ pressed }) => [pressed && s.pressed]} onPress={addItem}>
+                <Text style={s.addButtonText}>+ Add item</Text>
+              </Pressable>
+            ) : null}
           </View>
           <Text style={s.hint}>
-            Tap <Ionicons name="person-add-outline" size={12} color={colors.muted} /> to assign. Swipe left to delete.
+            {canEditReceiptFields ? (
+              <>Tap to edit, swipe left to delete.</>
+            ) : (
+              lockedReceiptMessage
+            )}
           </Text>
           {editableItems.map((item) => (
             <Animated.View
@@ -1126,6 +1304,7 @@ export default function ReceiptDetailScreen() {
             >
               <View style={s.swipeDeleteBehind} />
               <Swipeable
+                enabled={canEditReceiptFields}
                 overshootRight={false}
                 rightThreshold={60}
                 friction={2}
@@ -1144,9 +1323,13 @@ export default function ReceiptDetailScreen() {
                 )}
               >
                 {(() => {
+                  const itemClaims = claims.filter(claim => claim.item_id === item.key);
                   const itemClaimers = getItemClaimers(item.key);
-                  const isPaid = itemClaimers.length > 0 && itemClaimers.every(c => c.payment_status === 'paid');
-                  const isClaimed = itemClaimers.length > 0 && !isPaid;
+                  const claimedAmountCents = itemClaims.reduce((sum, claim) => sum + claim.amount_cents, 0);
+                  const itemPriceCents = dollarsToCents(parseCurrencyInput(item.price));
+                  const isFullyClaimed = itemPriceCents > 0 && claimedAmountCents >= itemPriceCents;
+                  const isPaid = isFullyClaimed && itemClaimers.length > 0 && itemClaimers.every(c => c.payment_status === 'paid');
+                  const isClaimed = itemClaims.length > 0 && !isPaid;
 
                   return (
                     <View style={[s.itemRow, isClaimed && s.itemRowClaimed, isPaid && s.itemRowPaid]}>
@@ -1168,6 +1351,7 @@ export default function ReceiptDetailScreen() {
                             onChangeText={(value) => updateItemField(item.key, 'name', value)}
                             placeholder="Item name"
                             placeholderTextColor={colors.muted}
+                            editable={canEditReceiptFields}
                             style={s.itemNameInput}
                           />
                           <View style={s.itemQtyGroup}>
@@ -1178,6 +1362,7 @@ export default function ReceiptDetailScreen() {
                               placeholder="1"
                               placeholderTextColor={colors.muted}
                               keyboardType="decimal-pad"
+                              editable={canEditReceiptFields}
                               style={s.itemQtyInput}
                             />
                           </View>
@@ -1187,18 +1372,27 @@ export default function ReceiptDetailScreen() {
                         </View>
                         {itemClaimers.length > 0 && (
                           <View style={s.claimerBadges}>
-                            {itemClaimers.map(claimer => (
-                              <View
-                                key={claimer.id}
-                                style={[s.claimerBadge, { borderLeftColor: claimer.color_token ?? colors.primary }]}
-                              >
-                                <Text style={s.claimerEmoji}>{claimer.emoji}</Text>
-                                <Text style={s.claimerName}>{claimer.display_name}</Text>
-                                {claimer.payment_status === 'paid' && (
-                                  <Ionicons name="checkmark" size={12} color={colors.primary} />
-                                )}
-                              </View>
-                            ))}
+                            {itemClaims.map(claim => {
+                                const claimer = participants.find(p => p.id === claim.participant_id);
+                                if (!claimer) return null;
+                                const quantity = parseQuantityInput(item.quantity);
+                                return (
+                                  <View
+                                    key={claim.id}
+                                    style={[s.claimerBadge, { borderLeftColor: claimer.color_token ?? colors.primary }]}
+                                  >
+                                    <Text style={s.claimerEmoji}>{claimer.emoji}</Text>
+                                    <Text style={s.claimerName}>{claimer.display_name}</Text>
+                                    {quantity > 1 ? (
+                                      <Text style={s.claimerMeta}>×{formatQuantity(Number(claim.portion || 0))}</Text>
+                                    ) : null}
+                                    <Text style={s.claimerMeta}>{formatCurrency(claim.amount_cents / 100)}</Text>
+                                    {claimer.payment_status === 'paid' && (
+                                      <Ionicons name="checkmark" size={12} color={colors.primary} />
+                                    )}
+                                  </View>
+                                );
+                              })}
                           </View>
                         )}
                       </View>
@@ -1209,6 +1403,7 @@ export default function ReceiptDetailScreen() {
                           placeholder="0.00"
                           placeholderTextColor={colors.muted}
                           keyboardType="decimal-pad"
+                          editable={canEditReceiptFields}
                           style={s.itemPriceInput}
                         />
                       </View>
@@ -1235,7 +1430,8 @@ export default function ReceiptDetailScreen() {
               placeholder="0.00"
               placeholderTextColor={colors.muted}
               keyboardType="decimal-pad"
-              style={[s.textInput, s.summaryInput]}
+              editable={canEditReceiptFields}
+              style={[s.textInput, s.summaryInput, !canEditReceiptFields && s.readOnlyInput]}
             />
           </View>
           <View style={s.summaryRow}>
@@ -1246,7 +1442,8 @@ export default function ReceiptDetailScreen() {
               placeholder="0.00"
               placeholderTextColor={colors.muted}
               keyboardType="decimal-pad"
-              style={[s.textInput, s.summaryInput]}
+              editable={canEditReceiptFields}
+              style={[s.textInput, s.summaryInput, !canEditReceiptFields && s.readOnlyInput]}
             />
           </View>
           <View style={s.tipControls}>
@@ -1260,8 +1457,10 @@ export default function ReceiptDetailScreen() {
                     style={({ pressed }) => [
                       s.tipPresetButton,
                       isActive && s.tipPresetButtonActive,
+                      !canEditReceiptFields && s.buttonDisabled,
                       pressed && s.pressed,
                     ]}
+                    disabled={!canEditReceiptFields}
                   >
                     <Text style={[s.tipPresetText, isActive && s.tipPresetTextActive]}>{percent}%</Text>
                   </Pressable>
@@ -1275,7 +1474,8 @@ export default function ReceiptDetailScreen() {
                   placeholder="0"
                   placeholderTextColor={colors.muted}
                   keyboardType="decimal-pad"
-                  style={s.tipPercentInput}
+                  editable={canEditReceiptFields}
+                  style={[s.tipPercentInput, !canEditReceiptFields && s.readOnlyInput]}
                 />
                 <Text style={s.tipPresetText}>%</Text>
               </View>
@@ -1291,7 +1491,8 @@ export default function ReceiptDetailScreen() {
                   placeholder="0.00"
                   placeholderTextColor={colors.muted}
                   keyboardType="decimal-pad"
-                  style={[s.textInput, s.summaryInput]}
+                  editable={canEditReceiptFields}
+                  style={[s.textInput, s.summaryInput, !canEditReceiptFields && s.readOnlyInput]}
                 />
               </View>
               {editableAdjustments.map((adjustment) => (
@@ -1303,7 +1504,8 @@ export default function ReceiptDetailScreen() {
                     placeholder="0.00"
                     placeholderTextColor={colors.muted}
                     keyboardType="decimal-pad"
-                    style={[s.textInput, s.summaryInput]}
+                    editable={canEditReceiptFields}
+                    style={[s.textInput, s.summaryInput, !canEditReceiptFields && s.readOnlyInput]}
                   />
                 </View>
               ))}
@@ -1311,8 +1513,13 @@ export default function ReceiptDetailScreen() {
           )}
           {!showExtraCharges && discountAmount <= 0 && editableAdjustments.length === 0 ? (
             <Pressable
-              style={({ pressed }) => [s.extraChargesButton, pressed && s.pressed]}
+              style={({ pressed }) => [
+                s.extraChargesButton,
+                !canEditReceiptFields && s.buttonDisabled,
+                pressed && s.pressed,
+              ]}
               onPress={() => setShowExtraCharges(true)}
+              disabled={!canEditReceiptFields}
             >
               <Text style={s.extraChargesButtonText}>+ Add discount or fee</Text>
             </Pressable>
@@ -1465,6 +1672,24 @@ export default function ReceiptDetailScreen() {
         </View>
       </ScrollView>
 
+      {receipt.image_path ? (
+        <Pressable
+          style={({ pressed }) => [
+            s.floatingReceiptButton,
+            !imageUrl && s.buttonDisabled,
+            pressed && s.pressed,
+          ]}
+          onPress={() => {
+            Keyboard.dismiss();
+            setIsImageExpanded(true);
+          }}
+          disabled={!imageUrl}
+        >
+          <Ionicons name="receipt-outline" size={16} color={colors.primary} />
+          <Text style={s.floatingReceiptButtonText}>View Receipt</Text>
+        </Pressable>
+      ) : null}
+
       {/* ── Full image modal ── */}
       <Modal
         visible={isImageExpanded}
@@ -1477,7 +1702,7 @@ export default function ReceiptDetailScreen() {
             {imageUrl && (
               <Image
                 source={{ uri: imageUrl }}
-                resizeMode="contain"
+                resizeMode="cover"
                 style={s.modalImage}
               />
             )}
@@ -1496,11 +1721,11 @@ export default function ReceiptDetailScreen() {
         visible={assigningItem !== null}
         animationType="slide"
         transparent
-        onRequestClose={() => setAssigningItem(null)}
+        onRequestClose={closeAssignmentModal}
       >
         <Pressable
           style={s.assignModalBackdrop}
-          onPress={() => setAssigningItem(null)}
+          onPress={closeAssignmentModal}
         >
           <Pressable style={s.assignModalContent} onPress={(e) => e.stopPropagation()}>
             <View style={s.assignModalHeader}>
@@ -1511,7 +1736,7 @@ export default function ReceiptDetailScreen() {
                 </Text>
               </View>
               <Pressable
-                onPress={() => setAssigningItem(null)}
+                onPress={closeAssignmentModal}
                 style={({ pressed }) => [s.assignModalCloseButton, pressed && s.pressed]}
               >
                 <Ionicons name="close" size={24} color={colors.text} />
@@ -1520,7 +1745,16 @@ export default function ReceiptDetailScreen() {
 
             {(() => {
               const itemClaimers = assigningItem ? getItemClaimers(assigningItem.key) : [];
-              const isItemSettled = itemClaimers.length > 0 && itemClaimers.every(c => c.payment_status === 'paid');
+              const assignedClaims = assigningItem ? claims.filter(claim => claim.item_id === assigningItem.key) : [];
+              const assignedItemPriceCents = assigningItem
+                ? dollarsToCents(parseCurrencyInput(assigningItem.price))
+                : 0;
+              const assignedClaimedAmountCents = assignedClaims.reduce((sum, claim) => sum + claim.amount_cents, 0);
+              const isItemSettled =
+                assignedItemPriceCents > 0 &&
+                assignedClaimedAmountCents >= assignedItemPriceCents &&
+                itemClaimers.length > 0 &&
+                itemClaimers.every(c => c.payment_status === 'paid');
 
               if (isItemSettled) {
                 return (
@@ -1535,33 +1769,115 @@ export default function ReceiptDetailScreen() {
               return participants.length > 0 ? (
                 <View style={s.assignParticipantList}>
                   {participants.map(p => {
-                    const isAssigned = assigningItem
-                      ? claims.some(c => c.item_id === assigningItem.key && c.participant_id === p.id)
-                      : false;
+                    const assignedClaim = assigningItem
+                      ? claims.find(c => c.item_id === assigningItem.key && c.participant_id === p.id)
+                      : undefined;
+                    const isAssigned = Boolean(assignedClaim);
+                    const itemQuantity = assigningItem ? parseQuantityInput(assigningItem.quantity) : 1;
+                    const claimedByOthers = assigningItem && assignedClaim
+                      ? claims
+                          .filter(c => c.item_id === assigningItem.key && c.id !== assignedClaim.id)
+                          .reduce((sum, claim) => sum + Number(claim.portion || 0), 0)
+                      : 0;
+                    const maxAssignedPortion = Math.max(0, itemQuantity - claimedByOthers);
+                    const participantIsPaid = p.payment_status === 'paid';
+                    const canAdjustClaim =
+                      Boolean(assignedClaim) &&
+                      !participantIsPaid &&
+                      !isUpdatingClaim &&
+                      itemQuantity > 1;
+                    const canIncreaseClaim =
+                      canAdjustClaim &&
+                      Number(assignedClaim?.portion || 0) < maxAssignedPortion;
+
+                    const handleStepperPress = (nextPortion: number) => {
+                      if (assignedClaim) {
+                        void handleAdjustAssignedClaimPortion(assignedClaim, nextPortion);
+                      }
+                    };
 
                     return (
-                      <Pressable
+                      <View
                         key={p.id}
                         style={[
                           s.assignParticipantRow,
                           isAssigned && s.assignParticipantRowSelected,
+                          isUpdatingClaim && s.buttonDisabled,
                         ]}
-                        onPress={() => handleToggleClaim(p.id)}
-                        disabled={isUpdatingClaim}
                       >
-                        <View style={s.assignParticipantInfo}>
+                        <Pressable
+                          style={({ pressed }) => [s.assignParticipantInfo, pressed && s.pressed]}
+                          onPress={() => handleToggleClaim(p.id)}
+                          disabled={isUpdatingClaim}
+                        >
                           <Text style={s.assignParticipantEmoji}>{p.emoji || '👤'}</Text>
-                          <Text style={s.assignParticipantName}>{p.display_name}</Text>
-                        </View>
-                        <View style={[
-                          s.assignCheckbox,
-                          isAssigned && s.assignCheckboxChecked,
-                        ]}>
-                          {isAssigned && (
-                            <Ionicons name="checkmark" size={16} color="#000" />
-                          )}
-                        </View>
-                      </Pressable>
+                          <View style={s.assignParticipantText}>
+                            <Text style={s.assignParticipantName}>{p.display_name}</Text>
+                            {assignedClaim ? (
+                              <View style={s.assignParticipantMetaRow}>
+                                <Text style={s.assignParticipantMeta}>
+                                  {itemQuantity > 1 ? `×${formatQuantity(Number(assignedClaim.portion || 0))} · ` : ''}
+                                  {formatCurrency(assignedClaim.amount_cents / 100)}
+                                </Text>
+                                {!participantIsPaid ? (
+                                  <Pressable
+                                    onPress={() => handleOpenAssignedCoverEditor(assignedClaim)}
+                                    style={({ pressed }) => [s.assignCoverEditButton, pressed && s.pressed]}
+                                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                                  >
+                                    <Ionicons name="pencil" size={12} color="#FBBF24" />
+                                  </Pressable>
+                                ) : null}
+                              </View>
+                            ) : null}
+                          </View>
+                        </Pressable>
+                        {assignedClaim && itemQuantity > 1 ? (
+                          <View style={s.assignQuantityStepper}>
+                            <Pressable
+                              onPress={() => handleStepperPress(Number(assignedClaim.portion || 0) - 1)}
+                              style={({ pressed }) => [
+                                s.assignQuantityButton,
+                                participantIsPaid && s.buttonDisabled,
+                                pressed && s.pressed,
+                              ]}
+                              disabled={participantIsPaid || isUpdatingClaim}
+                              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                            >
+                              <Text style={s.assignQuantityButtonText}>-</Text>
+                            </Pressable>
+                            <Text style={s.assignQuantityValue}>
+                              {formatQuantity(Number(assignedClaim.portion || 0))}/{formatQuantity(itemQuantity)}
+                            </Text>
+                            <Pressable
+                              onPress={() => handleStepperPress(Number(assignedClaim.portion || 0) + 1)}
+                              style={({ pressed }) => [
+                                s.assignQuantityButton,
+                                !canIncreaseClaim && s.buttonDisabled,
+                                pressed && s.pressed,
+                              ]}
+                              disabled={!canIncreaseClaim}
+                              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                            >
+                              <Text style={s.assignQuantityButtonText}>+</Text>
+                            </Pressable>
+                          </View>
+                        ) : (
+                          <Pressable
+                            onPress={() => handleToggleClaim(p.id)}
+                            disabled={isUpdatingClaim}
+                            style={({ pressed }) => [
+                              s.assignCheckbox,
+                              isAssigned && s.assignCheckboxChecked,
+                              pressed && s.pressed,
+                            ]}
+                          >
+                            {isAssigned && (
+                              <Ionicons name="checkmark" size={16} color="#000" />
+                            )}
+                          </Pressable>
+                        )}
+                      </View>
                     );
                   })}
                 </View>
@@ -1576,10 +1892,105 @@ export default function ReceiptDetailScreen() {
 
             <Pressable
               style={({ pressed }) => [s.assignDoneButton, pressed && s.ctaPressed]}
-              onPress={() => setAssigningItem(null)}
+              onPress={closeAssignmentModal}
             >
               <Text style={s.assignDoneButtonText}>Done</Text>
             </Pressable>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      {/* ── Assignment cover amount modal ── */}
+      <Modal
+        visible={assignedCoverEditor !== null}
+        animationType="fade"
+        transparent
+        onRequestClose={() => setAssignedCoverEditor(null)}
+      >
+        <Pressable
+          style={s.coverModalBackdrop}
+          onPress={() => setAssignedCoverEditor(null)}
+        >
+          <Pressable style={s.coverModalContent} onPress={(event) => event.stopPropagation()}>
+            {(() => {
+              const claim = claims.find(itemClaim => itemClaim.id === assignedCoverEditor?.claimId);
+              const participant = claim ? participants.find(p => p.id === claim.participant_id) : undefined;
+              const editorItem = assignedCoverEditor?.item;
+              if (!claim || !editorItem) return null;
+
+              const itemPrice = dollarsToCents(parseCurrencyInput(editorItem.price));
+              const itemQuantity = parseQuantityInput(editorItem.quantity);
+              const selectedValueCents = calculateClaimAmountCents(itemPrice, itemQuantity, Number(claim.portion || 0));
+              const otherClaimedAmount = claims
+                .filter(itemClaim => itemClaim.item_id === editorItem.key && itemClaim.id !== claim.id)
+                .reduce((sum, itemClaim) => sum + itemClaim.amount_cents, 0);
+              const maxAmountCents = Math.max(0, itemPrice - otherClaimedAmount);
+              const options = [
+                { label: '1/3', amount: Math.round(selectedValueCents / 3) },
+                { label: 'Half', amount: Math.round(selectedValueCents / 2) },
+                { label: 'Full', amount: selectedValueCents },
+              ];
+
+              return (
+                <>
+                  <View style={s.coverModalHeader}>
+                    <View>
+                      <Text style={s.coverModalOverline}>Cover Amount</Text>
+                      <Text style={s.coverModalTitle} numberOfLines={1}>
+                        {participant?.display_name ?? 'Participant'}
+                      </Text>
+                    </View>
+                    <Pressable
+                      onPress={() => setAssignedCoverEditor(null)}
+                      style={({ pressed }) => [s.coverModalClose, pressed && s.pressed]}
+                    >
+                      <Ionicons name="close" size={22} color={colors.text} />
+                    </Pressable>
+                  </View>
+                  <Text style={s.coverModalContext}>
+                    Selected value {formatCurrency(selectedValueCents / 100)}
+                  </Text>
+                  <View style={s.coverOptionGrid}>
+                    {options.map(option => {
+                      const amount = Math.min(option.amount, maxAmountCents);
+                      return (
+                        <Pressable
+                          key={option.label}
+                          style={({ pressed }) => [
+                            s.coverOptionButton,
+                            amount <= 0 && s.buttonDisabled,
+                            pressed && s.pressed,
+                          ]}
+                          onPress={() => void handleUpdateAssignedCoverAmount(claim, amount)}
+                          disabled={amount <= 0 || isUpdatingClaim}
+                        >
+                          <Text style={s.coverOptionLabel}>{option.label}</Text>
+                          <Text style={s.coverOptionAmount}>{formatCurrency(amount / 100)}</Text>
+                        </Pressable>
+                      );
+                    })}
+                  </View>
+                  <View style={s.coverCustomRow}>
+                    <TextInput
+                      value={customAssignedCoverInput}
+                      onChangeText={setCustomAssignedCoverInput}
+                      keyboardType="decimal-pad"
+                      placeholder="Custom"
+                      placeholderTextColor={colors.muted}
+                      style={s.coverCustomInput}
+                    />
+                    <Pressable
+                      style={[s.coverApplyButton, isUpdatingClaim && s.buttonDisabled]}
+                      onPress={handleApplyCustomAssignedCoverAmount}
+                      disabled={isUpdatingClaim}
+                    >
+                      <Text style={s.coverApplyText}>Apply</Text>
+                    </Pressable>
+                  </View>
+                  <Text style={s.coverMaxText}>Max {formatCurrency(maxAmountCents / 100)}</Text>
+                </>
+              );
+            })()}
           </Pressable>
         </Pressable>
       </Modal>
@@ -1687,6 +2098,32 @@ const s = StyleSheet.create({
     fontWeight: '800',
     letterSpacing: -0.3,
   },
+  headerOverline: {
+    color: colors.muted,
+    fontSize: 10,
+    fontWeight: '700',
+    letterSpacing: 0.8,
+    textTransform: 'uppercase',
+    marginBottom: 3,
+  },
+  titleEditRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  titleEditButton: {
+    padding: 2,
+  },
+  titleInput: {
+    flex: 1,
+    color: colors.text,
+    fontSize: 22,
+    fontWeight: '800',
+    letterSpacing: -0.3,
+    paddingVertical: 0,
+    paddingHorizontal: 0,
+    backgroundColor: 'transparent',
+  },
   subtitle: {
     color: colors.muted,
     fontSize: 13,
@@ -1699,38 +2136,29 @@ const s = StyleSheet.create({
     textTransform: 'uppercase',
   },
 
-  /* Image */
-  imageCard: {
-    backgroundColor: colors.surface,
-    borderRadius: 12,
-    overflow: 'hidden',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.05)',
-  },
-  receiptImage: {
-    width: '100%',
-    height: 200,
-    backgroundColor: colors.surfaceBorder,
-  },
-  imagePlaceholder: {
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  expandButton: {
+  floatingReceiptButton: {
     position: 'absolute',
-    bottom: 12,
-    alignSelf: 'center',
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    borderRadius: 12,
-    backgroundColor: 'rgba(8, 10, 12, 0.9)',
+    right: 24,
+    bottom: 44,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 7,
+    paddingHorizontal: 14,
+    paddingVertical: 11,
+    borderRadius: 999,
+    backgroundColor: 'rgba(17, 20, 24, 0.96)',
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.05)',
+    borderColor: 'rgba(87, 230, 174, 0.58)',
+    shadowColor: '#57E6AE',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.22,
+    shadowRadius: 20,
+    elevation: 8,
   },
-  expandButtonText: {
-    color: colors.primary,
+  floatingReceiptButtonText: {
+    color: colors.text,
     fontSize: 13,
-    fontWeight: '600',
+    fontWeight: '700',
   },
 
   /* Sections */
@@ -1779,6 +2207,10 @@ const s = StyleSheet.create({
     borderColor: 'rgba(255, 255, 255, 0.05)',
     color: colors.text,
     fontSize: 15,
+  },
+  readOnlyInput: {
+    color: colors.textSecondary,
+    opacity: 0.78,
   },
 
   /* Items */
@@ -1882,6 +2314,12 @@ const s = StyleSheet.create({
   claimerName: {
     color: colors.muted,
     fontSize: 11,
+  },
+  claimerMeta: {
+    color: colors.textSecondary,
+    fontSize: 11,
+    fontWeight: '600',
+    fontVariant: ['tabular-nums'],
   },
   itemRightSection: {
     alignItems: 'flex-end',
@@ -2155,21 +2593,25 @@ const s = StyleSheet.create({
   /* Image modal */
   modalBackdrop: {
     flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.9)',
+    backgroundColor: 'rgba(0, 0, 0, 0.94)',
     justifyContent: 'center',
     alignItems: 'center',
-    padding: 20,
+    paddingHorizontal: 10,
+    paddingVertical: 18,
   },
   modalContent: {
     width: '100%',
-    maxWidth: 420,
+    flex: 1,
     gap: 16,
+    justifyContent: 'center',
+    paddingBottom: 18,
   },
   modalImage: {
     width: '100%',
-    aspectRatio: 3 / 4,
+    flex: 1,
     borderRadius: 12,
     backgroundColor: colors.surfaceBorder,
+    overflow: 'hidden',
   },
   modalCloseButton: {
     alignSelf: 'center',
@@ -2250,14 +2692,68 @@ const s = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,
+    flex: 1,
+    minWidth: 0,
   },
   assignParticipantEmoji: {
     fontSize: 24,
+  },
+  assignParticipantText: {
+    flex: 1,
+    minWidth: 0,
   },
   assignParticipantName: {
     color: colors.text,
     fontSize: 16,
     fontWeight: '500',
+  },
+  assignParticipantMeta: {
+    color: colors.textSecondary,
+    fontSize: 12,
+    fontWeight: '600',
+    fontVariant: ['tabular-nums'],
+  },
+  assignParticipantMetaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: 2,
+  },
+  assignCoverEditButton: {
+    padding: 2,
+  },
+  assignQuantityStepper: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    padding: 3,
+    borderRadius: 999,
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.06)',
+    marginLeft: 12,
+  },
+  assignQuantityButton: {
+    width: 24,
+    height: 24,
+    borderRadius: 999,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+  },
+  assignQuantityButtonText: {
+    color: colors.text,
+    fontSize: 14,
+    fontWeight: '700',
+    lineHeight: 16,
+  },
+  assignQuantityValue: {
+    minWidth: 34,
+    color: colors.textSecondary,
+    fontSize: 11,
+    fontWeight: '700',
+    textAlign: 'center',
+    fontVariant: ['tabular-nums'],
   },
   assignCheckbox: {
     width: 24,
@@ -2293,6 +2789,111 @@ const s = StyleSheet.create({
     color: '#000',
     fontSize: 16,
     fontWeight: '700',
+  },
+
+  /* Cover amount modal */
+  coverModalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.72)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 24,
+  },
+  coverModalContent: {
+    backgroundColor: colors.surface,
+    borderRadius: 18,
+    padding: 20,
+    width: '100%',
+    maxWidth: 360,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.08)',
+    gap: 14,
+  },
+  coverModalHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  coverModalOverline: {
+    color: colors.muted,
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.8,
+    textTransform: 'uppercase',
+    marginBottom: 4,
+  },
+  coverModalTitle: {
+    color: colors.text,
+    fontSize: 18,
+    fontWeight: '700',
+    maxWidth: 260,
+  },
+  coverModalClose: {
+    padding: 2,
+  },
+  coverModalContext: {
+    color: colors.textSecondary,
+    fontSize: 13,
+  },
+  coverOptionGrid: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  coverOptionButton: {
+    flex: 1,
+    paddingVertical: 10,
+    paddingHorizontal: 8,
+    borderRadius: 10,
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.07)',
+    alignItems: 'center',
+    gap: 3,
+  },
+  coverOptionLabel: {
+    color: colors.text,
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  coverOptionAmount: {
+    color: '#FBBF24',
+    fontSize: 11,
+    fontWeight: '700',
+    fontVariant: ['tabular-nums'],
+  },
+  coverCustomRow: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+  coverCustomInput: {
+    flex: 1,
+    backgroundColor: colors.background,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.07)',
+    color: colors.text,
+    fontSize: 14,
+    fontVariant: ['tabular-nums'],
+  },
+  coverApplyButton: {
+    paddingHorizontal: 14,
+    borderRadius: 10,
+    backgroundColor: colors.primary,
+    justifyContent: 'center',
+  },
+  coverApplyText: {
+    color: '#04110D',
+    fontSize: 12,
+    fontWeight: '800',
+    textTransform: 'uppercase',
+  },
+  coverMaxText: {
+    color: colors.muted,
+    fontSize: 12,
+    textAlign: 'right',
   },
 
   /* Settled celebration modal */

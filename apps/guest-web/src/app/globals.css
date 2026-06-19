@@ -729,8 +729,27 @@ input:focus { outline: none; }
   border-radius: 999px;
   font-size: 0.7rem;
   color: var(--text-secondary);
-  background: rgba(255, 255, 255, 0.04);
+  background: rgba(251, 191, 36, 0.08);
   border-left: 2px solid var(--primary);
+}
+
+.tablink-claimer-pill.is-paid {
+  color: var(--primary-bright);
+  background: rgba(52, 211, 153, 0.1);
+}
+
+.tablink-claimer-amount {
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.tablink-item-remaining {
+  margin-top: 6px;
+  color: #FBBF24;
+  font-size: 0.68rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .tablink-quantity-stepper {
@@ -743,11 +762,11 @@ input:focus { outline: none; }
   border-radius: 999px;
 }
 
-.tablink-quantity-stack {
+.tablink-price-line {
   display: inline-flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 5px;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 .tablink-quantity-button {
@@ -784,6 +803,10 @@ input:focus { outline: none; }
   white-space: nowrap;
 }
 
+.tablink-covering-amount.is-paid {
+  color: var(--primary-bright);
+}
+
 .tablink-covering-line {
   display: inline-flex;
   align-items: center;
@@ -792,7 +815,7 @@ input:focus { outline: none; }
 }
 
 .tablink-covering-amount-inline {
-  padding-top: 2px;
+  padding-top: 0;
 }
 
 .tablink-cover-edit-button {
@@ -814,9 +837,9 @@ input:focus { outline: none; }
 
 .tablink-item-trailing {
   display: flex;
-  flex-direction: row;
-  align-items: flex-start;
-  gap: 8px;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
   flex-shrink: 0;
 }
 
@@ -1037,6 +1060,13 @@ input:focus { outline: none; }
   margin: 20px 0;
 }
 
+.tablink-cover-context {
+  margin-top: 16px;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
 .tablink-cover-option {
   display: flex;
   flex-direction: column;
@@ -1160,9 +1190,9 @@ input:focus { outline: none; }
 
   .tablink-item-trailing {
     width: auto;
-    flex-direction: row;
+    flex-direction: column;
     justify-content: flex-start;
-    align-items: flex-start;
+    align-items: flex-end;
     gap: 6px;
   }
 

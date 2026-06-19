@@ -6,6 +6,7 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from 'react-native';
 import { useRouter } from 'expo-router';
@@ -28,15 +29,41 @@ function formatCurrency(amount: number) {
   }).format(amount);
 }
 
+function parseCurrencyInput(value: string) {
+  if (!value) return 0;
+  const cleaned = value.replace(/[^0-9.,-]/g, '').replace(',', '.');
+  const parsed = Number.parseFloat(cleaned);
+  return Number.isFinite(parsed) ? Number(parsed.toFixed(2)) : 0;
+}
+
+function formatQuantity(value: number) {
+  return Number.isInteger(value) ? String(value) : value.toFixed(2).replace(/\.?0+$/, '');
+}
+
+function getItemQuantity(quantity: number) {
+  return quantity > 0 ? quantity : 1;
+}
+
+function calculateClaimAmount(itemPrice: number, itemQuantity: number, portion: number) {
+  return (itemPrice * portion) / getItemQuantity(itemQuantity);
+}
+
+type HostClaimDraft = {
+  portion: number;
+  amount: number;
+};
+
 export default function YourItemsScreen() {
   const router = useRouter();
   const { session } = useAuth();
   const { pendingReceipt, setPendingReceipt } = usePendingReceipt();
-  const [selectedIndexes, setSelectedIndexes] = useState<Set<number>>(() => new Set());
+  const [hostClaims, setHostClaims] = useState<Record<number, HostClaimDraft>>({});
   const [isSharing, setIsSharing] = useState(false);
   const [showShareSuccess, setShowShareSuccess] = useState(false);
   const [sharedReceiptId, setSharedReceiptId] = useState<string | null>(null);
   const [hasPaymentMethods, setHasPaymentMethods] = useState<boolean | null>(null);
+  const [coverEditorIndex, setCoverEditorIndex] = useState<number | null>(null);
+  const [customCoverInput, setCustomCoverInput] = useState('');
   const isClosingRef = useRef(false);
 
   const TABLINK_BASE_URL = process.env.EXPO_PUBLIC_TABLINK_URL;
@@ -70,23 +97,87 @@ export default function YourItemsScreen() {
 
   const selectedTotal = useMemo(
     () =>
-      items.reduce((total, item, index) => {
-        return selectedIndexes.has(index) ? total + item.price : total;
-      }, 0),
-    [items, selectedIndexes]
+      Object.values(hostClaims).reduce((total, claim) => total + claim.amount, 0),
+    [hostClaims]
   );
 
   const toggleItem = useCallback((index: number) => {
-    setSelectedIndexes((current) => {
-      const next = new Set(current);
-      if (next.has(index)) {
-        next.delete(index);
+    setHostClaims((current) => {
+      const item = items[index];
+      if (!item) return current;
+
+      const next = { ...current };
+      if (next[index]) {
+        delete next[index];
       } else {
-        next.add(index);
+        const portion = Math.min(1, getItemQuantity(item.quantity));
+        next[index] = {
+          portion,
+          amount: calculateClaimAmount(item.price, item.quantity, portion),
+        };
       }
       return next;
     });
-  }, []);
+  }, [items]);
+
+  const adjustClaimPortion = useCallback((index: number, delta: number) => {
+    setHostClaims((current) => {
+      const item = items[index];
+      const currentClaim = current[index];
+      if (!item || !currentClaim) return current;
+
+      const maxPortion = getItemQuantity(item.quantity);
+      const nextPortion = Math.min(Math.max(0, currentClaim.portion + delta), maxPortion);
+      const next = { ...current };
+      if (nextPortion <= 0) {
+        delete next[index];
+      } else {
+        next[index] = {
+          portion: nextPortion,
+          amount: calculateClaimAmount(item.price, item.quantity, nextPortion),
+        };
+      }
+      return next;
+    });
+  }, [items]);
+
+  const updateClaimAmount = useCallback((index: number, amount: number) => {
+    setHostClaims((current) => {
+      const item = items[index];
+      const claim = current[index];
+      if (!item || !claim) return current;
+
+      const maxAmount = calculateClaimAmount(item.price, item.quantity, claim.portion);
+      const nextAmount = Math.min(Math.max(0.01, amount), maxAmount);
+      return {
+        ...current,
+        [index]: {
+          ...claim,
+          amount: nextAmount,
+        },
+      };
+    });
+  }, [items]);
+
+  const openCoverEditor = useCallback((index: number) => {
+    const claim = hostClaims[index];
+    if (!claim) return;
+    setCoverEditorIndex(index);
+    setCustomCoverInput(claim.amount.toFixed(2));
+  }, [hostClaims]);
+
+  const applyCustomCoverAmount = useCallback(() => {
+    if (coverEditorIndex === null) return;
+
+    const parsedAmount = parseCurrencyInput(customCoverInput);
+    if (parsedAmount <= 0) {
+      Alert.alert('Invalid Amount', 'Enter an amount greater than $0.00.');
+      return;
+    }
+
+    updateClaimAmount(coverEditorIndex, parsedAmount);
+    setCoverEditorIndex(null);
+  }, [coverEditorIndex, customCoverInput, updateClaimAmount]);
 
   const closeFlow = useCallback(
     (onComplete?: () => void) => {
@@ -103,7 +194,7 @@ export default function YourItemsScreen() {
 
   const claimHostItems = useCallback(
     async (receiptId: string) => {
-      if (selectedIndexes.size === 0) return { success: true };
+      if (Object.keys(hostClaims).length === 0) return { success: true };
 
       const supabase = getSupabaseClient();
       const { data: ownerParticipant, error: participantError } = await supabase
@@ -132,16 +223,20 @@ export default function YourItemsScreen() {
 
       const paidAt = new Date().toISOString();
       const claims = (savedItems ?? [])
-        .filter((item) => selectedIndexes.has(item.position ?? -1))
-        .map((item) => ({
-          item_id: item.id,
-          participant_id: ownerParticipant.id,
-          portion: 1,
-          amount_cents: item.price_cents,
-          status: 'paid' as const,
-          paid_at: paidAt,
-          confirmation_method: 'host',
-        }));
+        .map((item) => {
+          const claim = hostClaims[item.position ?? -1];
+          if (!claim) return null;
+          return {
+            item_id: item.id,
+            participant_id: ownerParticipant.id,
+            portion: claim.portion,
+            amount_cents: Math.round(claim.amount * 100),
+            status: 'paid' as const,
+            paid_at: paidAt,
+            confirmation_method: 'host',
+          };
+        })
+        .filter((claim): claim is NonNullable<typeof claim> => Boolean(claim));
 
       if (claims.length === 0) return { success: true };
 
@@ -153,7 +248,7 @@ export default function YourItemsScreen() {
 
       return { success: true };
     },
-    [selectedIndexes]
+    [hostClaims]
   );
 
   const handleShareReceipt = useCallback(async () => {
@@ -299,7 +394,9 @@ export default function YourItemsScreen() {
 
           <View style={s.itemList}>
             {items.map((item, index) => {
-              const isSelected = selectedIndexes.has(index);
+              const claim = hostClaims[index];
+              const isSelected = Boolean(claim);
+              const itemQuantity = getItemQuantity(item.quantity);
               return (
                 <Pressable
                   key={`${item.name}-${index}`}
@@ -317,9 +414,58 @@ export default function YourItemsScreen() {
                     <Text style={s.itemName} numberOfLines={1}>
                       {item.name || 'Untitled item'}
                     </Text>
-                    <Text style={s.itemMeta}>Qty {item.quantity}</Text>
+                    <Text style={s.itemMeta}>Qty {formatQuantity(itemQuantity)}</Text>
                   </View>
-                  <Text style={s.itemPrice}>{formatCurrency(item.price)}</Text>
+                  <View style={s.itemTrailing}>
+                    <View style={s.priceLine}>
+                      {isSelected && itemQuantity > 1 ? (
+                        <View style={s.quantityStepper}>
+                          <Pressable
+                            onPress={(event) => {
+                              event.stopPropagation();
+                              adjustClaimPortion(index, -1);
+                            }}
+                            style={({ pressed }) => [s.quantityButton, pressed && s.pressed]}
+                            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                          >
+                            <Text style={s.quantityButtonText}>-</Text>
+                          </Pressable>
+                          <Text style={s.quantityValue}>
+                            {formatQuantity(claim.portion)}/{formatQuantity(itemQuantity)}
+                          </Text>
+                          <Pressable
+                            onPress={(event) => {
+                              event.stopPropagation();
+                              adjustClaimPortion(index, 1);
+                            }}
+                            style={({ pressed }) => [
+                              s.quantityButton,
+                              claim.portion >= itemQuantity && s.quantityButtonDisabled,
+                              pressed && s.pressed,
+                            ]}
+                            disabled={claim.portion >= itemQuantity}
+                            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                          >
+                            <Text style={s.quantityButtonText}>+</Text>
+                          </Pressable>
+                        </View>
+                      ) : null}
+                      <Text style={s.itemPrice}>{formatCurrency(item.price)}</Text>
+                    </View>
+                    {isSelected ? (
+                      <Pressable
+                        onPress={(event) => {
+                          event.stopPropagation();
+                          openCoverEditor(index);
+                        }}
+                        style={({ pressed }) => [s.coveringLine, pressed && s.pressed]}
+                        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                      >
+                        <Text style={s.coveringText}>You&apos;re covering {formatCurrency(claim.amount)}</Text>
+                        <Ionicons name="pencil" size={12} color="#FBBF24" />
+                      </Pressable>
+                    ) : null}
+                  </View>
                 </Pressable>
               );
             })}
@@ -378,6 +524,79 @@ export default function YourItemsScreen() {
             </View>
           </View>
         </View>
+      </Modal>
+
+      <Modal
+        visible={coverEditorIndex !== null}
+        animationType="fade"
+        transparent
+        onRequestClose={() => setCoverEditorIndex(null)}
+      >
+        <Pressable style={s.successModalBackdrop} onPress={() => setCoverEditorIndex(null)}>
+          <Pressable style={s.coverModalContent} onPress={(event) => event.stopPropagation()}>
+            {(() => {
+              const item = coverEditorIndex !== null ? items[coverEditorIndex] : undefined;
+              const claim = coverEditorIndex !== null ? hostClaims[coverEditorIndex] : undefined;
+              if (!item || !claim || coverEditorIndex === null) return null;
+
+              const selectedValue = calculateClaimAmount(item.price, item.quantity, claim.portion);
+              const options = [
+                { label: '1/3', amount: selectedValue / 3 },
+                { label: 'Half', amount: selectedValue / 2 },
+                { label: 'Full', amount: selectedValue },
+              ];
+
+              return (
+                <>
+                  <View style={s.coverModalHeader}>
+                    <View>
+                      <Text style={s.coverModalOverline}>Cover Amount</Text>
+                      <Text style={s.coverModalTitle} numberOfLines={1}>{item.name || 'Untitled item'}</Text>
+                    </View>
+                    <Pressable
+                      onPress={() => setCoverEditorIndex(null)}
+                      style={({ pressed }) => [s.coverModalClose, pressed && s.pressed]}
+                    >
+                      <Ionicons name="close" size={22} color={colors.text} />
+                    </Pressable>
+                  </View>
+                  <Text style={s.coverModalContext}>
+                    Selected value {formatCurrency(selectedValue)}
+                  </Text>
+                  <View style={s.coverOptionGrid}>
+                    {options.map(option => (
+                      <Pressable
+                        key={option.label}
+                        style={({ pressed }) => [s.coverOptionButton, pressed && s.pressed]}
+                        onPress={() => {
+                          updateClaimAmount(coverEditorIndex, option.amount);
+                          setCoverEditorIndex(null);
+                        }}
+                      >
+                        <Text style={s.coverOptionLabel}>{option.label}</Text>
+                        <Text style={s.coverOptionAmount}>{formatCurrency(option.amount)}</Text>
+                      </Pressable>
+                    ))}
+                  </View>
+                  <View style={s.coverCustomRow}>
+                    <TextInput
+                      value={customCoverInput}
+                      onChangeText={setCustomCoverInput}
+                      keyboardType="decimal-pad"
+                      placeholder="Custom"
+                      placeholderTextColor={colors.muted}
+                      style={s.coverCustomInput}
+                    />
+                    <Pressable style={s.coverApplyButton} onPress={applyCustomCoverAmount}>
+                      <Text style={s.coverApplyText}>Apply</Text>
+                    </Pressable>
+                  </View>
+                  <Text style={s.coverMaxText}>Max {formatCurrency(selectedValue)}</Text>
+                </>
+              );
+            })()}
+          </Pressable>
+        </Pressable>
       </Modal>
     </View>
   );
@@ -491,9 +710,66 @@ const s = StyleSheet.create({
     fontSize: 15,
     fontWeight: '600',
     fontVariant: ['tabular-nums'],
-    width: 70,
     textAlign: 'right',
+  },
+  itemTrailing: {
+    alignItems: 'flex-end',
+    gap: 6,
+    minWidth: 136,
     paddingVertical: 16,
+  },
+  priceLine: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: 8,
+  },
+  coveringLine: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    justifyContent: 'flex-end',
+  },
+  coveringText: {
+    color: '#FBBF24',
+    fontSize: 11,
+    fontWeight: '700',
+    fontVariant: ['tabular-nums'],
+  },
+  quantityStepper: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    padding: 3,
+    borderRadius: 999,
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.06)',
+  },
+  quantityButton: {
+    width: 22,
+    height: 22,
+    borderRadius: 999,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+  },
+  quantityButtonDisabled: {
+    opacity: 0.35,
+  },
+  quantityButtonText: {
+    color: colors.text,
+    fontSize: 14,
+    fontWeight: '700',
+    lineHeight: 16,
+  },
+  quantityValue: {
+    minWidth: 32,
+    color: colors.textSecondary,
+    fontSize: 11,
+    fontWeight: '700',
+    textAlign: 'center',
+    fontVariant: ['tabular-nums'],
   },
   actions: {
     paddingVertical: 24,
@@ -580,5 +856,101 @@ const s = StyleSheet.create({
   successActions: {
     width: '100%',
     gap: 10,
+  },
+  coverModalContent: {
+    backgroundColor: colors.surface,
+    borderRadius: 18,
+    padding: 20,
+    width: '100%',
+    maxWidth: 360,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.08)',
+    gap: 14,
+  },
+  coverModalHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  coverModalOverline: {
+    color: colors.muted,
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.8,
+    textTransform: 'uppercase',
+    marginBottom: 4,
+  },
+  coverModalTitle: {
+    color: colors.text,
+    fontSize: 18,
+    fontWeight: '700',
+    maxWidth: 260,
+  },
+  coverModalClose: {
+    padding: 2,
+  },
+  coverModalContext: {
+    color: colors.textSecondary,
+    fontSize: 13,
+  },
+  coverOptionGrid: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  coverOptionButton: {
+    flex: 1,
+    paddingVertical: 10,
+    paddingHorizontal: 8,
+    borderRadius: 10,
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.07)',
+    alignItems: 'center',
+    gap: 3,
+  },
+  coverOptionLabel: {
+    color: colors.text,
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  coverOptionAmount: {
+    color: '#FBBF24',
+    fontSize: 11,
+    fontWeight: '700',
+    fontVariant: ['tabular-nums'],
+  },
+  coverCustomRow: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+  coverCustomInput: {
+    flex: 1,
+    backgroundColor: colors.background,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.07)',
+    color: colors.text,
+    fontSize: 14,
+    fontVariant: ['tabular-nums'],
+  },
+  coverApplyButton: {
+    paddingHorizontal: 14,
+    borderRadius: 10,
+    backgroundColor: colors.primary,
+    justifyContent: 'center',
+  },
+  coverApplyText: {
+    color: '#04110D',
+    fontSize: 12,
+    fontWeight: '800',
+    textTransform: 'uppercase',
+  },
+  coverMaxText: {
+    color: colors.muted,
+    fontSize: 12,
+    textAlign: 'right',
   },
 });

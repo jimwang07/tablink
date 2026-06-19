@@ -132,6 +132,7 @@ export default function ReceiptReviewScreen() {
   const { pendingReceipt, setPendingReceipt } = usePendingReceipt();
   const [isImageExpanded, setIsImageExpanded] = useState(false);
   const isClosingRef = useRef(false);
+  const titleInputRef = useRef<TextInput>(null);
 
   useEffect(() => {
     if (!pendingReceipt && !isClosingRef.current) {
@@ -342,38 +343,30 @@ export default function ReceiptReviewScreen() {
             <Ionicons name="close" size={24} color={colors.text} />
           </Pressable>
           <View style={s.headerContent}>
-            <Text style={s.title} numberOfLines={1}>
-              {merchantName || 'New Receipt'}
-            </Text>
+            <Text style={s.headerOverline}>MERCHANT</Text>
+            <View style={s.titleEditRow}>
+              <TextInput
+                ref={titleInputRef}
+                value={merchantName}
+                onChangeText={setMerchantName}
+                placeholder="New Receipt"
+                placeholderTextColor={colors.textSecondary}
+                style={s.titleInput}
+                returnKeyType="done"
+                selectTextOnFocus={merchantName.length === 0}
+              />
+              <Pressable
+                onPress={() => titleInputRef.current?.focus()}
+                style={({ pressed }) => [s.titleEditButton, pressed && s.pressed]}
+                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              >
+                <Ionicons name="pencil" size={14} color={colors.muted} />
+              </Pressable>
+            </View>
             <Text style={s.subtitle}>{formatDate(uploadedAt)}</Text>
           </View>
           <Text style={[s.statusLabel, { color: colors.primary }]}>NEW</Text>
         </Animated.View>
-
-        {/* Receipt Image */}
-            {imageUri ? (
-              <Animated.View entering={FadeInDown.delay(50).duration(400)} style={s.imageCard}>
-                <Image source={{ uri: imageUri }} style={s.receiptImage} resizeMode="cover" />
-                <Pressable
-                  style={({ pressed }) => [s.expandButton, pressed && s.pressed]}
-                  onPress={() => setIsImageExpanded(true)}
-                >
-                  <Text style={s.expandButtonText}>View full receipt</Text>
-                </Pressable>
-              </Animated.View>
-            ) : null}
-
-            {/* Merchant */}
-            <Animated.View entering={FadeInDown.delay(100).duration(400)} style={s.section}>
-              <Text style={s.sectionLabel}>MERCHANT</Text>
-              <TextInput
-                value={merchantName}
-                onChangeText={setMerchantName}
-                placeholder="Add merchant name"
-                placeholderTextColor={placeholderColor}
-                style={s.textInput}
-              />
-            </Animated.View>
 
             {/* Items */}
             <Animated.View entering={FadeInDown.delay(150).duration(400)} style={s.section}>
@@ -383,7 +376,7 @@ export default function ReceiptReviewScreen() {
                   <Text style={s.addButtonText}>+ Add item</Text>
                 </Pressable>
               </View>
-              <Text style={s.hint}>Swipe left to delete an item.</Text>
+              <Text style={s.hint}>Tap to edit, swipe left to delete.</Text>
               {editableItems.map((item) => (
                 <Animated.View
                   key={item.key}
@@ -563,6 +556,19 @@ export default function ReceiptReviewScreen() {
             </Animated.View>
       </ScrollView>
 
+      {imageUri ? (
+        <Pressable
+          style={({ pressed }) => [s.floatingReceiptButton, pressed && s.pressed]}
+          onPress={() => {
+            Keyboard.dismiss();
+            setIsImageExpanded(true);
+          }}
+        >
+          <Ionicons name="receipt-outline" size={16} color={colors.primary} />
+          <Text style={s.floatingReceiptButtonText}>View Receipt</Text>
+        </Pressable>
+      ) : null}
+
       {/* Full Image Modal */}
       <Modal
         visible={isImageExpanded}
@@ -575,7 +581,7 @@ export default function ReceiptReviewScreen() {
             {imageUri ? (
               <Image
                 source={{ uri: imageUri }}
-                resizeMode="contain"
+                resizeMode="cover"
                 style={s.modalImage}
               />
             ) : null}
@@ -619,11 +625,31 @@ const s = StyleSheet.create({
   headerContent: {
     flex: 1,
   },
-  title: {
+  headerOverline: {
+    color: colors.muted,
+    fontSize: 10,
+    fontWeight: '700',
+    letterSpacing: 0.8,
+    textTransform: 'uppercase',
+    marginBottom: 3,
+  },
+  titleEditRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  titleEditButton: {
+    padding: 2,
+  },
+  titleInput: {
+    flex: 1,
     color: colors.text,
     fontSize: 22,
     fontWeight: '800',
     letterSpacing: -0.3,
+    paddingVertical: 0,
+    paddingHorizontal: 0,
+    backgroundColor: 'transparent',
   },
   subtitle: {
     color: colors.muted,
@@ -637,35 +663,29 @@ const s = StyleSheet.create({
     textTransform: 'uppercase',
   },
 
-  /* Image */
-  imageCard: {
-    backgroundColor: colors.surface,
-    borderRadius: 12,
-    overflow: 'hidden',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.05)',
-    marginBottom: 4,
-  },
-  receiptImage: {
-    width: '100%',
-    height: 200,
-    backgroundColor: colors.surfaceBorder,
-  },
-  expandButton: {
+  floatingReceiptButton: {
     position: 'absolute',
-    bottom: 12,
-    alignSelf: 'center',
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    borderRadius: 12,
-    backgroundColor: 'rgba(8, 10, 12, 0.9)',
+    right: 24,
+    bottom: 44,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 7,
+    paddingHorizontal: 14,
+    paddingVertical: 11,
+    borderRadius: 999,
+    backgroundColor: 'rgba(17, 20, 24, 0.96)',
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.05)',
+    borderColor: 'rgba(87, 230, 174, 0.58)',
+    shadowColor: '#57E6AE',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.22,
+    shadowRadius: 20,
+    elevation: 8,
   },
-  expandButtonText: {
-    color: colors.primary,
+  floatingReceiptButtonText: {
+    color: colors.text,
     fontSize: 13,
-    fontWeight: '600',
+    fontWeight: '700',
   },
 
   /* Sections */
@@ -927,21 +947,25 @@ const s = StyleSheet.create({
   /* Image modal */
   modalBackdrop: {
     flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.9)',
+    backgroundColor: 'rgba(0, 0, 0, 0.94)',
     justifyContent: 'center',
     alignItems: 'center',
-    padding: 20,
+    paddingHorizontal: 10,
+    paddingVertical: 18,
   },
   modalContent: {
     width: '100%',
-    maxWidth: 420,
+    flex: 1,
     gap: 16,
+    justifyContent: 'center',
+    paddingBottom: 18,
   },
   modalImage: {
     width: '100%',
-    aspectRatio: 3 / 4,
+    flex: 1,
     borderRadius: 12,
     backgroundColor: colors.surfaceBorder,
+    overflow: 'hidden',
   },
   modalCloseButton: {
     alignSelf: 'center',
