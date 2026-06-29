@@ -1209,13 +1209,17 @@ export default function ReceiptDetailScreen() {
               <Text style={s.title} numberOfLines={1}>
                 {preview.merchant || 'Receipt'}
               </Text>
-              {preview.date ? (
-                <Text style={s.subtitle}>{formatDate(preview.date)}</Text>
-              ) : null}
+              <View style={s.headerMetaRow}>
+                {preview.date ? (
+                  <Text style={s.subtitle}>{formatDate(preview.date)}</Text>
+                ) : null}
+                <View style={[s.statusPill, { borderColor: `${previewColor}55`, backgroundColor: `${previewColor}16` }]}>
+                  <Text style={[s.statusPillText, { color: previewColor }]}>
+                    {STATUS_LABEL[preview.status]}
+                  </Text>
+                </View>
+              </View>
             </View>
-            <Text style={[s.statusLabel, { color: previewColor }]}>
-              {STATUS_LABEL[preview.status]}
-            </Text>
           </View>
           <ReceiptSkeleton hasImage={preview.hasImage} />
         </ScrollView>
@@ -1250,7 +1254,6 @@ export default function ReceiptDetailScreen() {
             <Ionicons name="arrow-back" size={24} color={colors.text} />
           </Pressable>
           <View style={s.headerContent}>
-            <Text style={s.headerOverline}>MERCHANT</Text>
             <View style={s.titleEditRow}>
               <TextInput
                 ref={titleInputRef}
@@ -1271,11 +1274,15 @@ export default function ReceiptDetailScreen() {
                 <Ionicons name="pencil" size={14} color={colors.muted} />
               </Pressable>
             </View>
-            <Text style={s.subtitle}>{formatDate(receipt.receipt_date)}</Text>
+            <View style={s.headerMetaRow}>
+              <Text style={s.subtitle}>{formatDate(receipt.receipt_date)}</Text>
+              <View style={[s.statusPill, { borderColor: `${statusColor}55`, backgroundColor: `${statusColor}16` }]}>
+                <Text style={[s.statusPillText, { color: statusColor }]}>
+                  {STATUS_LABEL[effectiveStatus]}
+                </Text>
+              </View>
+            </View>
           </View>
-          <Text style={[s.statusLabel, { color: statusColor }]}>
-            {STATUS_LABEL[effectiveStatus]}
-          </Text>
         </View>
 
         {/* ── Items ── */}
@@ -2091,20 +2098,13 @@ const s = StyleSheet.create({
   },
   headerContent: {
     flex: 1,
+    minWidth: 0,
   },
   title: {
     color: colors.text,
     fontSize: 22,
     fontWeight: '800',
     letterSpacing: -0.3,
-  },
-  headerOverline: {
-    color: colors.muted,
-    fontSize: 10,
-    fontWeight: '700',
-    letterSpacing: 0.8,
-    textTransform: 'uppercase',
-    marginBottom: 3,
   },
   titleEditRow: {
     flexDirection: 'row',
@@ -2127,10 +2127,22 @@ const s = StyleSheet.create({
   subtitle: {
     color: colors.muted,
     fontSize: 13,
-    marginTop: 2,
+    flexShrink: 1,
   },
-  statusLabel: {
-    fontSize: 11,
+  headerMetaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: 4,
+  },
+  statusPill: {
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    borderRadius: 999,
+    borderWidth: 1,
+  },
+  statusPillText: {
+    fontSize: 10,
     fontWeight: '700',
     letterSpacing: 0.5,
     textTransform: 'uppercase',

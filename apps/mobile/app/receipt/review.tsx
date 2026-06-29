@@ -343,7 +343,6 @@ export default function ReceiptReviewScreen() {
             <Ionicons name="close" size={24} color={colors.text} />
           </Pressable>
           <View style={s.headerContent}>
-            <Text style={s.headerOverline}>MERCHANT</Text>
             <View style={s.titleEditRow}>
               <TextInput
                 ref={titleInputRef}
@@ -363,9 +362,13 @@ export default function ReceiptReviewScreen() {
                 <Ionicons name="pencil" size={14} color={colors.muted} />
               </Pressable>
             </View>
-            <Text style={s.subtitle}>{formatDate(uploadedAt)}</Text>
+            <View style={s.headerMetaRow}>
+              <Text style={s.subtitle}>{formatDate(uploadedAt)}</Text>
+              <View style={s.statusPill}>
+                <Text style={s.statusPillText}>NEW</Text>
+              </View>
+            </View>
           </View>
-          <Text style={[s.statusLabel, { color: colors.primary }]}>NEW</Text>
         </Animated.View>
 
             {/* Items */}
@@ -624,14 +627,7 @@ const s = StyleSheet.create({
   },
   headerContent: {
     flex: 1,
-  },
-  headerOverline: {
-    color: colors.muted,
-    fontSize: 10,
-    fontWeight: '700',
-    letterSpacing: 0.8,
-    textTransform: 'uppercase',
-    marginBottom: 3,
+    minWidth: 0,
   },
   titleEditRow: {
     flexDirection: 'row',
@@ -654,10 +650,25 @@ const s = StyleSheet.create({
   subtitle: {
     color: colors.muted,
     fontSize: 13,
-    marginTop: 2,
+    flexShrink: 1,
   },
-  statusLabel: {
-    fontSize: 11,
+  headerMetaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: 4,
+  },
+  statusPill: {
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: 'rgba(87, 230, 174, 0.33)',
+    backgroundColor: 'rgba(87, 230, 174, 0.08)',
+  },
+  statusPillText: {
+    color: colors.primary,
+    fontSize: 10,
     fontWeight: '700',
     letterSpacing: 0.5,
     textTransform: 'uppercase',

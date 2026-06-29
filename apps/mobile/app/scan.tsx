@@ -452,7 +452,7 @@ export default function ScanReceiptScreen() {
                             isSelected && styles.devParserChipTextSelected,
                           ]}
                         >
-                          {option === 'parse-receipt-groq' ? 'Groq' : 'OpenAI'}
+                          {option === 'parse-receipt-groq' ? 'Groq' : 'Gemini'}
                         </Text>
                       </Pressable>
                     );
