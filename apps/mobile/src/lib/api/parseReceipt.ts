@@ -8,26 +8,58 @@ type InvokeResp = {
   error?: string;
 };
 
-export const PARSE_FUNCTIONS = ['parse-receipt-groq', 'parse-receipt'] as const;
-export type ParseFunctionName = (typeof PARSE_FUNCTIONS)[number];
+export const PARSE_OPTIONS = [
+  'groq-llama-4-scout',
+  'groq-qwen-3.6-27b',
+  'gemini',
+] as const;
+export type ParseOptionName = (typeof PARSE_OPTIONS)[number];
+export type ParseFunctionName = ParseOptionName;
+
+type ParseOptionConfig = {
+  functionName: 'parse-receipt-llama' | 'parse-receipt-qwen' | 'parse-receipt';
+  label: string;
+};
+
+export const PARSE_OPTION_CONFIG: Record<ParseOptionName, ParseOptionConfig> = {
+  'groq-llama-4-scout': {
+    functionName: 'parse-receipt-llama',
+    label: 'Llama 4',
+  },
+  'groq-qwen-3.6-27b': {
+    functionName: 'parse-receipt-qwen',
+    label: 'Qwen 3.6',
+  },
+  gemini: {
+    functionName: 'parse-receipt',
+    label: 'Gemini',
+  },
+};
 
 const PARSE_FUNCTION_STORAGE_KEY = 'debug.parse_function_override';
-const DEFAULT_PARSE_FUNCTION: ParseFunctionName = 'parse-receipt-groq';
+const DEFAULT_PARSE_FUNCTION: ParseFunctionName = 'groq-llama-4-scout';
 
-function isParseFunctionName(value: string): value is ParseFunctionName {
-  return (PARSE_FUNCTIONS as readonly string[]).includes(value);
+function normalizeParseOption(value: string): ParseOptionName | null {
+  if ((PARSE_OPTIONS as readonly string[]).includes(value)) {
+    return value as ParseOptionName;
+  }
+
+  if (value === 'parse-receipt-groq') return 'groq-llama-4-scout';
+  if (value === 'parse-receipt') return 'gemini';
+  return null;
 }
 
 function getEnvParseFunctionName(): ParseFunctionName {
   const configured = process.env.EXPO_PUBLIC_PARSE_FUNCTION?.trim();
-  return configured && isParseFunctionName(configured) ? configured : DEFAULT_PARSE_FUNCTION;
+  return configured ? normalizeParseOption(configured) ?? DEFAULT_PARSE_FUNCTION : DEFAULT_PARSE_FUNCTION;
 }
 
 export async function getParseFunctionName(): Promise<ParseFunctionName> {
   try {
     const stored = (await AsyncStorage.getItem(PARSE_FUNCTION_STORAGE_KEY))?.trim();
-    if (stored && isParseFunctionName(stored)) {
-      return stored;
+    if (stored) {
+      const option = normalizeParseOption(stored);
+      if (option) return option;
     }
   } catch (error) {
     console.warn('[parseReceipt] Failed to load parser override:', error);
@@ -55,17 +87,20 @@ export async function invokeParseReceipt(
   opts?: { signal?: AbortSignal }
 ): Promise<ParsedReceipt> {
   const client = getSupabaseClient();
-  const functionName = await getParseFunctionName();
+  const parseOption = await getParseFunctionName();
+  const config = PARSE_OPTION_CONFIG[parseOption];
 
   const invokeStart = Date.now();
   const { data, error } = await client.functions
-    .invoke<InvokeResp>(functionName, {
+    .invoke<InvokeResp>(config.functionName, {
       body: { imagePath, userId },
       signal: opts?.signal,
     })
     .finally(() => {
       const invokeDuration = Date.now() - invokeStart;
-      console.log(`[perf][invokeParseReceipt] function=${functionName} edge function ${invokeDuration}ms`);
+      console.log(
+        `[perf][invokeParseReceipt] option=${parseOption} function=${config.functionName} edge function ${invokeDuration}ms`
+      );
     });
 
   if (error) {

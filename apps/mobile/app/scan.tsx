@@ -25,7 +25,8 @@ import { usePendingReceipt } from '@/src/hooks/usePendingReceipt';
 import {
   getParseFunctionName,
   invokeParseReceipt,
-  PARSE_FUNCTIONS,
+  PARSE_OPTION_CONFIG,
+  PARSE_OPTIONS,
   setParseFunctionOverride,
   type ParseFunctionName,
 } from '@/src/lib/api/parseReceipt';
@@ -53,7 +54,7 @@ export default function ScanReceiptScreen() {
   const continueStartRef = useRef<number | null>(null);
   const stageStartedAtRef = useRef<number>(0);
   const [processingStage, setProcessingStage] = useState<ProcessingStage>('upload');
-  const [parseFunction, setParseFunction] = useState<ParseFunctionName>('parse-receipt-groq');
+  const [parseFunction, setParseFunction] = useState<ParseFunctionName>('groq-llama-4-scout');
 
   const { session } = useAuth();
   const { setPendingReceipt } = usePendingReceipt();
@@ -432,7 +433,7 @@ export default function ScanReceiptScreen() {
               <View style={styles.devParserCard}>
                 <Text style={styles.devParserLabel}>Parser for testing</Text>
                 <View style={styles.devParserOptions}>
-                  {PARSE_FUNCTIONS.map((option) => {
+                  {PARSE_OPTIONS.map((option) => {
                     const isSelected = option === parseFunction;
                     return (
                       <Pressable
@@ -452,7 +453,7 @@ export default function ScanReceiptScreen() {
                             isSelected && styles.devParserChipTextSelected,
                           ]}
                         >
-                          {option === 'parse-receipt-groq' ? 'Groq' : 'Gemini'}
+                          {PARSE_OPTION_CONFIG[option].label}
                         </Text>
                       </Pressable>
                     );

@@ -19,9 +19,14 @@ if (missing.length) {
 
 /** Setup */
 const BUCKET = "receipts";
-const GEMINI_MODEL = Deno.env.get("GEMINI_MODEL") || "gemini-3.5-flash";
-const GEMINI_API_URL =
-  `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
+const PRIMARY_GEMINI_MODEL = Deno.env.get("GEMINI_MODEL") || "gemini-2.5-flash";
+const GEMINI_MODELS = [
+  PRIMARY_GEMINI_MODEL,
+  ...(Deno.env.get("GEMINI_FALLBACK_MODELS") || "gemini-2.5-flash-lite")
+    .split(",")
+    .map((model) => model.trim())
+    .filter(Boolean),
+].filter((model, index, models) => models.indexOf(model) === index);
 
 const supabaseAdmin = createClient(
   Deno.env.get("SUPABASE_URL")!,
@@ -82,6 +87,23 @@ type GeminiResponse = {
   error?: { message?: string };
 };
 
+type GeminiExtractResult = {
+  content: string;
+  model: string;
+};
+
+class InvalidModelJsonError extends Error {
+  content: string;
+  model: string;
+
+  constructor(model: string, content: string, message: string) {
+    super(message);
+    this.name = "InvalidModelJsonError";
+    this.model = model;
+    this.content = content;
+  }
+}
+
 /** Utils */
 function json(status: number, obj: ParsedReceiptResponse, extraHeaders: Record<string, string> = {}) {
   return new Response(JSON.stringify(obj), {
@@ -137,27 +159,6 @@ function safeDate(value: string | null | undefined): string | null {
   return new Date(t).toISOString();
 }
 
-function looksLikeDiscountLabel(value: string): boolean {
-  const normalized = value.trim().toLowerCase();
-  if (!normalized) return false;
-
-  return [
-    "disc",
-    "discount",
-    "coupon",
-    "rebate",
-    "promo",
-    "promotion",
-    "savings",
-    "reward",
-    "markdown",
-    "member",
-    "instant",
-    "less",
-    "off",
-  ].some((token) => normalized.includes(token));
-}
-
 function normalizeAdjustmentLabel(value: string): string {
   const trimmed = value.trim();
   if (!trimmed) return "Discount";
@@ -169,7 +170,7 @@ function extractDiscountAdjustmentsFromItems(items: NormalizedItem[]) {
   const derivedAdjustments: ModelAdjustment[] = [];
 
   for (const item of items) {
-    if (item.price < 0 || looksLikeDiscountLabel(item.name)) {
+    if (item.price < 0) {
       const amount = Math.abs(item.price);
       if (amount > 0) {
         derivedAdjustments.push({
@@ -224,6 +225,15 @@ function extractGeminiText(response: GeminiResponse): string {
     ?.map((part) => part.text || "")
     .join("")
     .trim() || "";
+}
+
+function summarizeGeminiResponse(response: GeminiResponse) {
+  return {
+    finish_reason: response.candidates?.[0]?.finishReason || null,
+    candidate_count: response.candidates?.length || 0,
+    part_count: response.candidates?.[0]?.content?.parts?.length || 0,
+    prompt_feedback: response.promptFeedback ? JSON.stringify(response.promptFeedback).slice(0, 500) : null,
+  };
 }
 
 function stripJsonFence(content: string): string {
@@ -354,8 +364,18 @@ Examples:
 `.trim();
 }
 
-async function generateReceiptExtract(imageBase64: string, mimeType: string): Promise<string> {
-  const response = await fetch(`${GEMINI_API_URL}?key=${encodeURIComponent(geminiApiKey!)}`, {
+function isRetryableGeminiStatus(status: number): boolean {
+  return status === 429 || status === 500 || status === 502 || status === 503 || status === 504;
+}
+
+async function generateReceiptExtractForModel(
+  model: string,
+  imageBase64: string,
+  mimeType: string,
+): Promise<{ content: string; summary: ReturnType<typeof summarizeGeminiResponse> }> {
+  const url =
+    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(geminiApiKey!)}`;
+  const response = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -383,19 +403,92 @@ async function generateReceiptExtract(imageBase64: string, mimeType: string): Pr
       ],
       generationConfig: {
         temperature: 0,
-        maxOutputTokens: 1200,
-        responseMimeType: "application/json",
-        responseSchema: MODEL_RESPONSE_SCHEMA,
+        max_output_tokens: 4096,
+        thinking_config: {
+          thinking_budget: 0,
+        },
+        response_mime_type: "application/json",
+        response_schema: MODEL_RESPONSE_SCHEMA,
       },
     }),
   });
 
   const data = (await response.json()) as GeminiResponse;
   if (!response.ok) {
-    throw new Error(data.error?.message || `Gemini request failed (${response.status})`);
+    console.error("[parse-receipt-gemini] Gemini API error", {
+      status: response.status,
+      model,
+      message: data.error?.message,
+    });
+    const error = new Error(data.error?.message || `Gemini request failed (${response.status})`);
+    (error as Error & { status?: number }).status = response.status;
+    throw error;
   }
 
-  return extractGeminiText(data);
+  return {
+    content: extractGeminiText(data),
+    summary: summarizeGeminiResponse(data),
+  };
+}
+
+async function generateReceiptExtract(imageBase64: string, mimeType: string): Promise<GeminiExtractResult> {
+  let lastError: unknown = null;
+  let lastEmptyModel: string | null = null;
+
+  for (const model of GEMINI_MODELS) {
+    try {
+      const { content, summary } = await generateReceiptExtractForModel(model, imageBase64, mimeType);
+      if (content) {
+        try {
+          JSON.parse(stripJsonFence(content));
+          return { content, model };
+        } catch (error) {
+          logPerf("model_invalid_json", {
+            model,
+            error: error instanceof Error ? error.message : String(error),
+            content_length: content.length,
+          });
+          lastError = new InvalidModelJsonError(
+            model,
+            content,
+            error instanceof Error ? error.message : String(error),
+          );
+          continue;
+        }
+      }
+
+      lastEmptyModel = model;
+      logPerf("model_empty_content", {
+        model,
+        finish_reason: summary.finish_reason,
+        candidate_count: summary.candidate_count,
+        part_count: summary.part_count,
+        prompt_feedback: summary.prompt_feedback,
+      });
+    } catch (error) {
+      lastError = error;
+      const status = (error as Error & { status?: number }).status;
+      if (!status || !isRetryableGeminiStatus(status)) {
+        throw error;
+      }
+
+      logPerf("model_retry", {
+        model,
+        status,
+        retryable: true,
+      });
+    }
+  }
+
+  if (lastEmptyModel) {
+    return { content: "", model: lastEmptyModel };
+  }
+
+  if (lastError instanceof InvalidModelJsonError) {
+    return { content: lastError.content, model: lastError.model };
+  }
+
+  throw lastError instanceof Error ? lastError : new Error("Gemini request failed");
 }
 
 /** Handler */
@@ -435,9 +528,10 @@ Deno.serve(async (req) => {
     });
 
     const modelStartedAt = Date.now();
-    const content = stripJsonFence(await generateReceiptExtract(imageBase64, mimeType));
+    const extract = await generateReceiptExtract(imageBase64, mimeType);
+    const content = stripJsonFence(extract.content);
     logPerf("model_attempt", {
-      model: GEMINI_MODEL,
+      model: extract.model,
       transport: "inline-data",
       duration_ms: Date.now() - modelStartedAt,
       content_length: content.length,
@@ -446,28 +540,36 @@ Deno.serve(async (req) => {
     if (!content) {
       logPerf("request_complete", {
         success: false,
-        model: GEMINI_MODEL,
+        model: extract.model,
+        reason: "empty_content",
         duration_ms: Date.now() - requestStartedAt,
       });
-      return json(502, { success: false, error: "Empty content from model" });
+      return json(200, { success: false, error: "Gemini returned empty content." });
     }
 
     let parsed: ModelExtract;
     try {
       parsed = JSON.parse(content) as ModelExtract;
-    } catch {
+    } catch (error) {
       logPerf("request_complete", {
         success: false,
-        model: GEMINI_MODEL,
+        model: extract.model,
+        reason: "invalid_json",
         duration_ms: Date.now() - requestStartedAt,
       });
-      return json(502, { success: false, error: "Model did not return valid JSON" });
+      console.error("[parse-receipt-gemini] Invalid JSON from Gemini", {
+        model: extract.model,
+        error: error instanceof Error ? error.message : String(error),
+        contentLength: content.length,
+      });
+      return json(200, { success: false, error: "Gemini did not return valid receipt JSON." });
     }
 
     if (!parsed.isValidReceipt) {
       logPerf("request_complete", {
         success: false,
-        model: GEMINI_MODEL,
+        model: extract.model,
+        reason: "not_valid_receipt",
         duration_ms: Date.now() - requestStartedAt,
         valid_receipt: false,
       });
@@ -531,25 +633,27 @@ Deno.serve(async (req) => {
         : null,
       raw: {
         userId: body.userId ?? null,
-        model: GEMINI_MODEL,
+        model: extract.model,
         imagePath: body.imagePath,
       },
     };
 
     logPerf("request_complete", {
       success: true,
-      model: GEMINI_MODEL,
+      model: extract.model,
       duration_ms: Date.now() - requestStartedAt,
       item_count: items.length,
     });
     return json(200, { success: true, data: payload });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
+    console.error("[parse-receipt-gemini] Handler error", { message: msg });
     logPerf("request_complete", {
       success: false,
-      model: GEMINI_MODEL,
+      model: PRIMARY_GEMINI_MODEL,
+      reason: "handler_exception",
       duration_ms: Date.now() - requestStartedAt,
     });
-    return json(500, { success: false, error: msg });
+    return json(500, { success: false, error: "Failed to parse receipt." });
   }
 });

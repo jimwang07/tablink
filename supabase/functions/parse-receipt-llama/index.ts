@@ -13,18 +13,12 @@ const corsHeaders = {
 const REQUIRED_ENV = ["GROQ_API_KEY", "SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY"];
 const missing = REQUIRED_ENV.filter((k) => !Deno.env.get(k));
 if (missing.length) {
-  throw new Error(`parse-receipt (groq-chat-b64) missing env vars: ${missing.join(", ")}`);
+  throw new Error(`parse-receipt-llama missing env vars: ${missing.join(", ")}`);
 }
 
 /** Setup */
 const BUCKET = "receipts";
-const GROQ_RECEIPT_MODELS = [
-  "meta-llama/llama-4-scout-17b-16e-instruct",
-  "qwen/qwen3.6-27b",
-] as const;
-type GroqReceiptModel = (typeof GROQ_RECEIPT_MODELS)[number];
-const DEFAULT_GROQ_RECEIPT_MODEL =
-  Deno.env.get("GROQ_RECEIPT_MODEL") || "meta-llama/llama-4-scout-17b-16e-instruct";
+const RECEIPT_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct";
 
 const supabaseAdmin = createClient(
   Deno.env.get("SUPABASE_URL")!,
@@ -39,7 +33,7 @@ const groq = new OpenAI({
 });
 
 /** Types */
-type ReceiptRequest = { imagePath: string; userId?: string; model?: string };
+type ReceiptRequest = { imagePath: string; userId?: string };
 type ModelExtractItem = {
   name: string;
   lineTotal: number;
@@ -289,39 +283,17 @@ function logPerf(event: string, details: Record<string, string | number | boolea
   const suffix = Object.entries(details)
     .map(([key, value]) => `${key}=${value}`)
     .join(" ");
-  console.log(`[perf][parse-receipt-groq] ${event}${suffix ? ` ${suffix}` : ""}`);
+  console.log(`[perf][parse-receipt-llama] ${event}${suffix ? ` ${suffix}` : ""}`);
 }
 
-function isGroqReceiptModel(value: string): value is GroqReceiptModel {
-  return (GROQ_RECEIPT_MODELS as readonly string[]).includes(value);
-}
-
-function resolveGroqReceiptModel(requestedModel: string | null | undefined): GroqReceiptModel {
-  if (requestedModel && isGroqReceiptModel(requestedModel)) {
-    return requestedModel;
-  }
-
-  if (isGroqReceiptModel(DEFAULT_GROQ_RECEIPT_MODEL)) {
-    return DEFAULT_GROQ_RECEIPT_MODEL;
-  }
-
-  return "meta-llama/llama-4-scout-17b-16e-instruct";
-}
-
-function getResponseFormat(model: GroqReceiptModel) {
-  if (model === "qwen/qwen3.6-27b") {
-    return { type: "json_object" } as const;
-  }
-
-  return {
-    type: "json_schema",
-    json_schema: {
-      name: "receipt_extract",
-      strict: false,
-      schema: MODEL_RESPONSE_SCHEMA,
-    },
-  } as const;
-}
+const RESPONSE_FORMAT = {
+  type: "json_schema",
+  json_schema: {
+    name: "receipt_extract",
+    strict: false,
+    schema: MODEL_RESPONSE_SCHEMA,
+  },
+} as const;
 
 function getErrorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
@@ -349,8 +321,6 @@ Deno.serve(async (req) => {
     }
     const signedUrl = signed.data.signedUrl;
     const requestStartedAt = Date.now();
-    const receiptModel = resolveGroqReceiptModel(body.model);
-    const responseFormat = getResponseFormat(receiptModel);
 
     // 2) Schema prompt
     const schemaText = `
@@ -415,10 +385,10 @@ Examples:
 
     const createCompletion = async (transport: "data-url" | "signed-url", value: string) =>
       groq.chat.completions.create({
-        model: receiptModel,
+        model: RECEIPT_MODEL,
         temperature: 0,
         max_tokens: 1200,
-        response_format: responseFormat,
+        response_format: RESPONSE_FORMAT,
         messages: [
           {
             role: "system",
@@ -442,10 +412,10 @@ Examples:
     try {
       const modelStartedAt = Date.now();
       completion = await groq.chat.completions.create({
-        model: receiptModel,
+        model: RECEIPT_MODEL,
         temperature: 0,
         max_tokens: 1200,
-        response_format: responseFormat,
+        response_format: RESPONSE_FORMAT,
         messages: [
           {
             role: "system",
@@ -469,7 +439,7 @@ Examples:
         logPerf("model_error", {
           transport: "signed-url",
           reason: "non_transport_error",
-          model: receiptModel,
+          model: RECEIPT_MODEL,
           error: getErrorMessage(error),
           duration_ms: Date.now() - requestStartedAt,
         });
@@ -531,7 +501,7 @@ Examples:
         transport: transportUsed,
         fallback: usedFallback,
         fallback_reason: fallbackReason,
-        model: receiptModel,
+        model: RECEIPT_MODEL,
         duration_ms: Date.now() - requestStartedAt,
       });
       return json(502, { success: false, error: "Empty content from model" });
@@ -546,7 +516,7 @@ Examples:
         transport: transportUsed,
         fallback: usedFallback,
         fallback_reason: fallbackReason,
-        model: receiptModel,
+        model: RECEIPT_MODEL,
         duration_ms: Date.now() - requestStartedAt,
       });
       return json(502, { success: false, error: "Model did not return valid JSON" });
@@ -558,7 +528,7 @@ Examples:
         transport: transportUsed,
         fallback: usedFallback,
         fallback_reason: fallbackReason,
-        model: receiptModel,
+        model: RECEIPT_MODEL,
         duration_ms: Date.now() - requestStartedAt,
         valid_receipt: false,
       });
@@ -622,7 +592,7 @@ Examples:
         : null,
       raw: {
         userId: body.userId ?? null,
-        model: receiptModel,
+        model: RECEIPT_MODEL,
         imagePath: body.imagePath,
       },
     };
@@ -632,14 +602,14 @@ Examples:
       transport: transportUsed,
       fallback: usedFallback,
       fallback_reason: fallbackReason,
-      model: receiptModel,
+      model: RECEIPT_MODEL,
       duration_ms: Date.now() - requestStartedAt,
       item_count: items.length,
     });
     return json(200, { success: true, data: payload });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    console.error("[parse-receipt-groq] Handler error", { message: msg });
+    console.error("[parse-receipt-llama] Handler error", { message: msg });
     logPerf("request_complete", {
       success: false,
       transport: null,
