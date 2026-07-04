@@ -13,11 +13,11 @@ import { useRouter } from 'expo-router';
 import Animated, { FadeInDown } from 'react-native-reanimated';
 import { Ionicons } from '@expo/vector-icons';
 
+import { ShareTablinkSheet } from '@/src/components/ShareTablinkSheet';
 import { useAuth } from '@/src/hooks/useAuth';
 import { usePendingReceipt } from '@/src/hooks/usePendingReceipt';
 import { getOrCreateShareLink, saveReceipt, updateReceipt } from '@/src/services/receiptService';
 import { getSupabaseClient } from '@/src/lib/supabaseClient';
-import { shareTablink } from '@/src/lib/shareTablink';
 import { colors } from '@/src/theme';
 
 function formatCurrency(amount: number) {
@@ -61,6 +61,7 @@ export default function YourItemsScreen() {
   const [isSharing, setIsSharing] = useState(false);
   const [showShareSuccess, setShowShareSuccess] = useState(false);
   const [sharedReceiptId, setSharedReceiptId] = useState<string | null>(null);
+  const [shareSheetUrl, setShareSheetUrl] = useState<string | null>(null);
   const [hasPaymentMethods, setHasPaymentMethods] = useState<boolean | null>(null);
   const [coverEditorIndex, setCoverEditorIndex] = useState<number | null>(null);
   const [customCoverInput, setCustomCoverInput] = useState('');
@@ -322,10 +323,8 @@ export default function YourItemsScreen() {
       }
 
       const tablinkUrl = `${TABLINK_BASE_URL}/claim/${linkResult.shortCode}`;
-      await shareTablink({ tablinkUrl, merchantName: parsed.merchantName });
-
       setSharedReceiptId(result.receiptId);
-      setShowShareSuccess(true);
+      setShareSheetUrl(tablinkUrl);
     } catch (error) {
       console.error('[your-items] Failed to share receipt:', error);
       Alert.alert('Error', 'Failed to share receipt. Please try again.');
@@ -490,6 +489,17 @@ export default function YourItemsScreen() {
           </Pressable>
         </Animated.View>
       </ScrollView>
+
+      <ShareTablinkSheet
+        visible={Boolean(shareSheetUrl)}
+        tablinkUrl={shareSheetUrl}
+        merchantName={parsed?.merchantName}
+        onClose={() => setShareSheetUrl(null)}
+        onShared={() => {
+          setShareSheetUrl(null);
+          setShowShareSuccess(true);
+        }}
+      />
 
       <Modal
         visible={showShareSuccess}

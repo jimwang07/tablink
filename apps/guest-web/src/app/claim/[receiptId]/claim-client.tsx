@@ -67,6 +67,7 @@ type Participant = {
   color_token: string | null;
   role?: 'owner' | 'guest';
   payment_status?: string;
+  phone?: string | null;
 };
 
 type OwnerProfile = {
@@ -190,6 +191,7 @@ function EditIcon({ className = 'h-3.5 w-3.5' }: { className?: string }) {
 }
 
 type PaymentProvider = 'venmo' | 'cashapp' | 'paypal';
+type PaymentOption = { name: string; provider: PaymentProvider; accent: string; url: string };
 
 function PaymentLogo({ provider }: { provider: PaymentProvider }) {
   switch (provider) {
@@ -290,19 +292,21 @@ function SecondaryAction({
 }
 
 function PaymentLinkAction({
-  href,
   children,
   accent,
+  onClick,
+  disabled,
 }: {
-  href: string;
   children: React.ReactNode;
   accent: string;
+  onClick?: () => void;
+  disabled?: boolean;
 }) {
   return (
-    <a
-      href={href}
-      target="_blank"
-      rel="noopener noreferrer"
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
       className="tablink-payment-link"
       style={{
         borderColor: `${accent}55`,
@@ -310,7 +314,7 @@ function PaymentLinkAction({
       }}
     >
       {children}
-    </a>
+    </button>
   );
 }
 
@@ -328,6 +332,7 @@ export function ClaimPageClient({
   const [participants, setParticipants] = useState<Participant[]>(initialParticipants);
   const [currentParticipant, setCurrentParticipant] = useState<Participant | null>(null);
   const [guestName, setGuestName] = useState('');
+  const [guestPhone, setGuestPhone] = useState('');
   const [isJoining, setIsJoining] = useState(false);
   const [showNewNameInput, setShowNewNameInput] = useState(false);
   const [claimingItemId, setClaimingItemId] = useState<string | null>(null);
@@ -336,6 +341,7 @@ export function ClaimPageClient({
   const [paymentStatus, setPaymentStatus] = useState<'unpaid' | 'paid'>('unpaid');
   const [copiedAmount, setCopiedAmount] = useState(false);
   const [showPaymentModal, setShowPaymentModal] = useState(false);
+  const [selectedPaymentOption, setSelectedPaymentOption] = useState<PaymentOption | null>(null);
   const [coverEditor, setCoverEditor] = useState<{ itemId: string; claimId: string } | null>(null);
   const [customCoverInput, setCustomCoverInput] = useState('');
   const itemIds = useMemo(() => items.map((item) => item.id), [items]);
@@ -375,7 +381,7 @@ export function ClaimPageClient({
         .order('position', { ascending: true }),
       supabase
         .from('receipt_participants')
-        .select('id, display_name, emoji, color_token, role, payment_status')
+        .select('id, display_name, emoji, color_token, role, payment_status, phone')
         .eq('receipt_id', receiptId),
     ]);
 
@@ -444,8 +450,6 @@ export function ClaimPageClient({
         'postgres_changes',
         { event: '*', schema: 'public', table: 'item_claims' },
         (payload: RealtimePostgresChangesPayload<ItemClaim>) => {
-          void refreshRealtimeState();
-
           if (payload.eventType === 'INSERT') {
             const newClaim = payload.new as ItemClaim;
             if (itemIdSet.has(newClaim.item_id)) {
@@ -453,11 +457,15 @@ export function ClaimPageClient({
                 if (prev.some((claim) => claim.id === newClaim.id)) return prev;
                 return [...prev, newClaim];
               });
+            } else {
+              void refreshRealtimeState();
             }
           } else if (payload.eventType === 'UPDATE') {
             const updated = payload.new as ItemClaim;
             if (itemIdSet.has(updated.item_id)) {
               setClaims((prev) => prev.map((claim) => (claim.id === updated.id ? { ...claim, ...updated } : claim)));
+            } else {
+              void refreshRealtimeState();
             }
           } else if (payload.eventType === 'DELETE') {
             const oldClaim = payload.old as { id: string };
@@ -485,17 +493,23 @@ export function ClaimPageClient({
       .on(
         'postgres_changes',
         {
-          event: 'UPDATE',
+          event: '*',
           schema: 'public',
           table: 'receipt_participants',
           filter: `receipt_id=eq.${receiptId}`,
         },
         (payload: RealtimePostgresChangesPayload<Participant>) => {
-          const updated = payload.new as Participant;
-          setParticipants((prev) =>
-            prev.map((participant) => (participant.id === updated.id ? { ...participant, ...updated } : participant))
-          );
-          setCurrentParticipant((prev) => (prev?.id === updated.id ? { ...prev, ...updated } : prev));
+          if (payload.eventType === 'UPDATE') {
+            const updated = payload.new as Participant;
+            setParticipants((prev) =>
+              prev.map((participant) => (participant.id === updated.id ? { ...participant, ...updated } : participant))
+            );
+            setCurrentParticipant((prev) => (prev?.id === updated.id ? { ...prev, ...updated } : prev));
+          } else if (payload.eventType === 'DELETE') {
+            const deleted = payload.old as { id: string };
+            setParticipants((prev) => prev.filter((participant) => participant.id !== deleted.id));
+            setCurrentParticipant((prev) => (prev?.id === deleted.id ? null : prev));
+          }
         }
       )
       .subscribe();
@@ -528,6 +542,7 @@ export function ClaimPageClient({
         .insert({
           receipt_id: receiptId,
           display_name: guestName.trim(),
+          phone: guestPhone.trim() || null,
           emoji,
           color_token: color,
           role: 'guest',
@@ -549,7 +564,7 @@ export function ClaimPageClient({
     } finally {
       setIsJoining(false);
     }
-  }, [guestName, participants, receiptId]);
+  }, [guestName, guestPhone, participants, receiptId]);
 
   const handleClaimItem = useCallback(
     async (itemId: string) => {
@@ -769,7 +784,7 @@ export function ClaimPageClient({
 
   const handleMarkPaid = useCallback(
     async (method: string) => {
-      if (!currentParticipant || isMarkingPaid) return;
+      if (!currentParticipant || isMarkingPaid) return false;
 
       setIsMarkingPaid(true);
       setError(null);
@@ -795,15 +810,46 @@ export function ClaimPageClient({
             participant.id === currentParticipant.id ? { ...participant, payment_status: 'paid' } : participant
           )
         );
+        return true;
       } catch (err) {
         console.error('Failed to mark as paid:', err);
         setError('Failed to update payment status. Please try again.');
+        return false;
       } finally {
         setIsMarkingPaid(false);
       }
     },
     [currentParticipant, isMarkingPaid, myGrandTotal]
   );
+
+  const handleMarkPaidAndContinue = useCallback(
+    async () => {
+      if (!selectedPaymentOption) return;
+
+      const option = selectedPaymentOption;
+      const didMarkPaid = await handleMarkPaid(option.provider);
+      if (!didMarkPaid) return;
+
+      setSelectedPaymentOption(null);
+      setShowPaymentModal(false);
+      window.location.assign(option.url);
+    },
+    [handleMarkPaid, selectedPaymentOption]
+  );
+
+  const handleContinueToPayment = useCallback(() => {
+    if (!selectedPaymentOption) return;
+
+    const option = selectedPaymentOption;
+    setSelectedPaymentOption(null);
+    setShowPaymentModal(false);
+    window.location.assign(option.url);
+  }, [selectedPaymentOption]);
+
+  const handleMarkPaidManually = useCallback(async () => {
+    const didMarkPaid = await handleMarkPaid('manual');
+    if (didMarkPaid) setShowPaymentModal(false);
+  }, [handleMarkPaid]);
 
   const handleCopyAmount = useCallback(() => {
     navigator.clipboard.writeText((myGrandTotal / 100).toFixed(2));
@@ -815,7 +861,7 @@ export function ClaimPageClient({
     if (!ownerProfile) return [];
 
     const amountDollars = (myGrandTotal / 100).toFixed(2);
-    const options: { name: string; provider: PaymentProvider; accent: string; url: string }[] = [];
+    const options: PaymentOption[] = [];
 
     if (ownerProfile.venmo_handle) {
       const username = ownerProfile.venmo_handle.replace(/^@/, '');
@@ -958,6 +1004,20 @@ export function ClaimPageClient({
                   className="tablink-input"
                   autoFocus
                 />
+                <label className="tablink-input-label" htmlFor="guest-phone">
+                  Phone number for reminders <span className="tablink-optional-label">(optional)</span>
+                </label>
+                <input
+                  id="guest-phone"
+                  type="tel"
+                  value={guestPhone}
+                  onChange={(event) => setGuestPhone(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') handleJoin();
+                  }}
+                  placeholder="(555) 123-4567"
+                  className="tablink-input"
+                />
                 <PrimaryAction onClick={handleJoin} disabled={isJoining || !guestName.trim()}>
                   <span>{isJoining ? 'Joining...' : 'Continue'}</span>
                   <ArrowIcon />
@@ -969,6 +1029,7 @@ export function ClaimPageClient({
                     onClick={() => {
                       setShowNewNameInput(false);
                       setGuestName('');
+                      setGuestPhone('');
                     }}
                     className="tablink-text-button"
                   >
@@ -1319,13 +1380,20 @@ export function ClaimPageClient({
             {paymentOptions.length > 0 ? (
               <div className="tablink-payment-stack">
                 {paymentOptions.map((option) => (
-                    <PaymentLinkAction key={option.name} href={option.url} accent={option.accent}>
-                      <span className="tablink-payment-link-label">
-                        <PaymentLogo provider={option.provider} />
-                        <span>Pay with {option.name}</span>
-                      </span>
-                      <ArrowIcon />
-                    </PaymentLinkAction>
+                  <PaymentLinkAction
+                    key={option.name}
+                    accent={option.accent}
+                    onClick={() => {
+                      setSelectedPaymentOption(option);
+                    }}
+                    disabled={isMarkingPaid}
+                  >
+                    <span className="tablink-payment-link-label">
+                      <PaymentLogo provider={option.provider} />
+                      <span>Pay with {option.name}</span>
+                    </span>
+                    <ArrowIcon />
+                  </PaymentLinkAction>
                 ))}
               </div>
             ) : (
@@ -1335,15 +1403,50 @@ export function ClaimPageClient({
             )}
 
             <div className="tablink-modal-footer">
-              <SecondaryAction
+              <PrimaryAction
                 onClick={() => {
-                  handleMarkPaid('manual');
-                  setShowPaymentModal(false);
+                  void handleMarkPaidManually();
                 }}
                 disabled={isMarkingPaid}
               >
-                <span>{isMarkingPaid ? 'Confirming...' : "I've already paid"}</span>
-              </SecondaryAction>
+                <span>{isMarkingPaid ? 'Confirming...' : 'Mark as paid'}</span>
+                <CheckIcon />
+              </PrimaryAction>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {selectedPaymentOption ? (
+        <div className="tablink-modal-backdrop tablink-modal-backdrop-stacked" onClick={() => setSelectedPaymentOption(null)}>
+          <div className="tablink-modal tablink-confirm-modal" onClick={(event) => event.stopPropagation()}>
+            <div className="tablink-modal-head">
+              <div>
+                <div className="tablink-overline">Payment</div>
+                <h2 className="tablink-section-title">Mark as paid?</h2>
+                <p className="tablink-section-body">
+                  Mark yourself as paid before you leave so the host knows you&apos;ve settled up.
+                </p>
+              </div>
+              <button type="button" className="tablink-icon-button" onClick={() => setSelectedPaymentOption(null)}>
+                <CloseIcon />
+              </button>
+            </div>
+
+            <div className="tablink-confirm-actions">
+              <PrimaryAction
+                onClick={() => {
+                  void handleMarkPaidAndContinue();
+                }}
+                disabled={isMarkingPaid}
+              >
+                <span>{isMarkingPaid ? 'Confirming...' : 'Mark paid and continue'}</span>
+                <ArrowIcon />
+              </PrimaryAction>
+
+              <button type="button" className="tablink-confirm-secondary-button" onClick={handleContinueToPayment}>
+                Continue without marking paid
+              </button>
             </div>
           </div>
         </div>

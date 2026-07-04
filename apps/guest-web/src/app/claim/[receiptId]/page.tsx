@@ -49,6 +49,7 @@ type Participant = {
   emoji: string | null;
   color_token: string | null;
   role?: 'owner' | 'guest';
+  phone?: string | null;
 };
 
 async function resolveReceiptIdFromShortCode(shortCode: string) {
@@ -125,7 +126,7 @@ async function getReceiptData(receiptId: string) {
   // Fetch participants
   const { data: participants } = await supabase
     .from('receipt_participants')
-    .select('id, display_name, emoji, color_token, role, payment_status')
+    .select('id, display_name, emoji, color_token, role, payment_status, phone')
     .eq('receipt_id', receiptId);
 
   // Fetch owner profile for payment handles

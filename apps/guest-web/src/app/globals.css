@@ -334,6 +334,20 @@ input:focus { outline: none; }
   gap: 12px;
 }
 
+.tablink-modal-head {
+  align-items: flex-start;
+}
+
+.tablink-modal-head > div {
+  min-width: 0;
+}
+
+.tablink-modal-head .tablink-icon-button {
+  flex: 0 0 auto;
+  margin-top: -8px;
+  margin-right: -8px;
+}
+
 .tablink-identity-pill,
 .tablink-qty-pill,
 .tablink-paid-pill {
@@ -435,6 +449,11 @@ input:focus { outline: none; }
   color: var(--text-secondary);
   font-size: 0.86rem;
   font-weight: 600;
+}
+
+.tablink-optional-label {
+  color: var(--muted);
+  font-weight: 500;
 }
 
 .tablink-input {
@@ -952,6 +971,10 @@ input:focus { outline: none; }
   animation: fadeIn 200ms ease-out;
 }
 
+.tablink-modal-backdrop-stacked {
+  z-index: 60;
+}
+
 .tablink-modal {
   width: min(480px, 100%);
   border-radius: 14px;
@@ -960,6 +983,51 @@ input:focus { outline: none; }
   border: 1px solid rgba(255, 255, 255, 0.07);
   box-shadow: 0 24px 64px rgba(0, 0, 0, 0.5);
   animation: rise 300ms ease-out;
+  max-height: min(90vh, 720px);
+  overflow-y: auto;
+}
+
+.tablink-confirm-modal {
+  width: min(420px, 100%);
+}
+
+.tablink-confirm-modal .tablink-modal-head {
+  margin-bottom: 24px;
+}
+
+.tablink-confirm-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.tablink-confirm-secondary-button {
+  display: inline-flex;
+  width: 100%;
+  min-height: 46px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.045);
+  color: var(--foreground);
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: background 160ms ease, border-color 160ms ease, transform 120ms ease;
+}
+
+.tablink-confirm-secondary-button:hover {
+  background: rgba(255, 255, 255, 0.075);
+  border-color: rgba(255, 255, 255, 0.22);
+  transform: translateY(-1px);
+}
+
+.tablink-confirm-secondary-button:active {
+  transform: translateY(0);
 }
 
 .tablink-icon-button {
@@ -1026,13 +1094,27 @@ input:focus { outline: none; }
   justify-content: space-between;
   align-items: center;
   gap: 12px;
+  width: 100%;
   padding: 14px 16px;
   border-radius: 10px;
   border: 1px solid rgba(255, 255, 255, 0.08);
   color: var(--foreground);
+  font: inherit;
   font-weight: 700;
   font-size: 0.9rem;
+  text-align: left;
+  cursor: pointer;
   transition: transform 120ms ease, border-color 200ms ease;
+}
+
+.tablink-payment-link:disabled {
+  cursor: wait;
+  opacity: 0.76;
+  transform: none;
+}
+
+.tablink-payment-link:disabled:hover {
+  transform: none;
 }
 
 .tablink-payment-link-label {
@@ -1159,10 +1241,16 @@ input:focus { outline: none; }
     border-radius: 12px;
   }
 
-  .tablink-card,
-  .tablink-modal {
+  .tablink-card {
     padding: 16px;
     border-radius: 12px;
+  }
+
+  .tablink-modal {
+    width: min(100vw - 28px, 480px);
+    padding: 20px;
+    border-radius: 14px;
+    max-height: calc(100dvh - 40px);
   }
 
   .tablink-stat-grid,
@@ -1197,23 +1285,9 @@ input:focus { outline: none; }
   }
 
   .tablink-summary-row,
-  .tablink-overview-header,
-  .tablink-modal-head {
+  .tablink-overview-header {
     flex-direction: column;
     align-items: flex-start;
-  }
-
-  .tablink-modal-backdrop {
-    align-items: flex-end;
-    padding: 0;
-  }
-
-  .tablink-modal {
-    border-radius: 14px 14px 0 0;
-    padding: 24px 20px calc(20px + env(safe-area-inset-bottom, 0px));
-    animation: slideUp 300ms ease-out;
-    max-height: 90vh;
-    overflow-y: auto;
   }
 
   .tablink-identity-pill { padding: 6px 12px; }

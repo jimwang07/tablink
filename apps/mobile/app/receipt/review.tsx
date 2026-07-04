@@ -23,6 +23,7 @@ import { colors } from '@/src/theme';
 import type { ParsedReceiptAdjustment, ParsedReceiptItem } from '@/src/types/receipt';
 
 const TIP_PRESET_PERCENTS = [15, 18, 20] as const;
+const OTHER_FEES_LABEL = 'Other fees';
 
 type EditableItem = {
   key: string;
@@ -107,24 +108,49 @@ function buildEditableItems(items: ParsedReceiptItem[]): EditableItem[] {
 }
 
 function buildEditableAdjustments(adjustments: ParsedReceiptAdjustment[]): EditableAdjustment[] {
-  return adjustments
-    .filter((adjustment) => adjustment.type !== 'discount')
-    .map((adjustment, index) => ({
-    key: `${adjustment.type}-${adjustment.label}-${index}`,
-    type: adjustment.type,
-    label: formatAdjustmentLabel(adjustment),
-    amount: toCurrencyString(Math.abs(adjustment.amount)),
-    }));
-}
+  const otherFeesTotal = getOtherFeesTotal(adjustments);
+  if (otherFeesTotal <= 0) return [];
 
-function formatAdjustmentLabel(adjustment: ParsedReceiptAdjustment): string {
-  return adjustment.label.trim() || adjustment.type.replace(/_/g, ' ');
+  return [{
+    key: 'other-fees',
+    type: 'fee',
+    label: OTHER_FEES_LABEL,
+    amount: toCurrencyString(otherFeesTotal),
+  }];
 }
 
 function getDiscountTotal(adjustments: ParsedReceiptAdjustment[]): number {
   return adjustments
     .filter((adjustment) => adjustment.type === 'discount')
     .reduce((sum, adjustment) => sum + Math.abs(adjustment.amount), 0);
+}
+
+function getOtherFeesTotal(adjustments: ParsedReceiptAdjustment[]): number {
+  return adjustments
+    .filter((adjustment) => adjustment.type !== 'discount')
+    .reduce((sum, adjustment) => sum + Math.abs(adjustment.amount), 0);
+}
+
+function buildStandardAdjustments(discountAmount: number, otherFeesAmount: number): ParsedReceiptAdjustment[] {
+  const adjustments: ParsedReceiptAdjustment[] = [];
+
+  if (discountAmount > 0) {
+    adjustments.push({
+      type: 'discount',
+      label: 'Discounts',
+      amount: discountAmount,
+    });
+  }
+
+  if (otherFeesAmount > 0) {
+    adjustments.push({
+      type: 'fee',
+      label: OTHER_FEES_LABEL,
+      amount: otherFeesAmount,
+    });
+  }
+
+  return adjustments;
 }
 
 export default function ReceiptReviewScreen() {
@@ -176,6 +202,10 @@ export default function ReceiptReviewScreen() {
   const taxAmount = useMemo(() => parseCurrencyInput(taxInput), [taxInput]);
   const tipAmount = useMemo(() => parseCurrencyInput(tipInput), [tipInput]);
   const discountAmount = useMemo(() => parseCurrencyInput(discountInput), [discountInput]);
+  const otherFeesAmount = useMemo(() => {
+    return editableAdjustments.reduce((sum, adjustment) => sum + parseCurrencyInput(adjustment.amount), 0);
+  }, [editableAdjustments]);
+  const otherFeesInput = editableAdjustments[0]?.amount ?? '0.00';
   const grandTotal = useMemo(
     () => subtotal + adjustmentsTotal + taxAmount + tipAmount,
     [subtotal, adjustmentsTotal, taxAmount, tipAmount]
@@ -219,10 +249,13 @@ export default function ReceiptReviewScreen() {
     );
   }, []);
 
-  const updateAdjustmentAmount = useCallback((key: string, value: string) => {
-    setEditableAdjustments((current) =>
-      current.map((adjustment) => (adjustment.key === key ? { ...adjustment, amount: value } : adjustment))
-    );
+  const updateOtherFeesAmount = useCallback((value: string) => {
+    setEditableAdjustments([{
+      key: 'other-fees',
+      type: 'fee',
+      label: OTHER_FEES_LABEL,
+      amount: value,
+    }]);
   }, []);
 
   const removeItem = useCallback((key: string) => {
@@ -247,24 +280,11 @@ export default function ReceiptReviewScreen() {
       price: parseCurrencyInput(item.price),
       quantity: parseQuantityInput(item.quantity),
     }));
-    const adjustments = editableAdjustments.map((adjustment) => ({
-      type: adjustment.type,
-      label: adjustment.label.trim() || formatAdjustmentLabel({ type: adjustment.type, label: '', amount: 0 }),
-      amount: parseCurrencyInput(adjustment.amount),
-    }));
-    if (discountAmount > 0) {
-      adjustments.unshift({
-        type: 'discount',
-        label: 'Discounts',
-        amount: discountAmount,
-      });
-    }
-
     return {
       ...parsed,
       merchantName: merchantName.trim() || null,
       items,
-      adjustments,
+      adjustments: buildStandardAdjustments(discountAmount, otherFeesAmount),
       totals: {
         ...parsed.totals,
         subtotal,
@@ -274,7 +294,7 @@ export default function ReceiptReviewScreen() {
         itemsTotal: subtotal,
       },
     };
-  }, [parsed, editableItems, editableAdjustments, discountAmount, merchantName, subtotal, taxAmount, tipAmount, grandTotal]);
+  }, [parsed, editableItems, discountAmount, otherFeesAmount, merchantName, subtotal, taxAmount, tipAmount, grandTotal]);
 
   const closeReviewFlow = useCallback(
     (onComplete?: () => void) => {
@@ -517,19 +537,17 @@ export default function ReceiptReviewScreen() {
                       style={[s.textInput, s.summaryInput]}
                     />
                   </View>
-                  {editableAdjustments.map((adjustment) => (
-                    <View key={adjustment.key} style={s.summaryRow}>
-                      <Text style={s.summaryLabel}>{adjustment.label}</Text>
-                      <TextInput
-                        value={adjustment.amount}
-                        onChangeText={(value) => updateAdjustmentAmount(adjustment.key, value)}
-                        placeholder="0.00"
-                        placeholderTextColor={placeholderColor}
-                        keyboardType="decimal-pad"
-                        style={[s.textInput, s.summaryInput]}
-                      />
-                    </View>
-                  ))}
+                  <View style={s.summaryRow}>
+                    <Text style={s.summaryLabel}>{OTHER_FEES_LABEL}</Text>
+                    <TextInput
+                      value={otherFeesInput}
+                      onChangeText={updateOtherFeesAmount}
+                      placeholder="0.00"
+                      placeholderTextColor={placeholderColor}
+                      keyboardType="decimal-pad"
+                      style={[s.textInput, s.summaryInput]}
+                    />
+                  </View>
                 </>
               )}
               {!showExtraCharges && discountAmount <= 0 && editableAdjustments.length === 0 ? (

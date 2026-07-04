@@ -1,10 +1,11 @@
-import { useCallback, useRef, useState, useMemo } from 'react';
+import { useCallback, useEffect, useRef, useState, useMemo } from 'react';
 import { Alert, Dimensions, Modal, View, Text, StyleSheet, ScrollView, Pressable } from 'react-native';
 import { Link, useRouter, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import Animated, { FadeInDown } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { SkeletonBlock, SkeletonPulse } from '@/src/components/Skeleton';
+import { ShareTablinkSheet } from '@/src/components/ShareTablinkSheet';
 import { colors } from '@/src/theme';
 import { useReceipts, type ReceiptWithDetails } from '@/src/hooks/useReceipts';
 import { useAuth } from '@/src/hooks/useAuth';
@@ -15,7 +16,6 @@ import {
   updateReceipt,
 } from '@/src/services/receiptService';
 import { getSupabaseClient } from '@/src/lib/supabaseClient';
-import { shareTablink } from '@/src/lib/shareTablink';
 import type { ReceiptStatus } from '@/src/types/receipt';
 
 type Tab = 'active' | 'completed';
@@ -27,6 +27,7 @@ const SORT_LABEL: Record<SortMode, string> = {
   oldest: 'Oldest',
   status: 'Status',
 };
+const MENU_ACTION_DISMISS_FALLBACK_MS = 400;
 
 type ProgressData = {
   unclaimed: number;
@@ -241,7 +242,10 @@ function ReceiptCard({
         <Pressable
           ref={btnRef}
           collapsable={false}
-          onPress={handleMenuPress}
+          onPress={(event) => {
+            event.stopPropagation();
+            handleMenuPress();
+          }}
           hitSlop={{ top: 12, bottom: 12, left: 12, right: 8 }}
           style={({ pressed }) => [s.cardMenuButton, pressed && s.cardMenuButtonPressed]}
         >
@@ -364,11 +368,17 @@ type MenuAction = {
 function ReceiptActionMenu({
   anchor,
   actions,
+  visible,
   onClose,
+  onDismiss,
+  onActionPress,
 }: {
   anchor: MenuAnchor;
   actions: MenuAction[];
+  visible: boolean;
   onClose: () => void;
+  onDismiss: () => void;
+  onActionPress: (action: MenuAction) => void;
 }) {
   const insets = useSafeAreaInsets();
   const screen = Dimensions.get('window');
@@ -385,9 +395,19 @@ function ReceiptActionMenu({
   if (left < 16) left = 16;
 
   return (
-    <Modal visible transparent animationType="fade" onRequestClose={onClose} statusBarTranslucent>
+    <Modal
+      visible={visible}
+      transparent
+      animationType="fade"
+      onRequestClose={onClose}
+      onDismiss={onDismiss}
+      statusBarTranslucent
+    >
       <Pressable style={s.menuOverlay} onPress={onClose}>
-        <Pressable style={[s.menuPopover, { top, left, width: menuWidth }]}>
+        <Pressable
+          style={[s.menuPopover, { top, left, width: menuWidth }]}
+          onPress={(event) => event.stopPropagation()}
+        >
           {actions.map((action, i) => (
             <Pressable
               key={action.key}
@@ -396,7 +416,10 @@ function ReceiptActionMenu({
                 i < actions.length - 1 && s.menuActionBorder,
                 pressed && s.menuActionPressed,
               ]}
-              onPress={action.onPress}
+              onPress={(event) => {
+                event.stopPropagation();
+                onActionPress(action);
+              }}
             >
               <Ionicons
                 name={action.icon}
@@ -429,7 +452,14 @@ export default function HomeScreen() {
   const [menuState, setMenuState] = useState<{
     receipt: ReceiptWithDetails;
     anchor: MenuAnchor;
+    visible: boolean;
   } | null>(null);
+  const [shareSheetState, setShareSheetState] = useState<{
+    url: string;
+    merchantName: string | null;
+  } | null>(null);
+  const [pendingMenuAction, setPendingMenuAction] = useState<(() => void) | null>(null);
+  const didHandleMenuDismissRef = useRef(false);
 
   useFocusEffect(
     useCallback(() => {
@@ -483,7 +513,6 @@ export default function HomeScreen() {
   const TABLINK_BASE_URL = process.env.EXPO_PUBLIC_TABLINK_URL;
 
   const handleMenuShare = useCallback(async (receipt: ReceiptWithDetails) => {
-    setMenuState(null);
     const userId = session?.user?.id;
     if (!userId || !receipt.id) return;
 
@@ -534,7 +563,10 @@ export default function HomeScreen() {
       }
 
       const tablinkUrl = `${TABLINK_BASE_URL}/claim/${linkResult.shortCode}`;
-      await shareTablink({ tablinkUrl, merchantName: receipt.merchant_name });
+      setShareSheetState({
+        url: tablinkUrl,
+        merchantName: receipt.merchant_name,
+      });
     } catch (err) {
       console.error('[Home] Share error:', err);
       Alert.alert('Error', 'Failed to share tablink');
@@ -590,10 +622,40 @@ export default function HomeScreen() {
 
   const handleOpenMenu = useCallback(
     (receipt: ReceiptWithDetails, anchor: MenuAnchor) => {
-      setMenuState({ receipt, anchor });
+      didHandleMenuDismissRef.current = false;
+      setMenuState({ receipt, anchor, visible: true });
     },
     []
   );
+
+  const handleMenuActionPress = useCallback((action: MenuAction) => {
+    didHandleMenuDismissRef.current = false;
+    setPendingMenuAction(() => action.onPress);
+    setMenuState((prev) => (prev ? { ...prev, visible: false } : prev));
+  }, []);
+
+  const handleCloseMenu = useCallback(() => {
+    didHandleMenuDismissRef.current = false;
+    setPendingMenuAction(null);
+    setMenuState((prev) => (prev ? { ...prev, visible: false } : prev));
+  }, []);
+
+  const handleMenuDismiss = useCallback(() => {
+    if (didHandleMenuDismissRef.current) return;
+    didHandleMenuDismissRef.current = true;
+
+    const action = pendingMenuAction;
+    setPendingMenuAction(null);
+    setMenuState(null);
+    action?.();
+  }, [pendingMenuAction]);
+
+  useEffect(() => {
+    if (!menuState || menuState.visible) return;
+
+    const timeout = setTimeout(handleMenuDismiss, MENU_ACTION_DISMISS_FALLBACK_MS);
+    return () => clearTimeout(timeout);
+  }, [handleMenuDismiss, menuState]);
 
   const menuActions = useMemo<MenuAction[]>(() => {
     if (!menuState) return [];
@@ -686,9 +748,23 @@ export default function HomeScreen() {
         <ReceiptActionMenu
           anchor={menuState.anchor}
           actions={menuActions}
-          onClose={() => setMenuState(null)}
+          visible={menuState.visible}
+          onClose={handleCloseMenu}
+          onDismiss={handleMenuDismiss}
+          onActionPress={handleMenuActionPress}
         />
       )}
+
+      <ShareTablinkSheet
+        visible={Boolean(shareSheetState)}
+        tablinkUrl={shareSheetState?.url ?? null}
+        merchantName={shareSheetState?.merchantName}
+        onClose={() => setShareSheetState(null)}
+        onShared={() => {
+          console.log('[Home] Shared successfully');
+          setShareSheetState(null);
+        }}
+      />
     </View>
   );
 }

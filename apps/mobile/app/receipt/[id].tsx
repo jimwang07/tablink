@@ -4,6 +4,7 @@ import {
   Image,
   Keyboard,
   KeyboardAvoidingView,
+  Linking,
   Modal,
   Platform,
   Pressable,
@@ -15,8 +16,8 @@ import {
   View,
 } from 'react-native';
 import { Confetti } from '@/src/components/Confetti';
+import { ShareTablinkSheet } from '@/src/components/ShareTablinkSheet';
 import { getSupabaseClient } from '@/src/lib/supabaseClient';
-import { shareTablink } from '@/src/lib/shareTablink';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Swipeable } from 'react-native-gesture-handler';
 import Animated, {
@@ -64,6 +65,7 @@ type Participant = {
   paid_at?: string | null;
   payment_method?: string | null;
   payment_amount_cents?: number | null;
+  phone?: string | null;
 };
 
 type EditableItem = {
@@ -84,7 +86,10 @@ type EditableAdjustment = {
 /* ── Status config (matches home screen) ───────────────────── */
 
 type ReceiptStatus = 'draft' | 'ready' | 'shared' | 'partially_claimed' | 'fully_claimed' | 'settled';
+type ReminderKind = 'claim' | 'payment';
+type ReminderDeliveryMethod = 'sms' | 'share_sheet';
 const TIP_PRESET_PERCENTS = [15, 18, 20] as const;
+const OTHER_FEES_LABEL = 'Other fees';
 
 const STATUS_COLOR: Record<ReceiptStatus, string> = {
   draft: '#6B7280',
@@ -169,6 +174,20 @@ function formatCurrency(amount: number) {
   }).format(amount);
 }
 
+function normalizePhoneForSms(phone?: string | null) {
+  const trimmed = phone?.trim();
+  if (!trimmed) return null;
+  const hasLeadingPlus = trimmed.startsWith('+');
+  const digits = trimmed.replace(/\D/g, '');
+  if (!digits) return null;
+  return hasLeadingPlus ? `+${digits}` : digits;
+}
+
+function buildSmsUrl(phone: string, message: string) {
+  const separator = Platform.OS === 'ios' ? '&' : '?';
+  return `sms:${phone}${separator}body=${encodeURIComponent(message)}`;
+}
+
 function formatQuantity(value: number) {
   return Number.isInteger(value) ? String(value) : value.toFixed(2).replace(/\.?0+$/, '');
 }
@@ -198,28 +217,49 @@ function buildEditableItems(items: ReceiptItem[]): EditableItem[] {
 }
 
 function buildEditableAdjustments(adjustments: ParsedReceiptAdjustment[]): EditableAdjustment[] {
-  return adjustments
-    .filter((adjustment) => adjustment.type !== 'discount')
-    .map((adjustment, index) => ({
-    key: `${adjustment.type}-${adjustment.label}-${index}`,
-    type: adjustment.type,
-    label: formatAdjustmentLabel(adjustment),
-    amount: toCurrencyString(Math.abs(adjustment.amount)),
-    }));
-}
+  const otherFeesTotal = getOtherFeesTotal(adjustments);
+  if (otherFeesTotal <= 0) return [];
 
-function getSignedAdjustmentAmount(adjustment: ParsedReceiptAdjustment): number {
-  return adjustment.type === 'discount' ? -Math.abs(adjustment.amount) : adjustment.amount;
-}
-
-function formatAdjustmentLabel(adjustment: ParsedReceiptAdjustment): string {
-  return adjustment.label.trim() || adjustment.type.replace(/_/g, ' ');
+  return [{
+    key: 'other-fees',
+    type: 'fee',
+    label: OTHER_FEES_LABEL,
+    amount: toCurrencyString(otherFeesTotal),
+  }];
 }
 
 function getDiscountTotal(adjustments: ParsedReceiptAdjustment[]): number {
   return adjustments
     .filter((adjustment) => adjustment.type === 'discount')
     .reduce((sum, adjustment) => sum + Math.abs(adjustment.amount), 0);
+}
+
+function getOtherFeesTotal(adjustments: ParsedReceiptAdjustment[]): number {
+  return adjustments
+    .filter((adjustment) => adjustment.type !== 'discount')
+    .reduce((sum, adjustment) => sum + Math.abs(adjustment.amount), 0);
+}
+
+function buildStandardAdjustments(discountAmount: number, otherFeesAmount: number): ParsedReceiptAdjustment[] {
+  const adjustments: ParsedReceiptAdjustment[] = [];
+
+  if (discountAmount > 0) {
+    adjustments.push({
+      type: 'discount',
+      label: 'Discounts',
+      amount: discountAmount,
+    });
+  }
+
+  if (otherFeesAmount > 0) {
+    adjustments.push({
+      type: 'fee',
+      label: OTHER_FEES_LABEL,
+      amount: otherFeesAmount,
+    });
+  }
+
+  return adjustments;
 }
 
 /* ── Skeleton loading ──────────────────────────────────────── */
@@ -340,6 +380,9 @@ export default function ReceiptDetailScreen() {
   const [isSaving, setIsSaving] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [isSharing, setIsSharing] = useState(false);
+  const [shareSheetUrl, setShareSheetUrl] = useState<string | null>(null);
+  const [remindingParticipantId, setRemindingParticipantId] = useState<string | null>(null);
+  const [updatingPaymentParticipantId, setUpdatingPaymentParticipantId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [imageUrl, setImageUrl] = useState<string | null>(null);
   const [isImageExpanded, setIsImageExpanded] = useState(false);
@@ -455,6 +498,40 @@ export default function ReceiptDetailScreen() {
 
     const supabase = getSupabaseClient();
     const itemIds = receipt.items.map(i => i.id);
+    const itemIdSet = new Set(itemIds);
+
+    async function refreshReceiptRealtimeState() {
+      const receiptResult = await fetchReceipt(id);
+      const nextItemIds = receiptResult.success ? receiptResult.receipt.items.map(item => item.id) : itemIds;
+
+      if (receiptResult.success) {
+        const nextReceipt = receiptResult.receipt;
+        setReceipt(nextReceipt);
+        setTaxInput(toCurrencyString(centsToDollars(nextReceipt.tax_cents)));
+        setTipInput(toCurrencyString(centsToDollars(nextReceipt.tip_cents)));
+        const parsedAdjustments = nextReceipt.raw_payload?.adjustments ?? [];
+        setDiscountInput(toCurrencyString(getDiscountTotal(parsedAdjustments)));
+        setEditableItems(buildEditableItems(nextReceipt.items));
+        setEditableAdjustments(buildEditableAdjustments(parsedAdjustments));
+        setShowExtraCharges(getDiscountTotal(parsedAdjustments) > 0 || buildEditableAdjustments(parsedAdjustments).length > 0);
+      }
+
+      if (nextItemIds.length > 0) {
+        const { data: claimsData } = await supabase
+          .from('item_claims')
+          .select('id, item_id, participant_id, portion, amount_cents')
+          .in('item_id', nextItemIds);
+        if (claimsData) setClaims(claimsData);
+      } else {
+        setClaims([]);
+      }
+
+      const { data: participantsData } = await supabase
+        .from('receipt_participants')
+        .select('id, display_name, emoji, color_token, role, payment_status, paid_at, payment_method, payment_amount_cents, phone')
+        .eq('receipt_id', id);
+      if (participantsData) setParticipants(participantsData);
+    }
 
     async function fetchClaimsAndParticipants() {
       if (itemIds.length > 0) {
@@ -467,7 +544,7 @@ export default function ReceiptDetailScreen() {
 
       const { data: participantsData } = await supabase
         .from('receipt_participants')
-        .select('id, display_name, emoji, color_token, role, payment_status, paid_at, payment_method, payment_amount_cents')
+        .select('id, display_name, emoji, color_token, role, payment_status, paid_at, payment_method, payment_amount_cents, phone')
         .eq('receipt_id', id);
       if (participantsData) setParticipants(participantsData);
     }
@@ -479,6 +556,44 @@ export default function ReceiptDetailScreen() {
       .on(
         'postgres_changes',
         {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'receipts',
+          filter: `id=eq.${id}`,
+        },
+        (payload: RealtimePostgresChangesPayload<ReceiptWithItems>) => {
+          const updatedReceipt = payload.new as Partial<ReceiptWithItems>;
+          setReceipt(prev => (prev ? { ...prev, ...updatedReceipt } : prev));
+
+          if (typeof updatedReceipt.tax_cents === 'number') {
+            setTaxInput(toCurrencyString(centsToDollars(updatedReceipt.tax_cents)));
+          }
+          if (typeof updatedReceipt.tip_cents === 'number') {
+            setTipInput(toCurrencyString(centsToDollars(updatedReceipt.tip_cents)));
+          }
+          if (updatedReceipt.raw_payload?.adjustments) {
+            const parsedAdjustments = updatedReceipt.raw_payload.adjustments;
+            setDiscountInput(toCurrencyString(getDiscountTotal(parsedAdjustments)));
+            setEditableAdjustments(buildEditableAdjustments(parsedAdjustments));
+            setShowExtraCharges(getDiscountTotal(parsedAdjustments) > 0 || buildEditableAdjustments(parsedAdjustments).length > 0);
+          }
+        }
+      )
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'receipt_items',
+          filter: `receipt_id=eq.${id}`,
+        },
+        () => {
+          void refreshReceiptRealtimeState();
+        }
+      )
+      .on(
+        'postgres_changes',
+        {
           event: '*',
           schema: 'public',
           table: 'item_claims',
@@ -486,11 +601,18 @@ export default function ReceiptDetailScreen() {
         (payload: RealtimePostgresChangesPayload<ItemClaim>) => {
           if (payload.eventType === 'INSERT') {
             const newClaim = payload.new as ItemClaim;
-            if (itemIds.includes(newClaim.item_id)) {
+            if (itemIdSet.has(newClaim.item_id)) {
               setClaims(prev => {
                 if (prev.some(c => c.id === newClaim.id)) return prev;
                 return [...prev, newClaim];
               });
+            }
+          } else if (payload.eventType === 'UPDATE') {
+            const updatedClaim = payload.new as ItemClaim;
+            if (itemIdSet.has(updatedClaim.item_id)) {
+              setClaims(prev =>
+                prev.map(claim => claim.id === updatedClaim.id ? { ...claim, ...updatedClaim } : claim)
+              );
             }
           } else if (payload.eventType === 'DELETE') {
             const oldClaim = payload.old as { id: string };
@@ -517,16 +639,21 @@ export default function ReceiptDetailScreen() {
       .on(
         'postgres_changes',
         {
-          event: 'UPDATE',
+          event: '*',
           schema: 'public',
           table: 'receipt_participants',
           filter: `receipt_id=eq.${id}`,
         },
         (payload: RealtimePostgresChangesPayload<Participant>) => {
-          const updatedParticipant = payload.new as Participant;
-          setParticipants(prev =>
-            prev.map(p => p.id === updatedParticipant.id ? updatedParticipant : p)
-          );
+          if (payload.eventType === 'UPDATE') {
+            const updatedParticipant = payload.new as Participant;
+            setParticipants(prev =>
+              prev.map(p => p.id === updatedParticipant.id ? { ...p, ...updatedParticipant } : p)
+            );
+          } else if (payload.eventType === 'DELETE') {
+            const deletedParticipant = payload.old as { id: string };
+            setParticipants(prev => prev.filter(p => p.id !== deletedParticipant.id));
+          }
         }
       )
       .subscribe();
@@ -576,6 +703,10 @@ export default function ReceiptDetailScreen() {
   const taxAmount = useMemo(() => parseCurrencyInput(taxInput), [taxInput]);
   const tipAmount = useMemo(() => parseCurrencyInput(tipInput), [tipInput]);
   const discountAmount = useMemo(() => parseCurrencyInput(discountInput), [discountInput]);
+  const otherFeesAmount = useMemo(() => {
+    return editableAdjustments.reduce((sum, adjustment) => sum + parseCurrencyInput(adjustment.amount), 0);
+  }, [editableAdjustments]);
+  const otherFeesInput = editableAdjustments[0]?.amount ?? '0.00';
   const grandTotal = useMemo(
     () => subtotal + adjustmentsTotal + taxAmount + tipAmount,
     [subtotal, adjustmentsTotal, taxAmount, tipAmount]
@@ -589,7 +720,9 @@ export default function ReceiptDetailScreen() {
     [currentTipPercent]
   );
   const canEditReceiptFields = receipt?.status === 'draft';
-  const lockedReceiptMessage = 'Receipt details are locked after sharing. You can still assign items to people.';
+  const canEditBelowTax = Boolean(receipt && (canEditReceiptFields || (receipt.owner_id === user?.id && receipt.status !== 'settled')));
+  const showBelowTaxAdjustments = canEditBelowTax || showExtraCharges || discountAmount > 0 || editableAdjustments.length > 0;
+  const lockedReceiptMessage = 'Items, subtotal, and tax are locked after sharing. You can still edit tip, discounts, and fees.';
 
   useEffect(() => {
     if (subtotal <= 0 || tipAmount <= 0 || activeTipPreset) {
@@ -601,7 +734,7 @@ export default function ReceiptDetailScreen() {
   }, [activeTipPreset, currentTipPercent, subtotal, tipAmount]);
 
   const applyTipPercent = useCallback((percent: number) => {
-    if (!canEditReceiptFields) return;
+    if (!canEditBelowTax) return;
     const safePercent = Math.max(0, Number(percent.toFixed(2)));
     setCustomTipPercentInput(
       TIP_PRESET_PERCENTS.includes(safePercent as (typeof TIP_PRESET_PERCENTS)[number])
@@ -609,20 +742,23 @@ export default function ReceiptDetailScreen() {
         : formatPercentInput(safePercent)
     );
     setTipInput(toCurrencyString(subtotal * (safePercent / 100)));
-  }, [canEditReceiptFields, subtotal]);
+  }, [canEditBelowTax, subtotal]);
 
   const handleCustomTipPercentChange = useCallback((value: string) => {
-    if (!canEditReceiptFields) return;
+    if (!canEditBelowTax) return;
     setCustomTipPercentInput(value);
     setTipInput(toCurrencyString(subtotal * (parsePercentInput(value) / 100)));
-  }, [canEditReceiptFields, subtotal]);
+  }, [canEditBelowTax, subtotal]);
 
-  const updateAdjustmentAmount = useCallback((key: string, value: string) => {
-    if (!canEditReceiptFields) return;
-    setEditableAdjustments((current) =>
-      current.map((adjustment) => (adjustment.key === key ? { ...adjustment, amount: value } : adjustment))
-    );
-  }, [canEditReceiptFields]);
+  const updateOtherFeesAmount = useCallback((value: string) => {
+    if (!canEditBelowTax) return;
+    setEditableAdjustments([{
+      key: 'other-fees',
+      type: 'fee',
+      label: OTHER_FEES_LABEL,
+      amount: value,
+    }]);
+  }, [canEditBelowTax]);
 
   const effectiveStatus = useMemo((): ReceiptStatus => {
     if (!receipt) return 'draft';
@@ -715,14 +851,24 @@ export default function ReceiptDetailScreen() {
     if (!canEditReceiptFields) {
       setIsSaving(true);
       try {
+        const updatedAdjustments = buildStandardAdjustments(discountAmount, otherFeesAmount);
+        const updatedRawPayload = receipt.raw_payload
+          ? {
+              ...receipt.raw_payload,
+              merchantName: merchantName.trim() || null,
+              adjustments: updatedAdjustments,
+              totals: {
+                ...receipt.raw_payload.totals,
+                tip: tipAmount,
+                total: grandTotal,
+              },
+            }
+          : null;
         const metadataResult = await updateReceipt(id, {
           merchant_name: merchantName.trim() || null,
-          raw_payload: receipt.raw_payload
-            ? {
-                ...receipt.raw_payload,
-                merchantName: merchantName.trim() || null,
-              }
-            : null,
+          tip_cents: dollarsToCents(tipAmount),
+          total_cents: dollarsToCents(grandTotal),
+          raw_payload: updatedRawPayload,
         });
 
         if (!metadataResult.success) {
@@ -730,12 +876,18 @@ export default function ReceiptDetailScreen() {
           return;
         }
 
-        setReceipt({ ...receipt, merchant_name: merchantName.trim() || null });
+        setReceipt({
+          ...receipt,
+          merchant_name: merchantName.trim() || null,
+          tip_cents: dollarsToCents(tipAmount),
+          total_cents: dollarsToCents(grandTotal),
+          raw_payload: updatedRawPayload,
+        });
         setHasChanges(false);
-        Alert.alert('Saved', 'Merchant name has been saved.');
+        Alert.alert('Saved', 'Your changes have been saved.');
       } catch (err) {
-        console.error('[ReceiptDetail] Save merchant error:', err);
-        Alert.alert('Error', 'Failed to save merchant name');
+        console.error('[ReceiptDetail] Save shared receipt error:', err);
+        Alert.alert('Error', 'Failed to save changes');
       } finally {
         setIsSaving(false);
       }
@@ -759,19 +911,7 @@ export default function ReceiptDetailScreen() {
                 price: parseCurrencyInput(item.price),
                 quantity: parseQuantityInput(item.quantity),
               })),
-              adjustments: editableAdjustments.map((adjustment) => ({
-                type: adjustment.type,
-                label: adjustment.label.trim() || formatAdjustmentLabel({ type: adjustment.type, label: '', amount: 0 }),
-                amount: parseCurrencyInput(adjustment.amount),
-              })).concat(
-                parseCurrencyInput(discountInput) > 0
-                  ? [{
-                      type: 'discount' as const,
-                      label: 'Discounts',
-                      amount: parseCurrencyInput(discountInput),
-                    }]
-                  : []
-              ),
+              adjustments: buildStandardAdjustments(discountAmount, otherFeesAmount),
               totals: {
                 ...receipt.raw_payload.totals,
                 subtotal,
@@ -812,7 +952,7 @@ export default function ReceiptDetailScreen() {
     } finally {
       setIsSaving(false);
     }
-  }, [id, receipt, canEditReceiptFields, merchantName, subtotal, taxAmount, tipAmount, discountInput, grandTotal, editableItems, editableAdjustments]);
+  }, [id, receipt, canEditReceiptFields, merchantName, subtotal, taxAmount, tipAmount, discountAmount, otherFeesAmount, grandTotal, editableItems]);
 
   const handleDelete = useCallback(() => {
     if (!id) return;
@@ -892,12 +1032,7 @@ export default function ReceiptDetailScreen() {
       }
 
       const tablinkUrl = `${TABLINK_BASE_URL}/claim/${linkResult.shortCode}`;
-
-      const result = await shareTablink({ tablinkUrl, merchantName: receipt.merchant_name });
-
-      if (result.action === Share.sharedAction) {
-        console.log('[ReceiptDetail] Shared successfully');
-      }
+      setShareSheetUrl(tablinkUrl);
     } catch (err) {
       console.error('[ReceiptDetail] Share error:', err);
       Alert.alert('Error', 'Failed to share tablink');
@@ -905,6 +1040,198 @@ export default function ReceiptDetailScreen() {
       setIsSharing(false);
     }
   }, [id, receipt, TABLINK_BASE_URL, hasPaymentMethods, router]);
+
+  const recordReminder = useCallback(async (
+    participant: Participant,
+    amountCents: number,
+    reminderKind: ReminderKind,
+    deliveryMethod: ReminderDeliveryMethod
+  ) => {
+    if (!id) return;
+
+    const supabase = getSupabaseClient();
+    const remindedAt = new Date().toISOString();
+
+    try {
+      const { data: existingSettlement } = await supabase
+        .from('participant_settlements')
+        .select('id, reminder_count')
+        .eq('receipt_id', id)
+        .eq('participant_id', participant.id)
+        .maybeSingle();
+
+      if (existingSettlement?.id) {
+        await supabase
+          .from('participant_settlements')
+          .update({
+            amount_due_cents: amountCents,
+            status: 'requested',
+            reminder_count: (existingSettlement.reminder_count ?? 0) + 1,
+            last_reminded_at: remindedAt,
+          })
+          .eq('id', existingSettlement.id);
+      } else {
+        await supabase
+          .from('participant_settlements')
+          .insert({
+            receipt_id: id,
+            participant_id: participant.id,
+            amount_due_cents: amountCents,
+            status: 'requested',
+            reminder_count: 1,
+            last_reminded_at: remindedAt,
+          });
+      }
+
+      await supabase
+        .from('receipt_events')
+        .insert({
+          receipt_id: id,
+          event_type: 'payment_requested',
+          payload: {
+            reminder_kind: reminderKind,
+            delivery_method: deliveryMethod,
+            has_phone: Boolean(normalizePhoneForSms(participant.phone)),
+            participant_id: participant.id,
+            participant_name: participant.display_name,
+            amount_cents: amountCents,
+            reminded_at: remindedAt,
+          },
+        });
+    } catch (err) {
+      console.error('[ReceiptDetail] Failed to record reminder:', err);
+    }
+  }, [id]);
+
+  const handleSendReminder = useCallback(async (
+    participant: Participant,
+    amountCents: number,
+    reminderKind: ReminderKind
+  ) => {
+    if (!id || !receipt || participant.payment_status === 'paid') return;
+
+    if (!TABLINK_BASE_URL) {
+      Alert.alert('Configuration Error', 'Missing Tablink share URL configuration.');
+      return;
+    }
+
+    setRemindingParticipantId(participant.id);
+    try {
+      if (receipt.status === 'draft') {
+        const result = await updateReceipt(id, { status: 'shared' });
+        if (!result.success) {
+          Alert.alert('Error', result.error || 'Failed to activate receipt');
+          return;
+        }
+        setReceipt({ ...receipt, status: 'shared' as any });
+      }
+
+      const linkResult = await getOrCreateShareLink(id);
+      if (!linkResult.success) {
+        Alert.alert('Error', linkResult.error || 'Failed to generate share link');
+        return;
+      }
+
+      const tablinkUrl = `${TABLINK_BASE_URL}/claim/${linkResult.shortCode}`;
+      const merchant = receipt.merchant_name ? ` for ${receipt.merchant_name}` : '';
+      const message =
+        reminderKind === 'payment'
+          ? `Hi ${participant.display_name}, friendly reminder that your Tablink balance${merchant} is ${formatCurrency(amountCents / 100)}. You can review it and mark it paid here: ${tablinkUrl}`
+          : `Hi ${participant.display_name}, can you claim your items on our Tablink receipt${merchant}? Open this link and pick what you ordered: ${tablinkUrl}`;
+
+      const smsPhone = normalizePhoneForSms(participant.phone);
+      if (smsPhone) {
+        try {
+          await Linking.openURL(buildSmsUrl(smsPhone, message));
+          await recordReminder(participant, amountCents, reminderKind, 'sms');
+          return;
+        } catch (smsError) {
+          console.warn('[ReceiptDetail] Failed to open SMS reminder, falling back to share sheet:', smsError);
+        }
+      }
+
+      const result = await Share.share(
+        Platform.OS === 'ios'
+          ? { message, url: tablinkUrl, title: 'Tablink reminder' }
+          : { message, title: 'Tablink reminder' }
+      );
+
+      if (result.action === Share.sharedAction) {
+        await recordReminder(participant, amountCents, reminderKind, 'share_sheet');
+      }
+    } catch (err) {
+      console.error('[ReceiptDetail] Failed to send reminder:', err);
+      Alert.alert('Error', 'Failed to send reminder');
+    } finally {
+      setRemindingParticipantId(null);
+    }
+  }, [id, receipt, TABLINK_BASE_URL, recordReminder]);
+
+  const handleSetParticipantPaid = useCallback(async (
+    participant: Participant,
+    amountCents: number,
+    shouldMarkPaid: boolean
+  ) => {
+    if (!id || participant.role === 'owner' || amountCents <= 0 || updatingPaymentParticipantId) return;
+
+    const actionLabel = shouldMarkPaid ? 'Mark Paid' : 'Mark Unpaid';
+    const confirmationMessage = shouldMarkPaid
+      ? `Mark ${participant.display_name} as paid for ${formatCurrency(amountCents / 100)}?`
+      : `Mark ${participant.display_name} as unpaid?`;
+
+    Alert.alert(
+      actionLabel,
+      confirmationMessage,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: shouldMarkPaid ? 'Mark Paid' : 'Mark Unpaid',
+          onPress: async () => {
+            setUpdatingPaymentParticipantId(participant.id);
+            try {
+              const supabase = getSupabaseClient();
+              const updates = shouldMarkPaid
+                ? {
+                    payment_status: 'paid',
+                    paid_at: new Date().toISOString(),
+                    payment_method: 'host',
+                    payment_amount_cents: amountCents,
+                  }
+                : {
+                    payment_status: 'unpaid',
+                    paid_at: null,
+                    payment_method: null,
+                    payment_amount_cents: null,
+                  };
+
+              const { error: updateError } = await supabase
+                .from('receipt_participants')
+                .update(updates)
+                .eq('id', participant.id);
+
+              if (updateError) throw updateError;
+
+              setParticipants(prev =>
+                prev.map(existing =>
+                  existing.id === participant.id
+                    ? {
+                        ...existing,
+                        ...updates,
+                      }
+                    : existing
+                )
+              );
+            } catch (err) {
+              console.error('[ReceiptDetail] Failed to update payment status:', err);
+              Alert.alert('Error', 'Failed to update payment status');
+            } finally {
+              setUpdatingPaymentParticipantId(null);
+            }
+          },
+        },
+      ]
+    );
+  }, [id, updatingPaymentParticipantId]);
 
   const COLORS = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FFEAA7', '#DDA0DD', '#98D8C8', '#F7DC6F', '#74b9ff', '#fd79a8'];
 
@@ -1127,7 +1454,8 @@ export default function ReceiptDetailScreen() {
   }, [assigningItem, participants]);
 
   const handleUpdateAssignedCoverAmount = useCallback(async (claim: ItemClaim, amountCents: number) => {
-    if (!assigningItem || isUpdatingClaim) return;
+    const editorItem = assignedCoverEditor?.item;
+    if (!editorItem || isUpdatingClaim) return;
 
     const participant = participants.find(p => p.id === claim.participant_id);
     if (participant?.payment_status === 'paid') {
@@ -1135,9 +1463,9 @@ export default function ReceiptDetailScreen() {
       return;
     }
 
-    const itemPrice = dollarsToCents(parseCurrencyInput(assigningItem.price));
+    const itemPrice = dollarsToCents(parseCurrencyInput(editorItem.price));
     const otherClaimedAmount = claims
-      .filter(c => c.item_id === assigningItem.key && c.id !== claim.id)
+      .filter(c => c.item_id === editorItem.key && c.id !== claim.id)
       .reduce((sum, itemClaim) => sum + itemClaim.amount_cents, 0);
     const maxAmountCents = Math.max(0, itemPrice - otherClaimedAmount);
     const nextAmountCents = Math.min(Math.max(1, Math.round(amountCents)), maxAmountCents);
@@ -1171,7 +1499,7 @@ export default function ReceiptDetailScreen() {
     } finally {
       setIsUpdatingClaim(false);
     }
-  }, [assigningItem, claims, isUpdatingClaim, participants]);
+  }, [assignedCoverEditor?.item, claims, isUpdatingClaim, participants]);
 
   const handleApplyCustomAssignedCoverAmount = useCallback(() => {
     const claim = claims.find(itemClaim => itemClaim.id === assignedCoverEditor?.claimId);
@@ -1449,8 +1777,8 @@ export default function ReceiptDetailScreen() {
               placeholder="0.00"
               placeholderTextColor={colors.muted}
               keyboardType="decimal-pad"
-              editable={canEditReceiptFields}
-              style={[s.textInput, s.summaryInput, !canEditReceiptFields && s.readOnlyInput]}
+              editable={canEditBelowTax}
+              style={[s.textInput, s.summaryInput, !canEditBelowTax && s.readOnlyInput]}
             />
           </View>
           <View style={s.tipControls}>
@@ -1464,10 +1792,10 @@ export default function ReceiptDetailScreen() {
                     style={({ pressed }) => [
                       s.tipPresetButton,
                       isActive && s.tipPresetButtonActive,
-                      !canEditReceiptFields && s.buttonDisabled,
+                      !canEditBelowTax && s.buttonDisabled,
                       pressed && s.pressed,
                     ]}
-                    disabled={!canEditReceiptFields}
+                    disabled={!canEditBelowTax}
                   >
                     <Text style={[s.tipPresetText, isActive && s.tipPresetTextActive]}>{percent}%</Text>
                   </Pressable>
@@ -1481,14 +1809,14 @@ export default function ReceiptDetailScreen() {
                   placeholder="0"
                   placeholderTextColor={colors.muted}
                   keyboardType="decimal-pad"
-                  editable={canEditReceiptFields}
-                  style={[s.tipPercentInput, !canEditReceiptFields && s.readOnlyInput]}
+                  editable={canEditBelowTax}
+                  style={[s.tipPercentInput, !canEditBelowTax && s.readOnlyInput]}
                 />
                 <Text style={s.tipPresetText}>%</Text>
               </View>
             </View>
           </View>
-          {(showExtraCharges || discountAmount > 0 || editableAdjustments.length > 0) && (
+          {showBelowTaxAdjustments && (
             <>
               <View style={s.summaryRow}>
                 <Text style={s.summaryLabel}>Discounts</Text>
@@ -1498,35 +1826,33 @@ export default function ReceiptDetailScreen() {
                   placeholder="0.00"
                   placeholderTextColor={colors.muted}
                   keyboardType="decimal-pad"
-                  editable={canEditReceiptFields}
-                  style={[s.textInput, s.summaryInput, !canEditReceiptFields && s.readOnlyInput]}
+                  editable={canEditBelowTax}
+                  style={[s.textInput, s.summaryInput, !canEditBelowTax && s.readOnlyInput]}
                 />
               </View>
-              {editableAdjustments.map((adjustment) => (
-                <View key={adjustment.key} style={s.summaryRow}>
-                  <Text style={s.summaryLabel}>{adjustment.label}</Text>
-                  <TextInput
-                    value={adjustment.amount}
-                    onChangeText={(value) => updateAdjustmentAmount(adjustment.key, value)}
-                    placeholder="0.00"
-                    placeholderTextColor={colors.muted}
-                    keyboardType="decimal-pad"
-                    editable={canEditReceiptFields}
-                    style={[s.textInput, s.summaryInput, !canEditReceiptFields && s.readOnlyInput]}
-                  />
-                </View>
-              ))}
+              <View style={s.summaryRow}>
+                <Text style={s.summaryLabel}>{OTHER_FEES_LABEL}</Text>
+                <TextInput
+                  value={otherFeesInput}
+                  onChangeText={updateOtherFeesAmount}
+                  placeholder="0.00"
+                  placeholderTextColor={colors.muted}
+                  keyboardType="decimal-pad"
+                  editable={canEditBelowTax}
+                  style={[s.textInput, s.summaryInput, !canEditBelowTax && s.readOnlyInput]}
+                />
+              </View>
             </>
           )}
           {!showExtraCharges && discountAmount <= 0 && editableAdjustments.length === 0 ? (
             <Pressable
               style={({ pressed }) => [
                 s.extraChargesButton,
-                !canEditReceiptFields && s.buttonDisabled,
+                !canEditBelowTax && s.buttonDisabled,
                 pressed && s.pressed,
               ]}
               onPress={() => setShowExtraCharges(true)}
-              disabled={!canEditReceiptFields}
+              disabled={!canEditBelowTax}
             >
               <Text style={s.extraChargesButtonText}>+ Add discount or fee</Text>
             </Pressable>
@@ -1586,6 +1912,11 @@ export default function ReceiptDetailScreen() {
                 const participantTotal = claimsTotal + participantExtras;
 
                 const isOwner = p.role === 'owner';
+                const reminderKind: ReminderKind = participantTotal > 0 ? 'payment' : 'claim';
+                const canRemindParticipant = !isOwner && p.payment_status !== 'paid';
+                const isRemindingParticipant = remindingParticipantId === p.id;
+                const isUpdatingParticipantPayment = updatingPaymentParticipantId === p.id;
+                const isPaid = p.payment_status === 'paid';
 
                 return (
                   <View key={p.id} style={s.participantRow}>
@@ -1604,13 +1935,45 @@ export default function ReceiptDetailScreen() {
                       </View>
                     </View>
                     <View style={s.participantActions}>
-                      {participantTotal > 0 && (
-                        <Text style={[
-                          s.paymentTag,
-                          { color: p.payment_status === 'paid' ? '#34D399' : '#FBBF24' },
-                        ]}>
-                          {p.payment_status === 'paid' ? 'Paid' : 'Pending'}
-                        </Text>
+                      {canRemindParticipant && (
+                        <Pressable
+                          onPress={() => handleSendReminder(p, participantTotal, reminderKind)}
+                          disabled={Boolean(remindingParticipantId)}
+                          style={({ pressed }) => [
+                            s.remindButton,
+                            Boolean(remindingParticipantId) && s.buttonDisabled,
+                            pressed && s.pressed,
+                          ]}
+                        >
+                          <Ionicons name="notifications-outline" size={13} color="#FBBF24" />
+                          <Text style={s.remindButtonText}>
+                            {isRemindingParticipant ? 'Sending' : 'Remind'}
+                          </Text>
+                        </Pressable>
+                      )}
+                      {!isOwner && participantTotal > 0 && (
+                        <Pressable
+                          onPress={() => handleSetParticipantPaid(p, participantTotal, !isPaid)}
+                          disabled={Boolean(updatingPaymentParticipantId)}
+                          style={({ pressed }) => [
+                            s.paymentToggleButton,
+                            isPaid ? s.paymentToggleButtonPaid : s.paymentToggleButtonPending,
+                            Boolean(updatingPaymentParticipantId) && s.buttonDisabled,
+                            pressed && s.pressed,
+                          ]}
+                        >
+                          <Ionicons
+                            name={isPaid ? 'checkmark-circle' : 'ellipse-outline'}
+                            size={13}
+                            color="#34D399"
+                          />
+                          <Text style={[
+                            s.paymentToggleText,
+                            { color: '#34D399' },
+                          ]}>
+                            {isUpdatingParticipantPayment ? 'Saving' : isPaid ? 'Paid' : 'Mark paid'}
+                          </Text>
+                        </Pressable>
                       )}
                       {!isOwner && (
                         <Pressable
@@ -1697,6 +2060,17 @@ export default function ReceiptDetailScreen() {
         </Pressable>
       ) : null}
 
+      <ShareTablinkSheet
+        visible={Boolean(shareSheetUrl)}
+        tablinkUrl={shareSheetUrl}
+        merchantName={receipt.merchant_name}
+        onClose={() => setShareSheetUrl(null)}
+        onShared={() => {
+          console.log('[ReceiptDetail] Shared successfully');
+          setShareSheetUrl(null);
+        }}
+      />
+
       {/* ── Full image modal ── */}
       <Modal
         visible={isImageExpanded}
@@ -1725,7 +2099,7 @@ export default function ReceiptDetailScreen() {
 
       {/* ── Assignment modal ── */}
       <Modal
-        visible={assigningItem !== null}
+        visible={assigningItem !== null && assignedCoverEditor === null}
         animationType="slide"
         transparent
         onRequestClose={closeAssignmentModal}
@@ -1828,7 +2202,10 @@ export default function ReceiptDetailScreen() {
                                 </Text>
                                 {!participantIsPaid ? (
                                   <Pressable
-                                    onPress={() => handleOpenAssignedCoverEditor(assignedClaim)}
+                                    onPress={(event) => {
+                                      event.stopPropagation();
+                                      handleOpenAssignedCoverEditor(assignedClaim);
+                                    }}
                                     style={({ pressed }) => [s.assignCoverEditButton, pressed && s.pressed]}
                                     hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                                   >
@@ -2529,6 +2906,47 @@ const s = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 10,
+  },
+  remindButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    backgroundColor: 'rgba(251, 191, 36, 0.08)',
+    borderWidth: 1,
+    borderColor: 'rgba(251, 191, 36, 0.24)',
+    borderRadius: 999,
+    paddingVertical: 5,
+    paddingHorizontal: 8,
+  },
+  remindButtonText: {
+    color: '#FBBF24',
+    fontSize: 11,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 0.45,
+  },
+  paymentToggleButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    borderWidth: 1,
+    borderRadius: 999,
+    paddingVertical: 5,
+    paddingHorizontal: 8,
+  },
+  paymentToggleButtonPending: {
+    backgroundColor: 'rgba(52, 211, 153, 0.07)',
+    borderColor: 'rgba(52, 211, 153, 0.22)',
+  },
+  paymentToggleButtonPaid: {
+    backgroundColor: 'rgba(52, 211, 153, 0.12)',
+    borderColor: 'rgba(52, 211, 153, 0.34)',
+  },
+  paymentToggleText: {
+    fontSize: 11,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 0.45,
   },
   paymentTag: {
     fontSize: 11,
