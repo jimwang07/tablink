@@ -992,7 +992,7 @@ const PROCESSING_STEPS: {
   },
   {
     key: 'extract',
-    title: 'Extracting items with AI',
+    title: 'Extracting items',
     subtitle: 'Reading line items, totals, and every nuance.',
   },
   {
