@@ -1,5 +1,5 @@
 import { getSupabaseClient } from '@/src/lib/supabaseClient';
-import type { PendingReceipt, Receipt } from '@/src/types/receipt';
+import type { PendingReceipt, Receipt, ParsedReceipt } from '@/src/types/receipt';
 import 'react-native-get-random-values';
 import { v4 as uuidv4 } from 'uuid';
 
@@ -145,6 +145,7 @@ export async function saveReceipt(
 ): Promise<SaveReceiptResult> {
   const supabase = getSupabaseClient();
   const { parsed, storagePath } = pendingReceipt;
+  const uploadedAt = pendingReceipt.uploadedAt || new Date().toISOString();
 
   // Check session
   const { data: { session } } = await supabase.auth.getSession();
@@ -166,14 +167,14 @@ export async function saveReceipt(
       id: receiptId,
       owner_id: userId,
       merchant_name: parsed.merchantName,
-      receipt_date: parsed.purchaseDate,
+      receipt_date: uploadedAt,
       image_path: storagePath,
       subtotal_cents: dollarsToCents(parsed.totals.subtotal),
       tax_cents: dollarsToCents(parsed.totals.tax),
       tip_cents: dollarsToCents(parsed.totals.tip),
       total_cents: dollarsToCents(parsed.totals.total),
       status: 'draft',
-      raw_payload: parsed.raw ?? null,
+      raw_payload: parsed,
     });
 
   if (receiptError || !receiptId) {
@@ -279,6 +280,7 @@ export async function fetchReceipt(receiptId: string): Promise<FetchReceiptResul
     success: true,
     receipt: {
       ...receipt,
+      raw_payload: (receipt.raw_payload as Receipt['raw_payload']) ?? null,
       celebration_shown:
         typeof (receipt as { celebration_shown?: unknown }).celebration_shown === 'boolean'
           ? ((receipt as { celebration_shown?: boolean }).celebration_shown ?? false)
@@ -297,6 +299,7 @@ export async function updateReceipt(
     tax_cents?: number;
     tip_cents?: number;
     total_cents?: number;
+    raw_payload?: ParsedReceipt | null;
     status?: Receipt['status'];
   }
 ): Promise<{ success: boolean; error?: string }> {
@@ -389,6 +392,80 @@ export async function updateReceiptItems(
   }
 
   return { success: true };
+}
+
+export async function duplicateReceipt(
+  receiptId: string,
+  userId: string
+): Promise<{ success: boolean; newReceiptId?: string; error?: string }> {
+  const supabase = getSupabaseClient();
+
+  // Fetch original receipt
+  const { data: original, error: fetchError } = await supabase
+    .from('receipts')
+    .select('*')
+    .eq('id', receiptId)
+    .single();
+
+  if (fetchError || !original) {
+    return { success: false, error: fetchError?.message || 'Receipt not found' };
+  }
+
+  const newId = uuidv4();
+  const { error: insertError } = await supabase.from('receipts').insert({
+    id: newId,
+    owner_id: userId,
+    merchant_name: original.merchant_name,
+    receipt_date: original.receipt_date,
+    image_path: original.image_path,
+    subtotal_cents: original.subtotal_cents,
+    tax_cents: original.tax_cents,
+    tip_cents: original.tip_cents,
+    total_cents: original.total_cents,
+    raw_payload: original.raw_payload,
+    status: 'draft',
+  });
+
+  if (insertError) {
+    return { success: false, error: insertError.message };
+  }
+
+  // Duplicate items
+  const { data: items } = await supabase
+    .from('receipt_items')
+    .select('label, price_cents, quantity, position')
+    .eq('receipt_id', receiptId)
+    .order('position');
+
+  if (items && items.length > 0) {
+    await supabase.from('receipt_items').insert(
+      items.map((item) => ({
+        receipt_id: newId,
+        label: item.label,
+        price_cents: item.price_cents,
+        quantity: item.quantity,
+        position: item.position,
+      }))
+    );
+  }
+
+  // Add owner as participant
+  const { data: profile } = await supabase
+    .from('user_profiles')
+    .select('display_name')
+    .eq('user_id', userId)
+    .single();
+
+  await supabase.from('receipt_participants').insert({
+    receipt_id: newId,
+    display_name: profile?.display_name || 'Me',
+    profile_id: userId,
+    role: 'owner',
+    payment_status: 'paid',
+    emoji: pickUniqueParticipantEmoji(),
+  });
+
+  return { success: true, newReceiptId: newId };
 }
 
 export async function deleteReceipt(receiptId: string): Promise<{ success: boolean; error?: string }> {

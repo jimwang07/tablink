@@ -26,7 +26,6 @@ type PaymentHandles = {
   venmo_handle: string;
   cashapp_handle: string;
   paypal_handle: string;
-  zelle_identifier: string;
 };
 
 const PAYMENT_FIELDS: {
@@ -37,8 +36,7 @@ const PAYMENT_FIELDS: {
 }[] = [
   { key: 'venmo_handle', label: 'Venmo', placeholder: '@username', icon: 'logo-venmo' },
   { key: 'cashapp_handle', label: 'Cash App', placeholder: '$cashtag', icon: 'cash-outline' },
-  { key: 'paypal_handle', label: 'PayPal', placeholder: 'username or email', icon: 'logo-paypal' },
-  { key: 'zelle_identifier', label: 'Zelle', placeholder: 'email or phone', icon: 'send-outline' },
+  { key: 'paypal_handle', label: 'PayPal', placeholder: 'PayPal.Me username', icon: 'logo-paypal' },
 ];
 
 /* ── Skeleton ──────────────────────────────────────────────── */
@@ -71,7 +69,7 @@ function SettingsSkeleton() {
       <View style={{ gap: 20, paddingTop: 12 }}>
         <SkeletonBar width="40%" height={16} />
         <SkeletonBar width="90%" height={12} />
-        {[0, 1, 2, 3].map((i) => (
+        {[0, 1, 2].map((i) => (
           <View key={i} style={s.skeletonRow}>
             <SkeletonBar width={60} />
             <View style={{ flex: 1, alignItems: 'flex-end' }}>
@@ -97,7 +95,6 @@ export default function SettingsScreen() {
     venmo_handle: '',
     cashapp_handle: '',
     paypal_handle: '',
-    zelle_identifier: '',
   });
 
   const displayName = user?.user_metadata?.full_name || user?.email || 'You';
@@ -111,7 +108,7 @@ export default function SettingsScreen() {
       const supabase = getSupabaseClient();
       const { data, error } = await supabase
         .from('user_profiles')
-        .select('venmo_handle, cashapp_handle, paypal_handle, zelle_identifier')
+        .select('venmo_handle, cashapp_handle, paypal_handle')
         .eq('user_id', user.id)
         .single();
 
@@ -120,7 +117,6 @@ export default function SettingsScreen() {
           venmo_handle: data.venmo_handle || '',
           cashapp_handle: data.cashapp_handle || '',
           paypal_handle: data.paypal_handle || '',
-          zelle_identifier: data.zelle_identifier || '',
         });
       }
       hasLoadedRef.current = true;
@@ -142,7 +138,6 @@ export default function SettingsScreen() {
         venmo_handle: handles.venmo_handle.trim() || null,
         cashapp_handle: handles.cashapp_handle.trim() || null,
         paypal_handle: handles.paypal_handle.trim() || null,
-        zelle_identifier: handles.zelle_identifier.trim() || null,
       })
       .eq('user_id', user.id);
 
@@ -226,11 +221,7 @@ export default function SettingsScreen() {
                       placeholderTextColor={colors.muted}
                       autoCapitalize="none"
                       autoCorrect={false}
-                      keyboardType={
-                        field.key === 'paypal_handle' || field.key === 'zelle_identifier'
-                          ? 'email-address'
-                          : 'default'
-                      }
+                      keyboardType="default"
                     />
                   </View>
                 ))}
@@ -274,6 +265,7 @@ export default function SettingsScreen() {
           </>
         )}
       </ScrollView>
+
     </KeyboardAvoidingView>
   );
 }

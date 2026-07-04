@@ -22,7 +22,14 @@ import { colors } from '@/src/theme';
 import { uploadReceiptImage } from '@/src/lib/imageUpload';
 import { useAuth } from '@/src/hooks/useAuth';
 import { usePendingReceipt } from '@/src/hooks/usePendingReceipt';
-import { invokeParseReceipt } from '@/src/lib/api/parseReceipt';
+import {
+  getParseFunctionName,
+  invokeParseReceipt,
+  PARSE_OPTION_CONFIG,
+  PARSE_OPTIONS,
+  setParseFunctionOverride,
+  type ParseFunctionName,
+} from '@/src/lib/api/parseReceipt';
 import type { ParsedReceipt } from '@/src/types/receipt';
 
 const FOOTER_OVERLAY_SPACE = 220;
@@ -47,9 +54,23 @@ export default function ScanReceiptScreen() {
   const continueStartRef = useRef<number | null>(null);
   const stageStartedAtRef = useRef<number>(0);
   const [processingStage, setProcessingStage] = useState<ProcessingStage>('upload');
+  const [parseFunction, setParseFunction] = useState<ParseFunctionName>('groq-llama-4-scout');
 
   const { session } = useAuth();
   const { setPendingReceipt } = usePendingReceipt();
+
+  useEffect(() => {
+    if (!__DEV__) return;
+
+    let isMounted = true;
+    getParseFunctionName().then((name) => {
+      if (isMounted) setParseFunction(name);
+    });
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
 
   const logFlowTiming = useCallback(
     (event: string) => {
@@ -235,6 +256,7 @@ export default function ScanReceiptScreen() {
           localUri: uploadResult.localPreviewUri || localUri,
           storagePath: uploadResult.storagePath ?? null,
           publicUrl: uploadResult.publicUrl ?? null,
+          uploadedAt: new Date().toISOString(),
           parsed: receipt,
         });
 
@@ -264,6 +286,11 @@ export default function ScanReceiptScreen() {
     },
     [footerHeight]
   );
+
+  const handleParseFunctionChange = useCallback(async (nextFunction: ParseFunctionName) => {
+    await setParseFunctionOverride(nextFunction);
+    setParseFunction(nextFunction);
+  }, []);
 
   if (cameraPermission?.granted === false) {
     return (
@@ -402,6 +429,39 @@ export default function ScanReceiptScreen() {
           </View>
         ) : (
           <View style={styles.footerButtons}>
+            {__DEV__ && (
+              <View style={styles.devParserCard}>
+                <Text style={styles.devParserLabel}>Parser for testing</Text>
+                <View style={styles.devParserOptions}>
+                  {PARSE_OPTIONS.map((option) => {
+                    const isSelected = option === parseFunction;
+                    return (
+                      <Pressable
+                        key={option}
+                        style={({ pressed }) => [
+                          styles.devParserChip,
+                          isSelected && styles.devParserChipSelected,
+                          pressed && styles.pressed,
+                        ]}
+                        onPress={() => {
+                          void handleParseFunctionChange(option);
+                        }}
+                      >
+                        <Text
+                          style={[
+                            styles.devParserChipText,
+                            isSelected && styles.devParserChipTextSelected,
+                          ]}
+                        >
+                          {PARSE_OPTION_CONFIG[option].label}
+                        </Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+                <Text style={styles.devParserHint}>{parseFunction}</Text>
+              </View>
+            )}
             <Pressable
               style={({ pressed }) => [
                 styles.captureButton,
@@ -547,6 +607,51 @@ const styles = StyleSheet.create({
     gap: 16,
     marginTop: 24,
     marginBottom: 32,
+  },
+  devParserCard: {
+    width: '100%',
+    maxWidth: 320,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.08)',
+    backgroundColor: colors.surface,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    gap: 10,
+  },
+  devParserLabel: {
+    color: colors.text,
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  devParserOptions: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  devParserChip: {
+    flex: 1,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.08)',
+    paddingVertical: 10,
+    alignItems: 'center',
+    backgroundColor: 'rgba(255, 255, 255, 0.03)',
+  },
+  devParserChipSelected: {
+    borderColor: colors.primary,
+    backgroundColor: 'rgba(52, 211, 153, 0.12)',
+  },
+  devParserChipText: {
+    color: colors.textSecondary,
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  devParserChipTextSelected: {
+    color: colors.text,
+  },
+  devParserHint: {
+    color: colors.muted,
+    fontSize: 12,
   },
   captureButton: {
     width: 72,

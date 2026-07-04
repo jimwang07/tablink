@@ -1,23 +1,33 @@
-import { useCallback, useState, useMemo } from 'react';
-import { View, Text, StyleSheet, ScrollView, Pressable } from 'react-native';
+import { useCallback, useEffect, useRef, useState, useMemo } from 'react';
+import { Alert, Dimensions, Modal, View, Text, StyleSheet, ScrollView, Pressable } from 'react-native';
 import { Link, useRouter, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import Animated, { FadeInDown } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { SkeletonBlock, SkeletonPulse } from '@/src/components/Skeleton';
+import { ShareTablinkSheet } from '@/src/components/ShareTablinkSheet';
 import { colors } from '@/src/theme';
 import { useReceipts, type ReceiptWithDetails } from '@/src/hooks/useReceipts';
+import { useAuth } from '@/src/hooks/useAuth';
+import {
+  deleteReceipt,
+  duplicateReceipt,
+  getOrCreateShareLink,
+  updateReceipt,
+} from '@/src/services/receiptService';
+import { getSupabaseClient } from '@/src/lib/supabaseClient';
 import type { ReceiptStatus } from '@/src/types/receipt';
 
-type Tab = 'yours' | 'shared';
-type SortMode = 'date' | 'status' | 'added';
+type Tab = 'active' | 'completed';
+type SortMode = 'newest' | 'oldest' | 'status';
 
-const SORT_MODES: SortMode[] = ['date', 'status', 'added'];
+const SORT_MODES: SortMode[] = ['newest', 'oldest', 'status'];
 const SORT_LABEL: Record<SortMode, string> = {
-  date: 'Date',
+  newest: 'Newest',
+  oldest: 'Oldest',
   status: 'Status',
-  added: 'Added',
 };
+const MENU_ACTION_DISMISS_FALLBACK_MS = 400;
 
 type ProgressData = {
   unclaimed: number;
@@ -46,7 +56,7 @@ const STATUS_LABEL: Record<ReceiptStatus, string> = {
   settled: 'Settled',
 };
 
-/* ── Helpers (logic unchanged) ─────────────────────────────── */
+/* ── Helpers ───────────────────────────────────────────────── */
 
 function formatCents(cents: number): string {
   return `$${(cents / 100).toFixed(2)}`;
@@ -65,7 +75,7 @@ function calculateProgress(receipt: ReceiptWithDetails): ProgressData {
     typeof receipt.subtotal_cents === 'number' && receipt.subtotal_cents > 0
       ? receipt.subtotal_cents
       : items.reduce((sum, item) => sum + item.price_cents, 0);
-  const taxAndTipCents = (receipt.tax_cents || 0) + (receipt.tip_cents || 0);
+  const extrasCents = (receipt.total_cents || 0) - receiptSubtotalCents;
 
   const participantPaymentStatus = new Map<string, string>();
   for (const p of participants) {
@@ -87,14 +97,14 @@ function calculateProgress(receipt: ReceiptWithDetails): ProgressData {
 
   const claimedExtrasCents =
     receiptSubtotalCents > 0
-      ? Math.round((taxAndTipCents * claimedSubtotalCents) / receiptSubtotalCents)
+      ? Math.round((extrasCents * claimedSubtotalCents) / receiptSubtotalCents)
       : 0;
   const paidExtrasCents =
     receiptSubtotalCents > 0
-      ? Math.round((taxAndTipCents * paidSubtotalCents) / receiptSubtotalCents)
+      ? Math.round((extrasCents * paidSubtotalCents) / receiptSubtotalCents)
       : 0;
 
-  const totalCents = receipt.total_cents || receiptSubtotalCents + taxAndTipCents;
+  const totalCents = receipt.total_cents || receiptSubtotalCents + extrasCents;
   const claimedCents = claimedSubtotalCents + claimedExtrasCents;
   const paidCents = paidSubtotalCents + paidExtrasCents;
 
@@ -113,6 +123,11 @@ function getEffectiveStatus(receipt: ReceiptWithDetails, progress: ProgressData)
     return 'settled';
   }
   return receipt.status;
+}
+
+function isReceiptCompleted(receipt: ReceiptWithDetails): boolean {
+  const progress = calculateProgress(receipt);
+  return getEffectiveStatus(receipt, progress) === 'settled';
 }
 
 /* ── Components ────────────────────────────────────────────── */
@@ -185,12 +200,29 @@ function ProgressBar({ data }: { data: ProgressData }) {
   );
 }
 
-function ReceiptCard({ receipt, index }: { receipt: ReceiptWithDetails; index: number }) {
+type MenuAnchor = { x: number; y: number };
+
+function ReceiptCard({
+  receipt,
+  index,
+  onMenuPress,
+}: {
+  receipt: ReceiptWithDetails;
+  index: number;
+  onMenuPress: (receipt: ReceiptWithDetails, anchor: MenuAnchor) => void;
+}) {
   const router = useRouter();
+  const btnRef = useRef<View>(null);
   const progress = useMemo(() => calculateProgress(receipt), [receipt]);
   const showProgress = receipt.status !== 'draft' && progress.total > 0;
   const effectiveStatus = useMemo(() => getEffectiveStatus(receipt, progress), [receipt, progress]);
   const accent = STATUS_COLOR[effectiveStatus] || STATUS_COLOR.draft;
+
+  const handleMenuPress = useCallback(() => {
+    btnRef.current?.measureInWindow((x, y, width, height) => {
+      onMenuPress(receipt, { x: x + width, y: y + height });
+    });
+  }, [receipt, onMenuPress]);
 
   return (
     <AnimatedPressable
@@ -207,6 +239,18 @@ function ReceiptCard({ receipt, index }: { receipt: ReceiptWithDetails; index: n
           {receipt.merchant_name || 'Unknown'}
         </Text>
         <Text style={s.totalAmount}>{formatCents(receipt.total_cents)}</Text>
+        <Pressable
+          ref={btnRef}
+          collapsable={false}
+          onPress={(event) => {
+            event.stopPropagation();
+            handleMenuPress();
+          }}
+          hitSlop={{ top: 12, bottom: 12, left: 12, right: 8 }}
+          style={({ pressed }) => [s.cardMenuButton, pressed && s.cardMenuButtonPressed]}
+        >
+          <Ionicons name="ellipsis-horizontal" size={18} color={colors.muted} />
+        </Pressable>
       </View>
 
       <View style={s.cardMeta}>
@@ -227,30 +271,25 @@ function ReceiptCard({ receipt, index }: { receipt: ReceiptWithDetails; index: n
 }
 
 function EmptyState({ tab }: { tab: Tab }) {
-  const isYours = tab === 'yours';
+  const isActive = tab === 'active';
   return (
     <Animated.View entering={FadeInDown.duration(500)} style={s.emptyState}>
       <View style={s.emptyIcon}>
         <Ionicons
-          name={isYours ? 'receipt-outline' : 'people-outline'}
+          name={isActive ? 'receipt-outline' : 'checkmark-done-outline'}
           size={24}
           color={colors.muted}
         />
       </View>
-      {!isYours && (
-        <View style={s.comingSoonBadge}>
-          <Text style={s.comingSoonBadgeText}>Coming Soon</Text>
-        </View>
-      )}
       <Text style={s.emptyTitle}>
-        {isYours ? 'No receipts yet' : 'Shared receipts are coming'}
+        {isActive ? 'No active receipts' : 'No completed receipts'}
       </Text>
       <Text style={s.emptyDescription}>
-        {isYours
+        {isActive
           ? 'Scan or upload a receipt to start splitting with friends.'
-          : 'Soon you will be able to open receipts shared with you in the app and keep them here.'}
+          : 'Fully paid receipts will appear here.'}
       </Text>
-      {isYours && (
+      {isActive && (
         <Link href="/scan" asChild>
           <Pressable style={s.emptyButton}>
             <Ionicons name="scan-outline" size={16} color="#04110D" />
@@ -263,13 +302,21 @@ function EmptyState({ tab }: { tab: Tab }) {
   );
 }
 
-function ReceiptList({ receipts, tab }: { receipts: ReceiptWithDetails[]; tab: Tab }) {
+function ReceiptList({
+  receipts,
+  tab,
+  onMenuPress,
+}: {
+  receipts: ReceiptWithDetails[];
+  tab: Tab;
+  onMenuPress: (receipt: ReceiptWithDetails, anchor: MenuAnchor) => void;
+}) {
   if (receipts.length === 0) return <EmptyState tab={tab} />;
 
   return (
     <View style={s.receiptList}>
       {receipts.map((receipt, i) => (
-        <ReceiptCard key={receipt.id} receipt={receipt} index={i} />
+        <ReceiptCard key={receipt.id} receipt={receipt} index={i} onMenuPress={onMenuPress} />
       ))}
     </View>
   );
@@ -281,8 +328,9 @@ function OwedSummary({ receipts }: { receipts: ReceiptWithDetails[] }) {
     let activeCount = 0;
 
     for (const r of receipts) {
-      if (r.status === 'draft' || r.status === 'settled') continue;
       const progress = calculateProgress(r);
+      const effectiveStatus = getEffectiveStatus(r, progress);
+      if (effectiveStatus === 'draft' || effectiveStatus === 'settled') continue;
       if (progress.claimed > 0) {
         totalOwed += progress.claimed;
         activeCount++;
@@ -307,13 +355,111 @@ function OwedSummary({ receipts }: { receipts: ReceiptWithDetails[] }) {
   );
 }
 
+/* ── Action menu ──────────────────────────────────────────── */
+
+type MenuAction = {
+  key: string;
+  label: string;
+  icon: React.ComponentProps<typeof Ionicons>['name'];
+  color?: string;
+  onPress: () => void;
+};
+
+function ReceiptActionMenu({
+  anchor,
+  actions,
+  visible,
+  onClose,
+  onDismiss,
+  onActionPress,
+}: {
+  anchor: MenuAnchor;
+  actions: MenuAction[];
+  visible: boolean;
+  onClose: () => void;
+  onDismiss: () => void;
+  onActionPress: (action: MenuAction) => void;
+}) {
+  const insets = useSafeAreaInsets();
+  const screen = Dimensions.get('window');
+
+  const menuWidth = 200;
+  const menuEstimatedHeight = actions.length * 48 + 16;
+
+  // Anchor below-right of the button, clamped to screen
+  let top = anchor.y + 4;
+  let left = anchor.x - menuWidth;
+  if (top + menuEstimatedHeight > screen.height - insets.bottom - 16) {
+    top = anchor.y - menuEstimatedHeight - 4;
+  }
+  if (left < 16) left = 16;
+
+  return (
+    <Modal
+      visible={visible}
+      transparent
+      animationType="fade"
+      onRequestClose={onClose}
+      onDismiss={onDismiss}
+      statusBarTranslucent
+    >
+      <Pressable style={s.menuOverlay} onPress={onClose}>
+        <Pressable
+          style={[s.menuPopover, { top, left, width: menuWidth }]}
+          onPress={(event) => event.stopPropagation()}
+        >
+          {actions.map((action, i) => (
+            <Pressable
+              key={action.key}
+              style={({ pressed }) => [
+                s.menuAction,
+                i < actions.length - 1 && s.menuActionBorder,
+                pressed && s.menuActionPressed,
+              ]}
+              onPress={(event) => {
+                event.stopPropagation();
+                onActionPress(action);
+              }}
+            >
+              <Ionicons
+                name={action.icon}
+                size={18}
+                color={action.color || colors.textSecondary}
+                style={s.menuActionIcon}
+              />
+              <Text
+                style={[s.menuActionLabel, action.color ? { color: action.color } : undefined]}
+              >
+                {action.label}
+              </Text>
+            </Pressable>
+          ))}
+        </Pressable>
+      </Pressable>
+    </Modal>
+  );
+}
+
 /* ── Main screen ───────────────────────────────────────────── */
 
 export default function HomeScreen() {
   const insets = useSafeAreaInsets();
-  const [activeTab, setActiveTab] = useState<Tab>('yours');
-  const [sortMode, setSortMode] = useState<SortMode>('added');
-  const { yourReceipts, sharedReceipts, isLoading, refresh, subscribe, unsubscribe } = useReceipts();
+  const router = useRouter();
+  const { session } = useAuth();
+  const [activeTab, setActiveTab] = useState<Tab>('active');
+  const [sortMode, setSortMode] = useState<SortMode>('newest');
+  const { yourReceipts, isLoading, refresh, subscribe, unsubscribe } = useReceipts();
+  const [menuState, setMenuState] = useState<{
+    receipt: ReceiptWithDetails;
+    anchor: MenuAnchor;
+    visible: boolean;
+  } | null>(null);
+  const [shareSheetState, setShareSheetState] = useState<{
+    url: string;
+    merchantName: string | null;
+  } | null>(null);
+  const [pendingMenuAction, setPendingMenuAction] = useState<(() => void) | null>(null);
+  const didHandleMenuDismissRef = useRef(false);
 
   useFocusEffect(
     useCallback(() => {
@@ -323,21 +469,31 @@ export default function HomeScreen() {
     }, [refresh, subscribe, unsubscribe])
   );
 
-  const receipts = activeTab === 'yours' ? yourReceipts : sharedReceipts;
+  const activeReceipts = useMemo(
+    () => yourReceipts.filter((receipt) => !isReceiptCompleted(receipt)),
+    [yourReceipts]
+  );
+  const completedReceipts = useMemo(
+    () => yourReceipts.filter(isReceiptCompleted),
+    [yourReceipts]
+  );
+  const receipts = activeTab === 'active' ? activeReceipts : completedReceipts;
 
   const sortedReceipts = useMemo(() => {
     const list = [...receipts];
     switch (sortMode) {
-      case 'date':
+      case 'newest':
         return list.sort((a, b) => {
-          const dateA = a.receipt_date ? new Date(a.receipt_date).getTime() : 0;
-          const dateB = b.receipt_date ? new Date(b.receipt_date).getTime() : 0;
+          const dateA = new Date(a.receipt_date ?? a.created_at).getTime();
+          const dateB = new Date(b.receipt_date ?? b.created_at).getTime();
           return dateB - dateA;
         });
-      case 'added':
-        return list.sort((a, b) =>
-          new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
-        );
+      case 'oldest':
+        return list.sort((a, b) => {
+          const dateA = new Date(a.receipt_date ?? a.created_at).getTime();
+          const dateB = new Date(b.receipt_date ?? b.created_at).getTime();
+          return dateA - dateB;
+        });
       case 'status': {
         return list.sort((a, b) => {
           const pa = calculateProgress(a);
@@ -353,6 +509,179 @@ export default function HomeScreen() {
   const cycleSort = useCallback(() => {
     setSortMode((prev) => SORT_MODES[(SORT_MODES.indexOf(prev) + 1) % SORT_MODES.length]);
   }, []);
+
+  const TABLINK_BASE_URL = process.env.EXPO_PUBLIC_TABLINK_URL;
+
+  const handleMenuShare = useCallback(async (receipt: ReceiptWithDetails) => {
+    const userId = session?.user?.id;
+    if (!userId || !receipt.id) return;
+
+    // Check payment methods
+    const supabase = getSupabaseClient();
+    const { data: profile } = await supabase
+      .from('user_profiles')
+      .select('venmo_handle, cashapp_handle, paypal_handle')
+      .eq('user_id', userId)
+      .single();
+
+    const hasPayment = !!(
+      profile?.venmo_handle ||
+      profile?.cashapp_handle ||
+      profile?.paypal_handle
+    );
+
+    if (!hasPayment) {
+      Alert.alert(
+        'Set Up Payment Methods',
+        'Before sharing a receipt, add your payment info (Venmo, CashApp, etc.) so guests can pay you.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Go to Settings', onPress: () => router.push('/(host)/settings') },
+        ]
+      );
+      return;
+    }
+
+    if (!TABLINK_BASE_URL) {
+      Alert.alert('Configuration Error', 'Missing Tablink share URL configuration.');
+      return;
+    }
+
+    try {
+      if (receipt.status === 'draft') {
+        const result = await updateReceipt(receipt.id, { status: 'shared' });
+        if (!result.success) {
+          Alert.alert('Error', result.error || 'Failed to activate receipt');
+          return;
+        }
+      }
+
+      const linkResult = await getOrCreateShareLink(receipt.id);
+      if (!linkResult.success) {
+        Alert.alert('Error', linkResult.error || 'Failed to generate share link');
+        return;
+      }
+
+      const tablinkUrl = `${TABLINK_BASE_URL}/claim/${linkResult.shortCode}`;
+      setShareSheetState({
+        url: tablinkUrl,
+        merchantName: receipt.merchant_name,
+      });
+    } catch (err) {
+      console.error('[Home] Share error:', err);
+      Alert.alert('Error', 'Failed to share tablink');
+    }
+  }, [session?.user?.id, TABLINK_BASE_URL, router]);
+
+  const handleMenuDuplicate = useCallback(async (receipt: ReceiptWithDetails) => {
+    setMenuState(null);
+    const userId = session?.user?.id;
+    if (!userId) return;
+
+    try {
+      const result = await duplicateReceipt(receipt.id, userId);
+      if (result.success && result.newReceiptId) {
+        await refresh();
+        router.push(`/receipt/${result.newReceiptId}`);
+      } else {
+        Alert.alert('Error', result.error || 'Failed to duplicate receipt');
+      }
+    } catch (err) {
+      console.error('[Home] Duplicate error:', err);
+      Alert.alert('Error', 'Failed to duplicate receipt');
+    }
+  }, [session?.user?.id, refresh, router]);
+
+  const handleMenuDelete = useCallback((receipt: ReceiptWithDetails) => {
+    setMenuState(null);
+    Alert.alert(
+      'Delete Receipt',
+      'Are you sure you want to delete this receipt? This cannot be undone.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              const result = await deleteReceipt(receipt.id);
+              if (result.success) {
+                refresh();
+              } else {
+                Alert.alert('Error', result.error || 'Failed to delete receipt');
+              }
+            } catch (err) {
+              console.error('[Home] Delete error:', err);
+              Alert.alert('Error', 'Failed to delete receipt');
+            }
+          },
+        },
+      ]
+    );
+  }, [refresh]);
+
+  const handleOpenMenu = useCallback(
+    (receipt: ReceiptWithDetails, anchor: MenuAnchor) => {
+      didHandleMenuDismissRef.current = false;
+      setMenuState({ receipt, anchor, visible: true });
+    },
+    []
+  );
+
+  const handleMenuActionPress = useCallback((action: MenuAction) => {
+    didHandleMenuDismissRef.current = false;
+    setPendingMenuAction(() => action.onPress);
+    setMenuState((prev) => (prev ? { ...prev, visible: false } : prev));
+  }, []);
+
+  const handleCloseMenu = useCallback(() => {
+    didHandleMenuDismissRef.current = false;
+    setPendingMenuAction(null);
+    setMenuState((prev) => (prev ? { ...prev, visible: false } : prev));
+  }, []);
+
+  const handleMenuDismiss = useCallback(() => {
+    if (didHandleMenuDismissRef.current) return;
+    didHandleMenuDismissRef.current = true;
+
+    const action = pendingMenuAction;
+    setPendingMenuAction(null);
+    setMenuState(null);
+    action?.();
+  }, [pendingMenuAction]);
+
+  useEffect(() => {
+    if (!menuState || menuState.visible) return;
+
+    const timeout = setTimeout(handleMenuDismiss, MENU_ACTION_DISMISS_FALLBACK_MS);
+    return () => clearTimeout(timeout);
+  }, [handleMenuDismiss, menuState]);
+
+  const menuActions = useMemo<MenuAction[]>(() => {
+    if (!menuState) return [];
+    const { receipt } = menuState;
+    return [
+      {
+        key: 'share',
+        label: 'Share Tablink',
+        icon: 'link-outline',
+        onPress: () => handleMenuShare(receipt),
+      },
+      {
+        key: 'duplicate',
+        label: 'Duplicate',
+        icon: 'copy-outline',
+        onPress: () => handleMenuDuplicate(receipt),
+      },
+      {
+        key: 'delete',
+        label: 'Delete',
+        icon: 'trash-outline',
+        color: colors.danger,
+        onPress: () => handleMenuDelete(receipt),
+      },
+    ];
+  }, [menuState, handleMenuShare, handleMenuDuplicate, handleMenuDelete]);
 
   return (
     <View style={s.container}>
@@ -382,13 +711,13 @@ export default function HomeScreen() {
 
         {/* Tabs */}
         <View style={s.tabBar}>
-          {(['yours', 'shared'] as const).map((tab) => {
+          {(['active', 'completed'] as const).map((tab) => {
             const isActive = activeTab === tab;
-            const count = tab === 'yours' ? yourReceipts.length : sharedReceipts.length;
+            const count = tab === 'active' ? activeReceipts.length : completedReceipts.length;
             return (
               <Pressable key={tab} style={s.tab} onPress={() => setActiveTab(tab)}>
                 <Text style={[s.tabText, isActive && s.tabTextActive]}>
-                  {tab === 'yours' ? 'Yours' : 'Shared'}
+                  {tab === 'active' ? 'Active' : 'Completed'}
                   {count > 0 && (
                     <Text style={[s.tabCount, isActive && s.tabCountActive]}> {count}</Text>
                   )}
@@ -411,10 +740,31 @@ export default function HomeScreen() {
         {isLoading ? (
           <HomeSkeleton />
         ) : (
-          <ReceiptList receipts={sortedReceipts} tab={activeTab} />
+          <ReceiptList receipts={sortedReceipts} tab={activeTab} onMenuPress={handleOpenMenu} />
         )}
       </ScrollView>
 
+      {menuState && (
+        <ReceiptActionMenu
+          anchor={menuState.anchor}
+          actions={menuActions}
+          visible={menuState.visible}
+          onClose={handleCloseMenu}
+          onDismiss={handleMenuDismiss}
+          onActionPress={handleMenuActionPress}
+        />
+      )}
+
+      <ShareTablinkSheet
+        visible={Boolean(shareSheetState)}
+        tablinkUrl={shareSheetState?.url ?? null}
+        merchantName={shareSheetState?.merchantName}
+        onClose={() => setShareSheetState(null)}
+        onShared={() => {
+          console.log('[Home] Shared successfully');
+          setShareSheetState(null);
+        }}
+      />
     </View>
   );
 }
@@ -587,23 +937,6 @@ const s = StyleSheet.create({
     gap: 14,
   },
 
-  comingSoonBadge: {
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 999,
-    backgroundColor: 'rgba(52, 211, 153, 0.08)',
-    borderWidth: 1,
-    borderColor: 'rgba(52, 211, 153, 0.16)',
-    marginBottom: 12,
-  },
-  comingSoonBadgeText: {
-    color: colors.primary,
-    fontSize: 11,
-    fontWeight: '700',
-    letterSpacing: 0.6,
-    textTransform: 'uppercase',
-  },
-
   /* Receipt card */
   receiptCard: {
     backgroundColor: colors.surface,
@@ -619,14 +952,23 @@ const s = StyleSheet.create({
   cardHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    alignItems: 'baseline',
+    alignItems: 'center',
   },
   merchantName: {
     color: colors.text,
     fontSize: 17,
     fontWeight: '600',
     flex: 1,
-    marginRight: 16,
+    marginRight: 12,
+  },
+  cardMenuButton: {
+    marginLeft: 6,
+    padding: 4,
+    borderRadius: 6,
+    backgroundColor: 'rgba(255, 255, 255, 0.04)',
+  },
+  cardMenuButtonPressed: {
+    backgroundColor: 'rgba(255, 255, 255, 0.10)',
   },
   totalAmount: {
     color: colors.text,
@@ -731,5 +1073,45 @@ const s = StyleSheet.create({
     fontWeight: '700',
     letterSpacing: 0.5,
     textTransform: 'uppercase',
+  },
+
+  /* Action menu */
+  menuOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.35)',
+  },
+  menuPopover: {
+    position: 'absolute',
+    borderRadius: 12,
+    backgroundColor: '#1A1F25',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.10)',
+    paddingVertical: 4,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.45,
+    shadowRadius: 16,
+    elevation: 20,
+  },
+  menuAction: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+  },
+  menuActionBorder: {
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: 'rgba(255, 255, 255, 0.06)',
+  },
+  menuActionPressed: {
+    backgroundColor: 'rgba(255, 255, 255, 0.06)',
+  },
+  menuActionIcon: {
+    width: 28,
+  },
+  menuActionLabel: {
+    color: colors.textSecondary,
+    fontSize: 15,
+    fontWeight: '500',
   },
 });

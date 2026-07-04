@@ -17,6 +17,13 @@ type Receipt = {
   tax_cents: number;
   tip_cents: number;
   total_cents: number;
+  raw_payload: {
+    adjustments?: Array<{
+      type: 'discount' | 'fee' | 'other';
+      label: string;
+      amount: number;
+    }>;
+  } | null;
   status: string;
   owner_id: string;
 };
@@ -26,7 +33,6 @@ type OwnerProfile = {
   venmo_handle: string | null;
   cashapp_handle: string | null;
   paypal_handle: string | null;
-  zelle_identifier: string | null;
 };
 
 type ItemClaim = {
@@ -43,6 +49,7 @@ type Participant = {
   emoji: string | null;
   color_token: string | null;
   role?: 'owner' | 'guest';
+  phone?: string | null;
 };
 
 async function resolveReceiptIdFromShortCode(shortCode: string) {
@@ -86,7 +93,7 @@ async function getReceiptData(receiptId: string) {
   // Fetch receipt
   const { data: receipt, error: receiptError } = await supabase
     .from('receipts')
-    .select('id, merchant_name, receipt_date, subtotal_cents, tax_cents, tip_cents, total_cents, status, owner_id')
+    .select('id, merchant_name, receipt_date, subtotal_cents, tax_cents, tip_cents, total_cents, raw_payload, status, owner_id')
     .eq('id', receiptId)
     .single();
 
@@ -119,13 +126,13 @@ async function getReceiptData(receiptId: string) {
   // Fetch participants
   const { data: participants } = await supabase
     .from('receipt_participants')
-    .select('id, display_name, emoji, color_token, role, payment_status')
+    .select('id, display_name, emoji, color_token, role, payment_status, phone')
     .eq('receipt_id', receiptId);
 
   // Fetch owner profile for payment handles
   const { data: ownerProfile } = await supabase
     .from('user_profiles')
-    .select('display_name, venmo_handle, cashapp_handle, paypal_handle, zelle_identifier')
+    .select('display_name, venmo_handle, cashapp_handle, paypal_handle')
     .eq('user_id', receipt.owner_id)
     .single();
 

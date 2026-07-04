@@ -63,7 +63,17 @@ function AuthAwareStack() {
       <Stack.Screen
         name="receipt/review"
         options={{
-          title: 'Review Receipt',
+          title: 'Review & Edit',
+          presentation: 'modal',
+          headerStyle: { backgroundColor: colors.surface },
+          headerTintColor: colors.text,
+          headerShown: true,
+        }}
+      />
+      <Stack.Screen
+        name="receipt/your-items"
+        options={{
+          title: 'Your Items',
           presentation: 'modal',
           headerStyle: { backgroundColor: colors.surface },
           headerTintColor: colors.text,
