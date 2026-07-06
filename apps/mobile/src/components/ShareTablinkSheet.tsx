@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Alert, Modal, Pressable, Share, StyleSheet, Text, View } from 'react-native';
+import { Alert, Modal, Pressable, StyleSheet, Text, View } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
 import { Ionicons } from '@expo/vector-icons';
 import QRCode from 'react-native-qrcode-svg';
@@ -12,7 +12,7 @@ type ShareTablinkSheetProps = {
   tablinkUrl: string | null;
   merchantName?: string | null;
   onClose: () => void;
-  onShared?: () => void;
+  onDone?: () => void;
 };
 
 export function ShareTablinkSheet({
@@ -20,7 +20,7 @@ export function ShareTablinkSheet({
   tablinkUrl,
   merchantName,
   onClose,
-  onShared,
+  onDone,
 }: ShareTablinkSheetProps) {
   const [showQr, setShowQr] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -31,14 +31,17 @@ export function ShareTablinkSheet({
     onClose();
   };
 
+  const handleDone = () => {
+    setShowQr(false);
+    setCopied(false);
+    onDone?.();
+  };
+
   const handleSendLink = async () => {
     if (!tablinkUrl) return;
 
     try {
-      const result = await shareTablink({ tablinkUrl, merchantName });
-      if (result.action === Share.sharedAction) {
-        onShared?.();
-      }
+      await shareTablink({ tablinkUrl, merchantName });
     } catch (err) {
       console.error('[ShareTablinkSheet] Failed to share link:', err);
       Alert.alert('Share failed', 'Copy the link instead and send it manually.');
@@ -62,7 +65,9 @@ export function ShareTablinkSheet({
               <Text style={s.overline}>Share</Text>
               <Text style={s.title}>Share Tablink</Text>
               <Text style={s.subtitle}>
-                {showQr ? 'Friends can scan this code to claim their items.' : 'Send the link, show a QR code, or copy it.'}
+                {showQr
+                  ? 'Let friends scan this code to pick what they ordered and pay you back.'
+                  : 'Invite friends to pick what they ordered and pay you back.'}
               </Text>
             </View>
             <Pressable style={({ pressed }) => [s.iconButton, pressed && s.pressed]} onPress={handleClose}>
@@ -103,6 +108,10 @@ export function ShareTablinkSheet({
               <Text style={[s.optionActionText, copied && s.optionActionTextActive]}>
                 {copied ? 'Copied' : 'Copy link'}
               </Text>
+            </Pressable>
+
+            <Pressable style={({ pressed }) => [s.doneAction, pressed && s.optionPressed]} onPress={handleDone}>
+              <Text style={s.doneActionText}>Done</Text>
             </Pressable>
           </View>
         </Pressable>
@@ -202,6 +211,20 @@ const s = StyleSheet.create({
     color: '#04110D',
     fontSize: 15,
     fontWeight: '800',
+  },
+  doneAction: {
+    alignSelf: 'center',
+    minHeight: 36,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 18,
+    marginTop: 8,
+  },
+  doneActionText: {
+    color: colors.textSecondary,
+    fontSize: 14,
+    fontWeight: '700',
   },
   optionAction: {
     minHeight: 50,

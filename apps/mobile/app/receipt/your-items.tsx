@@ -483,7 +483,7 @@ export default function YourItemsScreen() {
           >
             <Ionicons name="share-outline" size={16} color="#04110D" />
             <Text style={s.shareButtonText}>
-              {hasPaymentMethods === null ? 'Checking...' : isSharing ? 'Sharing...' : 'Share Tablink'}
+              {hasPaymentMethods === null ? 'Checking...' : isSharing ? 'Sharing...' : 'Share'}
             </Text>
             <Ionicons name="arrow-forward" size={16} color="#04110D" />
           </Pressable>
@@ -494,8 +494,11 @@ export default function YourItemsScreen() {
         visible={Boolean(shareSheetUrl)}
         tablinkUrl={shareSheetUrl}
         merchantName={parsed?.merchantName}
-        onClose={() => setShareSheetUrl(null)}
-        onShared={() => {
+        onClose={() => {
+          setShareSheetUrl(null);
+          setShowShareSuccess(true);
+        }}
+        onDone={() => {
           setShareSheetUrl(null);
           setShowShareSuccess(true);
         }}

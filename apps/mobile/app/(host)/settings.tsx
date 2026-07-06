@@ -91,13 +91,14 @@ export default function SettingsScreen() {
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [showSaved, setShowSaved] = useState(false);
+  const [displayNameInput, setDisplayNameInput] = useState('');
   const [handles, setHandles] = useState<PaymentHandles>({
     venmo_handle: '',
     cashapp_handle: '',
     paypal_handle: '',
   });
 
-  const displayName = user?.user_metadata?.full_name || user?.email || 'You';
+  const fallbackDisplayName = 'Host';
   const hasLoadedRef = useRef(false);
 
   // Load existing profile
@@ -108,11 +109,12 @@ export default function SettingsScreen() {
       const supabase = getSupabaseClient();
       const { data, error } = await supabase
         .from('user_profiles')
-        .select('venmo_handle, cashapp_handle, paypal_handle')
+        .select('display_name, venmo_handle, cashapp_handle, paypal_handle')
         .eq('user_id', user.id)
         .single();
 
       if (!error && data) {
+        setDisplayNameInput(data.display_name || fallbackDisplayName);
         setHandles({
           venmo_handle: data.venmo_handle || '',
           cashapp_handle: data.cashapp_handle || '',
@@ -124,7 +126,7 @@ export default function SettingsScreen() {
     }
 
     loadProfile();
-  }, [user?.id]);
+  }, [fallbackDisplayName, user?.id]);
 
   const handleSave = useCallback(async () => {
     if (!user?.id) return;
@@ -135,6 +137,7 @@ export default function SettingsScreen() {
     const { error } = await supabase
       .from('user_profiles')
       .update({
+        display_name: displayNameInput.trim() || fallbackDisplayName,
         venmo_handle: handles.venmo_handle.trim() || null,
         cashapp_handle: handles.cashapp_handle.trim() || null,
         paypal_handle: handles.paypal_handle.trim() || null,
@@ -147,7 +150,7 @@ export default function SettingsScreen() {
       setShowSaved(true);
       setTimeout(() => setShowSaved(false), 2000);
     }
-  }, [user?.id, handles]);
+  }, [displayNameInput, fallbackDisplayName, user?.id, handles]);
 
   const updateHandle = useCallback((field: keyof PaymentHandles, value: string) => {
     setHandles(prev => ({ ...prev, [field]: value }));
@@ -181,24 +184,37 @@ export default function SettingsScreen() {
             {/* Account section */}
             <Animated.View entering={FadeInDown.duration(400)} style={s.section}>
               <Text style={s.sectionLabel}>ACCOUNT</Text>
-              <View style={s.accountRow}>
-                <View style={s.avatarCircle}>
-                  <Text style={s.avatarText}>
-                    {displayName.charAt(0).toUpperCase()}
-                  </Text>
+              <Text style={s.sectionDescription}>
+                Choose the name guests see when they open your Tablink.
+              </Text>
+              <View style={s.inputGroup}>
+                <View style={[s.inputRow, user?.email && s.inputRowBorder]}>
+                  <Text style={s.inputLabel}>Name</Text>
+                  <TextInput
+                    style={s.input}
+                    value={displayNameInput}
+                    onChangeText={setDisplayNameInput}
+                    placeholder="Host"
+                    placeholderTextColor={colors.muted}
+                    autoCapitalize="words"
+                    autoCorrect={false}
+                    returnKeyType="done"
+                  />
                 </View>
-                <View style={s.accountInfo}>
-                  <Text style={s.accountName}>{displayName}</Text>
-                  {user?.email && displayName !== user.email && (
-                    <Text style={s.accountEmail}>{user.email}</Text>
-                  )}
-                </View>
+                {user?.email ? (
+                  <View style={[s.inputRow, s.readOnlyRow]}>
+                    <Text style={[s.inputLabel, s.readOnlyLabel]}>Email</Text>
+                    <Text style={s.readOnlyValue} numberOfLines={1}>
+                      {user.email}
+                    </Text>
+                  </View>
+                ) : null}
               </View>
             </Animated.View>
 
             {/* Payment methods section */}
             <Animated.View entering={FadeInDown.delay(100).duration(400)} style={s.section}>
-              <Text style={s.sectionLabel}>PAYMENT METHODS</Text>
+              <Text style={s.sectionLabel}>PAYMENT INFO</Text>
               <Text style={s.sectionDescription}>
                 Add your payment handles so guests can easily pay you after splitting a receipt.
               </Text>
@@ -333,40 +349,6 @@ const s = StyleSheet.create({
     lineHeight: 20,
   },
 
-  /* Account */
-  accountRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 14,
-    paddingVertical: 4,
-  },
-  avatarCircle: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: 'rgba(52, 211, 153, 0.12)',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  avatarText: {
-    color: colors.primary,
-    fontSize: 18,
-    fontWeight: '700',
-  },
-  accountInfo: {
-    flex: 1,
-  },
-  accountName: {
-    color: colors.text,
-    fontSize: 16,
-    fontWeight: '600',
-  },
-  accountEmail: {
-    color: colors.muted,
-    fontSize: 13,
-    marginTop: 2,
-  },
-
   /* Input group */
   inputGroup: {
     backgroundColor: colors.surface,
@@ -396,6 +378,19 @@ const s = StyleSheet.create({
     color: colors.text,
     fontSize: 15,
     paddingVertical: 0,
+    textAlign: 'right',
+  },
+  readOnlyRow: {
+    backgroundColor: 'rgba(255, 255, 255, 0.018)',
+  },
+  readOnlyLabel: {
+    color: colors.muted,
+  },
+  readOnlyValue: {
+    flex: 1,
+    color: colors.textSecondary,
+    fontSize: 14,
+    fontWeight: '500',
     textAlign: 'right',
   },
 

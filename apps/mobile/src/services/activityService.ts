@@ -1,7 +1,8 @@
 import { getSupabaseClient } from '@/src/lib/supabaseClient';
 import type { RealtimePostgresChangesPayload } from '@supabase/supabase-js';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
-export type ActivityType = 'claim' | 'join' | 'payment';
+export type ActivityType = 'claim' | 'join' | 'payment' | 'settled';
 
 export type ActivityItem = {
   id: string;
@@ -39,13 +40,99 @@ type ReceiptItem = {
   id: string;
   label: string;
   receipt_id: string;
+  price_cents?: number | null;
 };
 
 type Receipt = {
   id: string;
   merchant_name: string | null;
   owner_id: string;
+  status?: string | null;
+  updated_at?: string | null;
+  created_at?: string | null;
 };
+
+const LAST_ACTIVITY_SEEN_PREFIX = 'tablink-last-activity-seen-at';
+
+function getLastActivitySeenKey(userId: string) {
+  return `${LAST_ACTIVITY_SEEN_PREFIX}:${userId}`;
+}
+
+export async function getLatestActivityTimestamp(userId: string): Promise<string | null> {
+  const activities = await fetchRecentActivity(userId);
+  return activities[0]?.timestamp ?? null;
+}
+
+export async function hasUnreadActivity(userId: string): Promise<boolean> {
+  const [latestTimestamp, lastSeenAt] = await Promise.all([
+    getLatestActivityTimestamp(userId),
+    AsyncStorage.getItem(getLastActivitySeenKey(userId)),
+  ]);
+
+  if (!latestTimestamp) return false;
+  if (!lastSeenAt) return true;
+
+  return new Date(latestTimestamp).getTime() > new Date(lastSeenAt).getTime();
+}
+
+export async function markActivitySeen(userId: string, timestamp = new Date().toISOString()) {
+  await AsyncStorage.setItem(getLastActivitySeenKey(userId), timestamp);
+}
+
+async function getSettledReceiptTimestamp(receiptId: string): Promise<string | null> {
+  const supabase = getSupabaseClient();
+
+  const [{ data: items }, { data: participants }] = await Promise.all([
+    supabase
+      .from('receipt_items')
+      .select('id, price_cents')
+      .eq('receipt_id', receiptId),
+    supabase
+      .from('receipt_participants')
+      .select('id, payment_status, paid_at')
+      .eq('receipt_id', receiptId),
+  ]);
+
+  if (!items?.length || !participants?.length) return null;
+
+  const itemIds = items.map(item => item.id);
+  const { data: claims } = await supabase
+    .from('item_claims')
+    .select('item_id, participant_id, amount_cents')
+    .in('item_id', itemIds);
+
+  if (!claims?.length) return null;
+
+  const paidParticipants = new Map(
+    participants.map(participant => [participant.id, participant])
+  );
+
+  const allClaimsPaid = claims.every(claim => {
+    return paidParticipants.get(claim.participant_id)?.payment_status === 'paid';
+  });
+  if (!allClaimsPaid) return null;
+
+  const claimedByItem = new Map<string, number>();
+  for (const claim of claims) {
+    claimedByItem.set(claim.item_id, (claimedByItem.get(claim.item_id) ?? 0) + claim.amount_cents);
+  }
+
+  const allItemsFullyClaimed = items.every(item => {
+    const priceCents = item.price_cents ?? 0;
+    if (priceCents <= 0) return true;
+    return (claimedByItem.get(item.id) ?? 0) >= priceCents;
+  });
+  if (!allItemsFullyClaimed) return null;
+
+  const paidTimes = participants
+    .map(participant => participant.paid_at)
+    .filter((value): value is string => Boolean(value))
+    .map(value => new Date(value).getTime());
+
+  return paidTimes.length > 0
+    ? new Date(Math.max(...paidTimes)).toISOString()
+    : new Date().toISOString();
+}
 
 export async function fetchRecentActivity(userId: string): Promise<ActivityItem[]> {
   const supabase = getSupabaseClient();
@@ -53,7 +140,7 @@ export async function fetchRecentActivity(userId: string): Promise<ActivityItem[
   // First, get all receipts the user owns
   const { data: ownedReceipts, error: ownedError } = await supabase
     .from('receipts')
-    .select('id, merchant_name')
+    .select('id, merchant_name, status, updated_at, created_at')
     .eq('owner_id', userId);
 
   if (ownedError) {
@@ -93,7 +180,7 @@ export async function fetchRecentActivity(userId: string): Promise<ActivityItem[
   // Fetch all receipt items for these receipts
   const { data: items, error: itemsError } = await supabase
     .from('receipt_items')
-    .select('id, label, receipt_id')
+    .select('id, label, receipt_id, price_cents')
     .in('receipt_id', receiptIds);
 
   if (itemsError) {
@@ -121,6 +208,37 @@ export async function fetchRecentActivity(userId: string): Promise<ActivityItem[
 
   // Build activity items
   const activities: ActivityItem[] = [];
+
+  ownedReceipts?.forEach(r => {
+    if (r.status !== 'settled') return;
+
+    activities.push({
+      id: `settled-${r.id}`,
+      type: 'settled',
+      timestamp: r.updated_at || r.created_at || new Date().toISOString(),
+      receiptId: r.id,
+      receiptName: r.merchant_name || 'Receipt',
+      participantName: r.merchant_name || 'Receipt',
+      participantEmoji: null,
+    });
+  });
+
+  for (const receipt of ownedReceipts ?? []) {
+    if (activities.some(activity => activity.id === `settled-${receipt.id}`)) continue;
+
+    const settledAt = await getSettledReceiptTimestamp(receipt.id);
+    if (!settledAt) continue;
+
+    activities.push({
+      id: `settled-${receipt.id}`,
+      type: 'settled',
+      timestamp: settledAt,
+      receiptId: receipt.id,
+      receiptName: receipt.merchant_name || 'Receipt',
+      participantName: receipt.merchant_name || 'Receipt',
+      participantEmoji: null,
+    });
+  }
 
   // Add join activities
   participants?.forEach(p => {
@@ -180,6 +298,7 @@ export type ActivitySubscriptionCallbacks = {
   onClaim: (activity: ActivityItem) => void;
   onJoin: (activity: ActivityItem) => void;
   onPayment: (activity: ActivityItem) => void;
+  onSettled: (activity: ActivityItem) => void;
 };
 
 export function subscribeToActivity(
@@ -199,7 +318,7 @@ export function subscribeToActivity(
     // Fetch owned receipts
     const { data: ownedReceipts } = await supabase
       .from('receipts')
-      .select('id, merchant_name')
+      .select('id, merchant_name, status, updated_at, created_at')
       .eq('owner_id', userId);
 
     receiptIds = ownedReceipts?.map(r => r.id) ?? [];
@@ -223,7 +342,7 @@ export function subscribeToActivity(
       // Fetch items
       const { data: items } = await supabase
         .from('receipt_items')
-        .select('id, label, receipt_id')
+        .select('id, label, receipt_id, price_cents')
         .in('receipt_id', receiptIds);
 
       itemMap = new Map();
@@ -236,6 +355,36 @@ export function subscribeToActivity(
   // Set up realtime subscription
   const channel = supabase
     .channel(`activity:${userId}`)
+    .on(
+      'postgres_changes',
+      {
+        event: 'UPDATE',
+        schema: 'public',
+        table: 'receipts',
+      },
+      async (payload: RealtimePostgresChangesPayload<Receipt>) => {
+        const updated = payload.new as Receipt;
+        const old = payload.old as Partial<Receipt>;
+
+        if (old.status === 'settled' || updated.status !== 'settled') return;
+
+        if (!receiptIds.includes(updated.id)) {
+          await initializeData();
+          if (!receiptIds.includes(updated.id)) return;
+        }
+
+        const receiptName = receiptNameMap.get(updated.id) || updated.merchant_name || 'Receipt';
+        callbacks.onSettled({
+          id: `settled-${updated.id}`,
+          type: 'settled',
+          timestamp: updated.updated_at || new Date().toISOString(),
+          receiptId: updated.id,
+          receiptName,
+          participantName: receiptName,
+          participantEmoji: null,
+        });
+      }
+    )
     .on(
       'postgres_changes',
       {
@@ -353,6 +502,20 @@ export function subscribeToActivity(
             paymentMethod: updated.payment_method ?? undefined,
             amountCents: updated.payment_amount_cents ?? undefined,
           });
+
+          const settledAt = await getSettledReceiptTimestamp(updated.receipt_id);
+          if (settledAt) {
+            const receiptName = receiptNameMap.get(updated.receipt_id) || 'Receipt';
+            callbacks.onSettled({
+              id: `settled-${updated.receipt_id}`,
+              type: 'settled',
+              timestamp: settledAt,
+              receiptId: updated.receipt_id,
+              receiptName,
+              participantName: receiptName,
+              participantEmoji: null,
+            });
+          }
         }
       }
     )

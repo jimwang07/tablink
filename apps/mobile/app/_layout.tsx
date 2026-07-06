@@ -26,13 +26,14 @@ function AuthAwareStack() {
     }
 
     const inAuthGroup = currentTopSegment === '(auth)';
+    const inAuthCallback = currentTopSegment === 'auth';
 
-    if (!session && !inAuthGroup) {
+    if (!session && !inAuthGroup && !inAuthCallback) {
       router.replace('/(auth)/sign-in');
       return;
     }
 
-    if (session && inAuthGroup) {
+    if (session && (inAuthGroup || inAuthCallback)) {
       router.replace('/(host)/home');
     }
   }, [currentTopSegment, isLoading, navigationReady, router, session]);
@@ -45,12 +46,14 @@ function AuthAwareStack() {
     return (
       <Stack screenOptions={{ headerShown: false }}>
         <Stack.Screen name="(auth)" options={{ headerShown: false }} />
+        <Stack.Screen name="auth/callback" options={{ headerShown: false }} />
       </Stack>
     );
   }
 
   return (
     <Stack screenOptions={{ headerShown: false }}>
+      <Stack.Screen name="auth/callback" options={{ headerShown: false }} />
       <Stack.Screen name="(host)" options={{ headerShown: false }} />
       <Stack.Screen
         name="receipt/[id]"
