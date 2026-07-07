@@ -438,6 +438,7 @@ export default function ReceiptDetailScreen() {
   // Claims and participants for realtime updates
   const [claims, setClaims] = useState<ItemClaim[]>([]);
   const [participants, setParticipants] = useState<Participant[]>([]);
+  const [hasLoadedClaimsAndParticipants, setHasLoadedClaimsAndParticipants] = useState(false);
 
   // Add participant form
   const [newParticipantName, setNewParticipantName] = useState('');
@@ -534,13 +535,20 @@ export default function ReceiptDetailScreen() {
     load();
   }, [id]);
 
+  const receiptItemIdsKey = useMemo(
+    () => receipt?.items.map(item => item.id).join('|') ?? '',
+    [receipt?.items]
+  );
+  const hasReceipt = Boolean(receipt);
+
   // Load claims and participants, and subscribe to realtime updates
   useEffect(() => {
-    if (!id || !receipt) return;
+    if (!id || !hasReceipt) return;
 
     const supabase = getSupabaseClient();
-    const itemIds = receipt.items.map(i => i.id);
+    const itemIds = receiptItemIdsKey ? receiptItemIdsKey.split('|') : [];
     const itemIdSet = new Set(itemIds);
+    setHasLoadedClaimsAndParticipants(false);
 
     async function refreshReceiptRealtimeState() {
       const receiptResult = await fetchReceipt(id);
@@ -573,6 +581,7 @@ export default function ReceiptDetailScreen() {
         .select('id, display_name, emoji, color_token, role, payment_status, paid_at, payment_method, payment_amount_cents, phone')
         .eq('receipt_id', id);
       if (participantsData) setParticipants(participantsData);
+      setHasLoadedClaimsAndParticipants(true);
     }
 
     async function fetchClaimsAndParticipants() {
@@ -589,6 +598,7 @@ export default function ReceiptDetailScreen() {
         .select('id, display_name, emoji, color_token, role, payment_status, paid_at, payment_method, payment_amount_cents, phone')
         .eq('receipt_id', id);
       if (participantsData) setParticipants(participantsData);
+      setHasLoadedClaimsAndParticipants(true);
     }
 
     fetchClaimsAndParticipants();
@@ -703,7 +713,7 @@ export default function ReceiptDetailScreen() {
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [id, receipt]);
+  }, [id, hasReceipt, receiptItemIdsKey]);
 
   const getItemClaimers = useCallback((itemKey: string) => {
     const itemClaims = claims.filter(c => c.item_id === itemKey);
@@ -816,21 +826,24 @@ export default function ReceiptDetailScreen() {
 
     return receipt.status as ReceiptStatus;
   }, [receipt, claims, participants, editableItems]);
-  const hasReceipt = Boolean(receipt);
   const receiptCelebrationShown = receipt?.celebration_shown;
 
   // Trigger confetti when receipt becomes settled
   useEffect(() => {
-    if (!id || !hasReceipt) return;
+    if (!id || !hasReceipt || !hasLoadedClaimsAndParticipants) return;
 
     const isSettled = effectiveStatus === 'settled';
 
     const markCelebrationShown = async () => {
       const supabase = getSupabaseClient();
-      await supabase
+      setReceipt(prev => (prev ? { ...prev, celebration_shown: true } : prev));
+      const { error } = await supabase
         .from('receipts')
         .update({ celebration_shown: true } as any)
         .eq('id', id);
+      if (error) {
+        console.error('[ReceiptDetail] Failed to mark celebration shown:', error);
+      }
     };
 
     if (!initialCheckDoneRef.current) {
@@ -851,7 +864,14 @@ export default function ReceiptDetailScreen() {
     }
 
     wasSettledRef.current = isSettled;
-  }, [id, effectiveStatus, hasReceipt, receiptCelebrationShown, showSettledCelebration]);
+  }, [
+    id,
+    effectiveStatus,
+    hasLoadedClaimsAndParticipants,
+    hasReceipt,
+    receiptCelebrationShown,
+    showSettledCelebration,
+  ]);
 
   const updateItemField = useCallback((key: string, field: keyof EditableItem, value: string) => {
     if (!canEditReceiptFields) return;
