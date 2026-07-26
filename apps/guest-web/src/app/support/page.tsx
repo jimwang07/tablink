@@ -81,6 +81,22 @@ export default function SupportPage() {
             If the issue is about a receipt, include the merchant name and approximate time it was created.
           </p>
         </section>
+
+        <section className="tablink-card">
+          <div className="tablink-card-head">
+            <div className="tablink-overline">Privacy</div>
+            <h2 className="tablink-section-title">Privacy Policy</h2>
+          </div>
+          <p className="tablink-section-body">
+            Read how Tablink collects and uses information for receipt splitting.
+          </p>
+          <div style={{ marginTop: 18 }}>
+            <Link href="/privacy" className="tablink-secondary-button">
+              <span>Privacy Policy</span>
+              <span>View</span>
+            </Link>
+          </div>
+        </section>
       </div>
     </main>
   );

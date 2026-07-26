@@ -1,6 +1,7 @@
 import { useCallback, useMemo, useRef, useState, useEffect } from 'react';
 import {
   Alert,
+  Linking,
   Platform,
   SafeAreaView,
   StyleSheet,
@@ -10,6 +11,7 @@ import {
   Image,
   Animated,
   Easing,
+  ActivityIndicator,
 } from 'react-native';
 import { CameraView, useCameraPermissions} from 'expo-camera';
 import { useIsFocused } from '@react-navigation/native';
@@ -53,8 +55,9 @@ export default function ScanReceiptScreen() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const continueStartRef = useRef<number | null>(null);
   const stageStartedAtRef = useRef<number>(0);
+  const requestedCameraOnEntryRef = useRef(false);
   const [processingStage, setProcessingStage] = useState<ProcessingStage>('upload');
-  const [parseFunction, setParseFunction] = useState<ParseFunctionName>('groq-llama-4-scout');
+  const [parseFunction, setParseFunction] = useState<ParseFunctionName>('gemini');
 
   const { session } = useAuth();
   const { setPendingReceipt } = usePendingReceipt();
@@ -87,31 +90,53 @@ export default function ScanReceiptScreen() {
   const hasPreview = Boolean(lastPhoto || importPreview);
   const isPreviewActive = flowState === 'preview' && hasPreview;
 
-  const requestPermissions = useCallback(async () => {
-    const { status } = await requestCameraPermission();
-    if (status !== 'granted') {
-      Alert.alert(
-        'Camera access needed',
-        'We use your camera to scan receipts. Enable access in Settings to continue.'
-      );
-    }
-  }, [requestCameraPermission]);
+  const openAppSettings = useCallback(() => {
+    Linking.openSettings().catch((error) => {
+      console.warn('[scan] Failed to open settings:', error);
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!isFocused) return;
+    if (requestedCameraOnEntryRef.current) return;
+    if (cameraPermission?.status !== 'undetermined') return;
+
+    requestedCameraOnEntryRef.current = true;
+    void requestCameraPermission();
+  }, [cameraPermission?.status, isFocused, requestCameraPermission]);
+
+  const showPhotoSettingsAlert = useCallback(() => {
+    Alert.alert(
+      'Photo library access is off',
+      'Turn on photo library access in Settings to import a receipt image.',
+      [
+        { text: 'Not Now', style: 'cancel' },
+        { text: 'Open Settings', onPress: openAppSettings },
+      ]
+    );
+  }, [openAppSettings]);
 
   const handleImport = useCallback(async () => {
+    const wasAlreadyDenied = mediaPermission?.status === 'denied';
+
     const ensurePermission = async () => {
-      if (!mediaPermission || mediaPermission.status !== 'granted') {
-        const { status } = await requestMediaPermission();
-        return status === 'granted';
+      if (mediaPermission?.status === 'granted') {
+        return true;
       }
-      return true;
+
+      if (mediaPermission?.status === 'denied') {
+        return false;
+      }
+
+      const { status } = await requestMediaPermission();
+      return status === 'granted';
     };
 
     const permitted = await ensurePermission();
     if (!permitted) {
-      Alert.alert(
-        'Photo library access needed',
-        'Grant access to your photo library to import an existing receipt image.'
-      );
+      if (wasAlreadyDenied) {
+        showPhotoSettingsAlert();
+      }
       return;
     }
 
@@ -127,7 +152,7 @@ export default function ScanReceiptScreen() {
       setLastPhoto(null);
       setFlowState('preview');
     }
-  }, [mediaPermission, requestMediaPermission]);
+  }, [mediaPermission, requestMediaPermission, showPhotoSettingsAlert]);
 
   const cropToGuide = useCallback(async (photo: { uri: string; width: number; height: number }) => {
     const targetAspect = 3 / 4; // width:height to mirror the on-screen guide
@@ -292,28 +317,27 @@ export default function ScanReceiptScreen() {
     setParseFunction(nextFunction);
   }, []);
 
-  if (cameraPermission?.granted === false) {
+  if (cameraPermission?.status === 'denied') {
     return (
       <SafeAreaView style={styles.permissionContainer}>
         <View style={styles.permissionContent}>
           <View style={styles.permissionIconWrap}>
             <Ionicons name="camera-outline" size={24} color={colors.primary} />
           </View>
-          <Text style={styles.permissionTitle}>Enable your camera</Text>
+          <Text style={styles.permissionTitle}>Camera access is off</Text>
           <Text style={styles.permissionBody}>
-            We only use the camera to snap your receipt so we can itemize it for you. You stay in control—no photos are
-            saved to your library.
+            Turn on camera access in Settings to scan a receipt and itemize it for splitting.
           </Text>
           <Pressable
             style={({ pressed }) => [styles.primaryButton, pressed && styles.pressed]}
-            onPress={requestPermissions}
+            onPress={openAppSettings}
           >
-            <Ionicons name="scan-outline" size={16} color="#04110D" />
-            <Text style={styles.primaryButtonText}>Allow camera access</Text>
+            <Ionicons name="settings-outline" size={16} color="#04110D" />
+            <Text style={styles.primaryButtonText}>Open Settings</Text>
             <Ionicons name="arrow-forward" size={16} color="#04110D" />
           </Pressable>
           <Text style={styles.permissionFootnote}>
-            You can change this anytime in Settings.
+            You can also import a receipt image from your photo library.
           </Text>
         </View>
       </SafeAreaView>
@@ -325,12 +349,8 @@ export default function ScanReceiptScreen() {
       <View style={[styles.cameraContainer, { paddingBottom: footerHeight + 16 }]}>
         {!hasCameraPermission ? (
           <View style={styles.permissionLoader}>
-            <Pressable
-              style={({ pressed }) => [styles.permissionLink, pressed && styles.pressed]}
-              onPress={requestPermissions}
-            >
-              <Text style={styles.permissionLinkText}>Tap to enable camera access</Text>
-            </Pressable>
+            <ActivityIndicator size="small" color={colors.primary} />
+            <Text style={styles.permissionLoaderText}>Preparing camera...</Text>
           </View>
         ) : isPreviewActive ? (
           <View style={styles.cameraPlaceholder} />
@@ -512,18 +532,10 @@ const styles = StyleSheet.create({
     backgroundColor: colors.background,
     gap: 16,
   },
-  permissionLink: {
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.05)',
-    backgroundColor: colors.surface,
-  },
-  permissionLinkText: {
-    color: colors.text,
+  permissionLoaderText: {
+    color: colors.textSecondary,
     fontSize: 14,
-    fontWeight: '500',
+    fontWeight: '600',
   },
   overlayContainer: {
     ...StyleSheet.absoluteFillObject,

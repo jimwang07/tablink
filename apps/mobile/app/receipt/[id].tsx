@@ -2457,20 +2457,20 @@ export default function ReceiptDetailScreen() {
                   </Text>
                   <View style={s.coverOptionGrid}>
                     {options.map(option => {
-                      const amount = Math.min(option.amount, maxAmountCents);
+                      const isUnavailable = option.amount <= 0 || option.amount > maxAmountCents;
                       return (
                         <Pressable
                           key={option.label}
                           style={({ pressed }) => [
                             s.coverOptionButton,
-                            amount <= 0 && s.buttonDisabled,
+                            isUnavailable && s.buttonDisabled,
                             pressed && s.pressed,
                           ]}
-                          onPress={() => void handleUpdateAssignedCoverAmount(claim, amount)}
-                          disabled={amount <= 0 || isUpdatingClaim}
+                          onPress={() => void handleUpdateAssignedCoverAmount(claim, option.amount)}
+                          disabled={isUnavailable || isUpdatingClaim}
                         >
                           <Text style={s.coverOptionLabel}>{option.label}</Text>
-                          <Text style={s.coverOptionAmount}>{formatCurrency(amount / 100)}</Text>
+                          <Text style={s.coverOptionAmount}>{formatCurrency(option.amount / 100)}</Text>
                         </Pressable>
                       );
                     })}

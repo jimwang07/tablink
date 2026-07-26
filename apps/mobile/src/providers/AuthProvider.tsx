@@ -99,6 +99,30 @@ export function AuthProvider({ children }: PropsWithChildren) {
   }, [clientReady]);
 
   useEffect(() => {
+    if (Platform.OS !== 'ios') return;
+
+    const subscription = AppleAuthentication.addRevokeListener(() => {
+      const client = clientRef.current;
+      if (!client) return;
+
+      client.auth
+        .signOut({ scope: 'local' })
+        .catch((error) => {
+          if (__DEV__) {
+            console.warn('Failed to clear session after Apple credential revocation', error);
+          }
+        })
+        .finally(() => {
+          setSession(null);
+        });
+    });
+
+    return () => {
+      subscription.remove();
+    };
+  }, []);
+
+  useEffect(() => {
     const client = clientRef.current;
     if (!client) return;
     if (!session?.user?.id) return;
