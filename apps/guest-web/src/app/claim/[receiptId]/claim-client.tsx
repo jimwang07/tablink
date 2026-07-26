@@ -1476,17 +1476,17 @@ export function ClaimPageClient({
                 { label: 'Half', amount: Math.round(coverEditorSelectedValueCents / 2) },
                 { label: 'Full', amount: coverEditorSelectedValueCents },
               ].map((option) => {
-                const amount = Math.min(option.amount, coverEditorMaxCents);
+                const isUnavailable = option.amount <= 0 || option.amount > coverEditorMaxCents;
                 return (
                   <button
                     key={option.label}
                     type="button"
                     className="tablink-cover-option"
-                    onClick={() => handleUpdateCoverAmount(amount)}
-                    disabled={amount <= 0 || claimingItemId === coverEditor.itemId}
+                    onClick={() => handleUpdateCoverAmount(option.amount)}
+                    disabled={isUnavailable || claimingItemId === coverEditor.itemId}
                   >
                     <span>{option.label}</span>
-                    <strong>{formatCents(amount)}</strong>
+                    <strong>{formatCents(option.amount)}</strong>
                   </button>
                 );
               })}

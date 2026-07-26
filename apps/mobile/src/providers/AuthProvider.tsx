@@ -38,6 +38,10 @@ function getQueryParamValue(value: string | string[] | undefined): string | unde
   return typeof value === 'string' ? value : Array.isArray(value) ? value[0] : undefined;
 }
 
+function buildDefaultDisplayName(): string {
+  return 'Host';
+}
+
 export function AuthProvider({ children }: PropsWithChildren) {
   const clientRef = useRef<ReturnType<typeof getSupabaseClient> | null>(null);
   const [clientReady, setClientReady] = useState(false);
@@ -95,13 +99,37 @@ export function AuthProvider({ children }: PropsWithChildren) {
   }, [clientReady]);
 
   useEffect(() => {
+    if (Platform.OS !== 'ios') return;
+
+    const subscription = AppleAuthentication.addRevokeListener(() => {
+      const client = clientRef.current;
+      if (!client) return;
+
+      client.auth
+        .signOut({ scope: 'local' })
+        .catch((error) => {
+          if (__DEV__) {
+            console.warn('Failed to clear session after Apple credential revocation', error);
+          }
+        })
+        .finally(() => {
+          setSession(null);
+        });
+    });
+
+    return () => {
+      subscription.remove();
+    };
+  }, []);
+
+  useEffect(() => {
     const client = clientRef.current;
     if (!client) return;
     if (!session?.user?.id) return;
     if (profileChecked) return;
 
     const userId = session.user.id;
-    const displayName = session.user.user_metadata?.full_name || session.user.email || 'Unknown';
+    const displayName = buildDefaultDisplayName();
     const avatarUrl = session.user.user_metadata?.avatar_url || null;
 
     (async () => {

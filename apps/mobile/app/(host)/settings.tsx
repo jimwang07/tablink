@@ -8,6 +8,9 @@ import {
   KeyboardAvoidingView,
   Platform,
   Pressable,
+  Alert,
+  ActivityIndicator,
+  Linking,
 } from 'react-native';
 import Animated, {
   FadeInDown,
@@ -38,6 +41,8 @@ const PAYMENT_FIELDS: {
   { key: 'cashapp_handle', label: 'Cash App', placeholder: '$cashtag', icon: 'cash-outline' },
   { key: 'paypal_handle', label: 'PayPal', placeholder: 'PayPal.Me username', icon: 'logo-paypal' },
 ];
+
+const TABLINK_BASE_URL = process.env.EXPO_PUBLIC_TABLINK_URL;
 
 /* ── Skeleton ──────────────────────────────────────────────── */
 
@@ -90,14 +95,16 @@ export default function SettingsScreen() {
 
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
+  const [isDeletingAccount, setIsDeletingAccount] = useState(false);
   const [showSaved, setShowSaved] = useState(false);
+  const [displayNameInput, setDisplayNameInput] = useState('');
   const [handles, setHandles] = useState<PaymentHandles>({
     venmo_handle: '',
     cashapp_handle: '',
     paypal_handle: '',
   });
 
-  const displayName = user?.user_metadata?.full_name || user?.email || 'You';
+  const fallbackDisplayName = 'Host';
   const hasLoadedRef = useRef(false);
 
   // Load existing profile
@@ -108,11 +115,12 @@ export default function SettingsScreen() {
       const supabase = getSupabaseClient();
       const { data, error } = await supabase
         .from('user_profiles')
-        .select('venmo_handle, cashapp_handle, paypal_handle')
+        .select('display_name, venmo_handle, cashapp_handle, paypal_handle')
         .eq('user_id', user.id)
         .single();
 
       if (!error && data) {
+        setDisplayNameInput(data.display_name || fallbackDisplayName);
         setHandles({
           venmo_handle: data.venmo_handle || '',
           cashapp_handle: data.cashapp_handle || '',
@@ -124,7 +132,7 @@ export default function SettingsScreen() {
     }
 
     loadProfile();
-  }, [user?.id]);
+  }, [fallbackDisplayName, user?.id]);
 
   const handleSave = useCallback(async () => {
     if (!user?.id) return;
@@ -135,6 +143,7 @@ export default function SettingsScreen() {
     const { error } = await supabase
       .from('user_profiles')
       .update({
+        display_name: displayNameInput.trim() || fallbackDisplayName,
         venmo_handle: handles.venmo_handle.trim() || null,
         cashapp_handle: handles.cashapp_handle.trim() || null,
         paypal_handle: handles.paypal_handle.trim() || null,
@@ -147,11 +156,66 @@ export default function SettingsScreen() {
       setShowSaved(true);
       setTimeout(() => setShowSaved(false), 2000);
     }
-  }, [user?.id, handles]);
+  }, [displayNameInput, fallbackDisplayName, user?.id, handles]);
 
   const updateHandle = useCallback((field: keyof PaymentHandles, value: string) => {
     setHandles(prev => ({ ...prev, [field]: value }));
   }, []);
+
+  const openGuestWebPage = useCallback(async (path: '/privacy' | '/support') => {
+    if (!TABLINK_BASE_URL) {
+      Alert.alert('Link unavailable', 'Missing Tablink URL configuration.');
+      return;
+    }
+
+    try {
+      await Linking.openURL(`${TABLINK_BASE_URL.replace(/\/$/, '')}${path}`);
+    } catch {
+      Alert.alert('Could not open link', 'Please try again.');
+    }
+  }, []);
+
+  const deleteAccount = useCallback(async () => {
+    if (!user?.id || isDeletingAccount) return;
+
+    setIsDeletingAccount(true);
+    const supabase = getSupabaseClient();
+
+    try {
+      const { data, error } = await supabase.functions.invoke<{ success: boolean; error?: string }>(
+        'delete-account',
+        { body: {} }
+      );
+
+      if (error || !data?.success) {
+        throw new Error(error?.message ?? data?.error ?? 'Failed to delete account');
+      }
+
+      await supabase.auth.signOut({ scope: 'local' });
+      Alert.alert('Account deleted', 'Your Tablink account has been permanently deleted.');
+    } catch (error) {
+      Alert.alert(
+        'Could not delete account',
+        error instanceof Error ? error.message : 'Please try again.'
+      );
+      setIsDeletingAccount(false);
+    }
+  }, [isDeletingAccount, user?.id]);
+
+  const confirmDeleteAccount = useCallback(() => {
+    Alert.alert(
+      'Delete account?',
+      'This permanently deletes your account, saved receipts, payment info, receipt photos, and shared links. This cannot be undone.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete Account',
+          style: 'destructive',
+          onPress: deleteAccount,
+        },
+      ]
+    );
+  }, [deleteAccount]);
 
   return (
     <KeyboardAvoidingView
@@ -181,24 +245,37 @@ export default function SettingsScreen() {
             {/* Account section */}
             <Animated.View entering={FadeInDown.duration(400)} style={s.section}>
               <Text style={s.sectionLabel}>ACCOUNT</Text>
-              <View style={s.accountRow}>
-                <View style={s.avatarCircle}>
-                  <Text style={s.avatarText}>
-                    {displayName.charAt(0).toUpperCase()}
-                  </Text>
+              <Text style={s.sectionDescription}>
+                Choose the name guests see when they open your Tablink.
+              </Text>
+              <View style={s.inputGroup}>
+                <View style={[s.inputRow, user?.email && s.inputRowBorder]}>
+                  <Text style={s.inputLabel}>Name</Text>
+                  <TextInput
+                    style={s.input}
+                    value={displayNameInput}
+                    onChangeText={setDisplayNameInput}
+                    placeholder="Host"
+                    placeholderTextColor={colors.muted}
+                    autoCapitalize="words"
+                    autoCorrect={false}
+                    returnKeyType="done"
+                  />
                 </View>
-                <View style={s.accountInfo}>
-                  <Text style={s.accountName}>{displayName}</Text>
-                  {user?.email && displayName !== user.email && (
-                    <Text style={s.accountEmail}>{user.email}</Text>
-                  )}
-                </View>
+                {user?.email ? (
+                  <View style={[s.inputRow, s.readOnlyRow]}>
+                    <Text style={[s.inputLabel, s.readOnlyLabel]}>Email</Text>
+                    <Text style={s.readOnlyValue} numberOfLines={1}>
+                      {user.email}
+                    </Text>
+                  </View>
+                ) : null}
               </View>
             </Animated.View>
 
             {/* Payment methods section */}
             <Animated.View entering={FadeInDown.delay(100).duration(400)} style={s.section}>
-              <Text style={s.sectionLabel}>PAYMENT METHODS</Text>
+              <Text style={s.sectionLabel}>PAYMENT INFO</Text>
               <Text style={s.sectionDescription}>
                 Add your payment handles so guests can easily pay you after splitting a receipt.
               </Text>
@@ -249,16 +326,69 @@ export default function SettingsScreen() {
               </Pressable>
             </Animated.View>
 
-            {/* Sign out */}
+            {/* Legal and support */}
             <Animated.View entering={FadeInDown.delay(200).duration(400)} style={s.section}>
+              <Text style={s.sectionLabel}>LEGAL & SUPPORT</Text>
+              <View style={s.linkGroup}>
+                <Pressable
+                  style={({ pressed }) => [s.linkRow, s.inputRowBorder, pressed && s.pressed]}
+                  onPress={() => openGuestWebPage('/privacy')}
+                >
+                  <View style={s.linkLabelRow}>
+                    <Ionicons name="shield-checkmark-outline" size={18} color={colors.textSecondary} />
+                    <Text style={s.linkLabel}>Privacy Policy</Text>
+                  </View>
+                  <Ionicons name="open-outline" size={18} color={colors.muted} />
+                </Pressable>
+                <Pressable
+                  style={({ pressed }) => [s.linkRow, pressed && s.pressed]}
+                  onPress={() => openGuestWebPage('/support')}
+                >
+                  <View style={s.linkLabelRow}>
+                    <Ionicons name="help-circle-outline" size={18} color={colors.textSecondary} />
+                    <Text style={s.linkLabel}>Support</Text>
+                  </View>
+                  <Ionicons name="open-outline" size={18} color={colors.muted} />
+                </Pressable>
+              </View>
+            </Animated.View>
+
+            {/* Sign out */}
+            <Animated.View entering={FadeInDown.delay(300).duration(400)} style={s.section}>
               <Pressable
                 style={({ pressed }) => [s.signOutButton, pressed && s.pressed]}
                 onPress={signOut}
-                disabled={isAuthenticating}
+                disabled={isAuthenticating || isDeletingAccount}
               >
                 <Ionicons name="log-out-outline" size={18} color={colors.danger} />
                 <Text style={s.signOutText}>
                   {isAuthenticating ? 'Signing out...' : 'Sign Out'}
+                </Text>
+              </Pressable>
+            </Animated.View>
+
+            {/* Delete account */}
+            <Animated.View entering={FadeInDown.delay(350).duration(400)} style={s.section}>
+              <Text style={s.sectionLabel}>DELETE ACCOUNT</Text>
+              <Text style={s.sectionDescription}>
+                Permanently delete your account, saved receipts, payment info, and shared links.
+              </Text>
+              <Pressable
+                style={({ pressed }) => [
+                  s.deleteButton,
+                  isDeletingAccount && s.buttonDisabled,
+                  pressed && s.pressed,
+                ]}
+                onPress={confirmDeleteAccount}
+                disabled={isDeletingAccount}
+              >
+                {isDeletingAccount ? (
+                  <ActivityIndicator size="small" color={colors.danger} />
+                ) : (
+                  <Ionicons name="trash-outline" size={18} color={colors.danger} />
+                )}
+                <Text style={s.deleteText}>
+                  {isDeletingAccount ? 'Deleting account...' : 'Delete Account'}
                 </Text>
               </Pressable>
             </Animated.View>
@@ -333,40 +463,6 @@ const s = StyleSheet.create({
     lineHeight: 20,
   },
 
-  /* Account */
-  accountRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 14,
-    paddingVertical: 4,
-  },
-  avatarCircle: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: 'rgba(52, 211, 153, 0.12)',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  avatarText: {
-    color: colors.primary,
-    fontSize: 18,
-    fontWeight: '700',
-  },
-  accountInfo: {
-    flex: 1,
-  },
-  accountName: {
-    color: colors.text,
-    fontSize: 16,
-    fontWeight: '600',
-  },
-  accountEmail: {
-    color: colors.muted,
-    fontSize: 13,
-    marginTop: 2,
-  },
-
   /* Input group */
   inputGroup: {
     backgroundColor: colors.surface,
@@ -397,6 +493,45 @@ const s = StyleSheet.create({
     fontSize: 15,
     paddingVertical: 0,
     textAlign: 'right',
+  },
+  readOnlyRow: {
+    backgroundColor: 'rgba(255, 255, 255, 0.018)',
+  },
+  readOnlyLabel: {
+    color: colors.muted,
+  },
+  readOnlyValue: {
+    flex: 1,
+    color: colors.textSecondary,
+    fontSize: 14,
+    fontWeight: '500',
+    textAlign: 'right',
+  },
+  linkGroup: {
+    backgroundColor: colors.surface,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.05)',
+    overflow: 'hidden',
+  },
+  linkRow: {
+    minHeight: 50,
+    paddingHorizontal: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  linkLabelRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    flexShrink: 1,
+  },
+  linkLabel: {
+    color: colors.text,
+    fontSize: 15,
+    fontWeight: '600',
   },
 
   /* Save button */
@@ -441,6 +576,22 @@ const s = StyleSheet.create({
     color: colors.danger,
     fontSize: 15,
     fontWeight: '600',
+  },
+  deleteButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 14,
+    borderRadius: 12,
+    backgroundColor: 'rgba(255, 69, 58, 0.08)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 69, 58, 0.24)',
+  },
+  deleteText: {
+    color: colors.danger,
+    fontSize: 15,
+    fontWeight: '700',
   },
 
   /* Skeleton */

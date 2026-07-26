@@ -602,7 +602,7 @@ export default function ReceiptReviewScreen() {
             {imageUri ? (
               <Image
                 source={{ uri: imageUri }}
-                resizeMode="cover"
+                resizeMode="contain"
                 style={s.modalImage}
               />
             ) : null}
@@ -993,7 +993,7 @@ const s = StyleSheet.create({
     width: '100%',
     flex: 1,
     borderRadius: 12,
-    backgroundColor: colors.surfaceBorder,
+    backgroundColor: 'transparent',
     overflow: 'hidden',
   },
   modalCloseButton: {

@@ -55,6 +55,10 @@ type ItemClaim = {
   amount_cents: number;
 };
 
+type AssignmentDraftClaim = Omit<ItemClaim, 'id'> & {
+  id?: string;
+};
+
 type Participant = {
   id: string;
   display_name: string;
@@ -188,6 +192,10 @@ function buildSmsUrl(phone: string, message: string) {
   return `sms:${phone}${separator}body=${encodeURIComponent(message)}`;
 }
 
+function isClaimLockedParticipant(participant?: Participant): boolean {
+  return participant?.payment_status === 'paid' && participant.role !== 'owner';
+}
+
 function formatQuantity(value: number) {
   return Number.isInteger(value) ? String(value) : value.toFixed(2).replace(/\.?0+$/, '');
 }
@@ -201,6 +209,33 @@ function formatDate(dateString: string | null): string {
     day: 'numeric',
     year: 'numeric',
   });
+}
+
+function areItemsFullyClaimed(items: EditableItem[], claims: ItemClaim[]): boolean {
+  if (items.length === 0) return false;
+
+  return items.every((item) => {
+    const itemPriceCents = dollarsToCents(parseCurrencyInput(item.price));
+    const claimedAmountCents = claims
+      .filter((claim) => claim.item_id === item.key)
+      .reduce((sum, claim) => sum + claim.amount_cents, 0);
+
+    return itemPriceCents > 0 && claimedAmountCents >= itemPriceCents;
+  });
+}
+
+function areItemsFullySettled(
+  items: EditableItem[],
+  claims: ItemClaim[],
+  participants: Participant[]
+): boolean {
+  if (!areItemsFullyClaimed(items, claims)) return false;
+
+  const paidParticipants = new Set(
+    participants.filter((participant) => participant.payment_status === 'paid').map((participant) => participant.id)
+  );
+
+  return claims.every((claim) => paidParticipants.has(claim.participant_id));
 }
 
 function buildEditableItems(items: ReceiptItem[]): EditableItem[] {
@@ -403,6 +438,7 @@ export default function ReceiptDetailScreen() {
   // Claims and participants for realtime updates
   const [claims, setClaims] = useState<ItemClaim[]>([]);
   const [participants, setParticipants] = useState<Participant[]>([]);
+  const [hasLoadedClaimsAndParticipants, setHasLoadedClaimsAndParticipants] = useState(false);
 
   // Add participant form
   const [newParticipantName, setNewParticipantName] = useState('');
@@ -411,7 +447,8 @@ export default function ReceiptDetailScreen() {
   // Item assignment modal
   const [assigningItem, setAssigningItem] = useState<EditableItem | null>(null);
   const [isUpdatingClaim, setIsUpdatingClaim] = useState(false);
-  const [assignedCoverEditor, setAssignedCoverEditor] = useState<{ item: EditableItem; claimId: string } | null>(null);
+  const [assignmentDraftClaims, setAssignmentDraftClaims] = useState<AssignmentDraftClaim[]>([]);
+  const [assignedCoverEditor, setAssignedCoverEditor] = useState<{ item: EditableItem; participantId: string } | null>(null);
   const [customAssignedCoverInput, setCustomAssignedCoverInput] = useState('');
 
   // Confetti celebration for settled receipts
@@ -424,6 +461,12 @@ export default function ReceiptDetailScreen() {
   const closeAssignmentModal = useCallback(() => {
     setAssignedCoverEditor(null);
     setAssigningItem(null);
+    setAssignmentDraftClaims([]);
+  }, []);
+
+  const showSettledCelebration = useCallback(() => {
+    setShowConfetti(true);
+    setShowSettledModal(true);
   }, []);
 
   // Check if user has payment methods set up
@@ -492,13 +535,20 @@ export default function ReceiptDetailScreen() {
     load();
   }, [id]);
 
+  const receiptItemIdsKey = useMemo(
+    () => receipt?.items.map(item => item.id).join('|') ?? '',
+    [receipt?.items]
+  );
+  const hasReceipt = Boolean(receipt);
+
   // Load claims and participants, and subscribe to realtime updates
   useEffect(() => {
-    if (!id || !receipt) return;
+    if (!id || !hasReceipt) return;
 
     const supabase = getSupabaseClient();
-    const itemIds = receipt.items.map(i => i.id);
+    const itemIds = receiptItemIdsKey ? receiptItemIdsKey.split('|') : [];
     const itemIdSet = new Set(itemIds);
+    setHasLoadedClaimsAndParticipants(false);
 
     async function refreshReceiptRealtimeState() {
       const receiptResult = await fetchReceipt(id);
@@ -531,6 +581,7 @@ export default function ReceiptDetailScreen() {
         .select('id, display_name, emoji, color_token, role, payment_status, paid_at, payment_method, payment_amount_cents, phone')
         .eq('receipt_id', id);
       if (participantsData) setParticipants(participantsData);
+      setHasLoadedClaimsAndParticipants(true);
     }
 
     async function fetchClaimsAndParticipants() {
@@ -547,6 +598,7 @@ export default function ReceiptDetailScreen() {
         .select('id, display_name, emoji, color_token, role, payment_status, paid_at, payment_method, payment_amount_cents, phone')
         .eq('receipt_id', id);
       if (participantsData) setParticipants(participantsData);
+      setHasLoadedClaimsAndParticipants(true);
     }
 
     fetchClaimsAndParticipants();
@@ -661,7 +713,7 @@ export default function ReceiptDetailScreen() {
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [id, receipt]);
+  }, [id, hasReceipt, receiptItemIdsKey]);
 
   const getItemClaimers = useCallback((itemKey: string) => {
     const itemClaims = claims.filter(c => c.item_id === itemKey);
@@ -762,65 +814,64 @@ export default function ReceiptDetailScreen() {
 
   const effectiveStatus = useMemo((): ReceiptStatus => {
     if (!receipt) return 'draft';
-    if (receipt.status === 'settled') return 'settled';
     if (receipt.status === 'draft') return 'draft';
 
-    const itemKeys = editableItems.map(item => item.key);
-    if (itemKeys.length > 0 && claims.length > 0 && participants.length > 0) {
-      const allItemsClaimed = itemKeys.every(key => claims.some(c => c.item_id === key));
-      if (!allItemsClaimed) {
-        return receipt.status as ReceiptStatus;
-      }
+    if (areItemsFullySettled(editableItems, claims, participants)) {
+      return 'settled';
+    }
 
-      const paidParticipants = new Set(
-        participants.filter(p => p.payment_status === 'paid').map(p => p.id)
-      );
-
-      const allClaimsPaid = claims.every(c => paidParticipants.has(c.participant_id));
-
-      if (allClaimsPaid) {
-        return 'settled';
-      }
+    if (receipt.status === 'settled') {
+      return areItemsFullyClaimed(editableItems, claims) ? 'fully_claimed' : 'partially_claimed';
     }
 
     return receipt.status as ReceiptStatus;
   }, [receipt, claims, participants, editableItems]);
+  const receiptCelebrationShown = receipt?.celebration_shown;
 
   // Trigger confetti when receipt becomes settled
   useEffect(() => {
-    if (!id || !receipt) return;
+    if (!id || !hasReceipt || !hasLoadedClaimsAndParticipants) return;
 
     const isSettled = effectiveStatus === 'settled';
 
     const markCelebrationShown = async () => {
       const supabase = getSupabaseClient();
-      await supabase
+      setReceipt(prev => (prev ? { ...prev, celebration_shown: true } : prev));
+      const { error } = await supabase
         .from('receipts')
         .update({ celebration_shown: true } as any)
         .eq('id', id);
+      if (error) {
+        console.error('[ReceiptDetail] Failed to mark celebration shown:', error);
+      }
     };
 
     if (!initialCheckDoneRef.current) {
       initialCheckDoneRef.current = true;
       wasSettledRef.current = isSettled;
 
-      if (isSettled && receipt.celebration_shown !== true) {
-        setShowConfetti(true);
-        setShowSettledModal(true);
+      if (isSettled && receiptCelebrationShown !== true) {
+        showSettledCelebration();
         markCelebrationShown();
       }
       return;
     }
 
-    if (isSettled && !wasSettledRef.current && receipt.celebration_shown !== true) {
+    if (isSettled && !wasSettledRef.current) {
       wasSettledRef.current = true;
-      setShowConfetti(true);
-      setShowSettledModal(true);
+      showSettledCelebration();
       markCelebrationShown();
     }
 
     wasSettledRef.current = isSettled;
-  }, [id, effectiveStatus, receipt]);
+  }, [
+    id,
+    effectiveStatus,
+    hasLoadedClaimsAndParticipants,
+    hasReceipt,
+    receiptCelebrationShown,
+    showSettledCelebration,
+  ]);
 
   const updateItemField = useCallback((key: string, field: keyof EditableItem, value: string) => {
     if (!canEditReceiptFields) return;
@@ -1133,11 +1184,11 @@ export default function ReceiptDetailScreen() {
       }
 
       const tablinkUrl = `${TABLINK_BASE_URL}/claim/${linkResult.shortCode}`;
-      const merchant = receipt.merchant_name ? ` for ${receipt.merchant_name}` : '';
+      const merchant = receipt.merchant_name || 'the receipt';
       const message =
         reminderKind === 'payment'
-          ? `Hi ${participant.display_name}, friendly reminder that your Tablink balance${merchant} is ${formatCurrency(amountCents / 100)}. You can review it and mark it paid here: ${tablinkUrl}`
-          : `Hi ${participant.display_name}, can you claim your items on our Tablink receipt${merchant}? Open this link and pick what you ordered: ${tablinkUrl}`;
+          ? `Hey ${participant.display_name}, quick reminder you owe ${formatCurrency(amountCents / 100)} for ${merchant}: ${tablinkUrl}`
+          : `Hey ${participant.display_name}, can you claim your items for ${merchant}? ${tablinkUrl}`;
 
       const smsPhone = normalizePhoneForSms(participant.phone);
       if (smsPhone) {
@@ -1311,37 +1362,26 @@ export default function ReceiptDetailScreen() {
     );
   }, [participants, claims]);
 
-  const handleToggleClaim = useCallback(async (participantId: string) => {
+  const handleToggleClaim = useCallback((participantId: string) => {
     if (!assigningItem || isUpdatingClaim) return;
 
     const itemKey = assigningItem.key;
     const itemPrice = dollarsToCents(parseCurrencyInput(assigningItem.price));
     const itemQuantity = parseQuantityInput(assigningItem.quantity);
-    const existingClaim = claims.find(
-      c => c.item_id === itemKey && c.participant_id === participantId
-    );
     const participant = participants.find(p => p.id === participantId);
 
-    if (participant?.payment_status === 'paid') {
-      Alert.alert('Already Paid', `${participant.display_name} has already paid, so their claims cannot be changed.`);
+    if (isClaimLockedParticipant(participant)) {
+      Alert.alert('Already Paid', `${participant?.display_name ?? 'This participant'} has already paid, so their claims cannot be changed.`);
       return;
     }
 
-    setIsUpdatingClaim(true);
-    try {
-      const supabase = getSupabaseClient();
+    setAssignmentDraftClaims(current => {
+      const currentClaim = current.find(c => c.participant_id === participantId);
+      if (currentClaim) {
+        return current.filter(c => c.participant_id !== participantId);
+      }
 
-      if (existingClaim) {
-        const { error: deleteError } = await supabase
-          .from('item_claims')
-          .delete()
-          .eq('id', existingClaim.id);
-
-        if (deleteError) throw deleteError;
-
-        setClaims(prev => prev.filter(c => c.id !== existingClaim.id));
-      } else {
-        const itemClaims = claims.filter(c => c.item_id === itemKey);
+      const itemClaims = current;
         const claimedPortion = itemClaims.reduce((sum, claim) => sum + Number(claim.portion || 0), 0);
         const claimedAmountCents = itemClaims.reduce((sum, claim) => sum + claim.amount_cents, 0);
         const remainingPortion = Math.max(0, itemQuantity - claimedPortion);
@@ -1358,114 +1398,79 @@ export default function ReceiptDetailScreen() {
 
         if (defaultAmountCents <= 0 || defaultPortion <= 0) {
           Alert.alert('Fully Claimed', 'This item has already been fully claimed.');
-          return;
+          return current;
         }
 
-        const { data, error: insertError } = await supabase
-          .from('item_claims')
-          .insert({
-            item_id: itemKey,
-            participant_id: participantId,
-            portion: defaultPortion,
-            amount_cents: defaultAmountCents,
-          })
-          .select()
-          .single();
+      return [
+        ...current,
+        {
+          item_id: itemKey,
+          participant_id: participantId,
+          portion: defaultPortion,
+          amount_cents: defaultAmountCents,
+        },
+      ];
+    });
+  }, [assigningItem, isUpdatingClaim, participants]);
 
-        if (insertError) throw insertError;
-
-        setClaims(prev => [...prev, data]);
-      }
-    } catch (err) {
-      console.error('[ReceiptDetail] Failed to update claim:', err);
-      Alert.alert('Error', 'Failed to update assignment');
-    } finally {
-      setIsUpdatingClaim(false);
-    }
-  }, [assigningItem, claims, isUpdatingClaim, participants]);
-
-  const handleAdjustAssignedClaimPortion = useCallback(async (claim: ItemClaim, nextPortion: number) => {
+  const handleAdjustAssignedClaimPortion = useCallback((claim: AssignmentDraftClaim, nextPortion: number) => {
     if (!assigningItem || isUpdatingClaim) return;
 
     const participant = participants.find(p => p.id === claim.participant_id);
-    if (participant?.payment_status === 'paid') {
-      Alert.alert('Already Paid', `${participant.display_name} has already paid, so their claims cannot be changed.`);
+    if (isClaimLockedParticipant(participant)) {
+      Alert.alert('Already Paid', `${participant?.display_name ?? 'This participant'} has already paid, so their claims cannot be changed.`);
       return;
     }
 
     const itemPrice = dollarsToCents(parseCurrencyInput(assigningItem.price));
     const itemQuantity = parseQuantityInput(assigningItem.quantity);
-    const claimedByOthers = claims
-      .filter(c => c.item_id === assigningItem.key && c.id !== claim.id)
+    const claimedByOthers = assignmentDraftClaims
+      .filter(c => c.participant_id !== claim.participant_id)
       .reduce((sum, itemClaim) => sum + Number(itemClaim.portion || 0), 0);
     const maxPortion = Math.max(0, itemQuantity - claimedByOthers);
     const clampedPortion = Math.min(Math.max(0, nextPortion), maxPortion);
 
-    setIsUpdatingClaim(true);
-    try {
-      const supabase = getSupabaseClient();
-
+    setAssignmentDraftClaims(current => {
       if (clampedPortion <= 0) {
-        const { error: deleteError } = await supabase
-          .from('item_claims')
-          .delete()
-          .eq('id', claim.id);
-
-        if (deleteError) throw deleteError;
-        setClaims(prev => prev.filter(existingClaim => existingClaim.id !== claim.id));
-        return;
+        return current.filter(existingClaim => existingClaim.participant_id !== claim.participant_id);
       }
 
       const amountCents = calculateClaimAmountCents(itemPrice, itemQuantity, clampedPortion);
-      const { error: updateError } = await supabase
-        .from('item_claims')
-        .update({ portion: clampedPortion, amount_cents: amountCents })
-        .eq('id', claim.id);
-
-      if (updateError) throw updateError;
-
-      setClaims(prev =>
-        prev.map(existingClaim =>
-          existingClaim.id === claim.id
-            ? { ...existingClaim, portion: clampedPortion, amount_cents: amountCents }
-            : existingClaim
-        )
+      return current.map(existingClaim =>
+        existingClaim.participant_id === claim.participant_id
+          ? { ...existingClaim, portion: clampedPortion, amount_cents: amountCents }
+          : existingClaim
       );
-    } catch (err) {
-      console.error('[ReceiptDetail] Failed to adjust claim:', err);
-      Alert.alert('Error', 'Failed to update assignment');
-    } finally {
-      setIsUpdatingClaim(false);
-    }
-  }, [assigningItem, claims, isUpdatingClaim, participants]);
+    });
+  }, [assigningItem, assignmentDraftClaims, isUpdatingClaim, participants]);
 
-  const handleOpenAssignedCoverEditor = useCallback((claim: ItemClaim) => {
+  const handleOpenAssignedCoverEditor = useCallback((claim: AssignmentDraftClaim) => {
     const participant = participants.find(p => p.id === claim.participant_id);
-    if (participant?.payment_status === 'paid') {
-      Alert.alert('Already Paid', `${participant.display_name} has already paid, so their claims cannot be changed.`);
+    if (isClaimLockedParticipant(participant)) {
+      Alert.alert('Already Paid', `${participant?.display_name ?? 'This participant'} has already paid, so their claims cannot be changed.`);
       return;
     }
 
     Keyboard.dismiss();
     if (assigningItem) {
-      setAssignedCoverEditor({ item: assigningItem, claimId: claim.id });
+      setAssignedCoverEditor({ item: assigningItem, participantId: claim.participant_id });
     }
     setCustomAssignedCoverInput((claim.amount_cents / 100).toFixed(2));
   }, [assigningItem, participants]);
 
-  const handleUpdateAssignedCoverAmount = useCallback(async (claim: ItemClaim, amountCents: number) => {
+  const handleUpdateAssignedCoverAmount = useCallback((claim: AssignmentDraftClaim, amountCents: number) => {
     const editorItem = assignedCoverEditor?.item;
     if (!editorItem || isUpdatingClaim) return;
 
     const participant = participants.find(p => p.id === claim.participant_id);
-    if (participant?.payment_status === 'paid') {
-      Alert.alert('Already Paid', `${participant.display_name} has already paid, so their claims cannot be changed.`);
+    if (isClaimLockedParticipant(participant)) {
+      Alert.alert('Already Paid', `${participant?.display_name ?? 'This participant'} has already paid, so their claims cannot be changed.`);
       return;
     }
 
     const itemPrice = dollarsToCents(parseCurrencyInput(editorItem.price));
-    const otherClaimedAmount = claims
-      .filter(c => c.item_id === editorItem.key && c.id !== claim.id)
+    const otherClaimedAmount = assignmentDraftClaims
+      .filter(c => c.participant_id !== claim.participant_id)
       .reduce((sum, itemClaim) => sum + itemClaim.amount_cents, 0);
     const maxAmountCents = Math.max(0, itemPrice - otherClaimedAmount);
     const nextAmountCents = Math.min(Math.max(1, Math.round(amountCents)), maxAmountCents);
@@ -1475,34 +1480,18 @@ export default function ReceiptDetailScreen() {
       return;
     }
 
-    setIsUpdatingClaim(true);
-    try {
-      const supabase = getSupabaseClient();
-      const { error: updateError } = await supabase
-        .from('item_claims')
-        .update({ amount_cents: nextAmountCents })
-        .eq('id', claim.id);
-
-      if (updateError) throw updateError;
-
-      setClaims(prev =>
-        prev.map(existingClaim =>
-          existingClaim.id === claim.id
-            ? { ...existingClaim, amount_cents: nextAmountCents }
-            : existingClaim
-        )
-      );
-      setAssignedCoverEditor(null);
-    } catch (err) {
-      console.error('[ReceiptDetail] Failed to update cover amount:', err);
-      Alert.alert('Error', 'Failed to update covered amount');
-    } finally {
-      setIsUpdatingClaim(false);
-    }
-  }, [assignedCoverEditor?.item, claims, isUpdatingClaim, participants]);
+    setAssignmentDraftClaims(current =>
+      current.map(existingClaim =>
+        existingClaim.participant_id === claim.participant_id
+          ? { ...existingClaim, amount_cents: nextAmountCents }
+          : existingClaim
+      )
+    );
+    setAssignedCoverEditor(null);
+  }, [assignedCoverEditor?.item, assignmentDraftClaims, isUpdatingClaim, participants]);
 
   const handleApplyCustomAssignedCoverAmount = useCallback(() => {
-    const claim = claims.find(itemClaim => itemClaim.id === assignedCoverEditor?.claimId);
+    const claim = assignmentDraftClaims.find(itemClaim => itemClaim.participant_id === assignedCoverEditor?.participantId);
     if (!claim) return;
 
     const parsedAmount = parseCurrencyInput(customAssignedCoverInput);
@@ -1512,12 +1501,137 @@ export default function ReceiptDetailScreen() {
     }
 
     void handleUpdateAssignedCoverAmount(claim, dollarsToCents(parsedAmount));
-  }, [assignedCoverEditor?.claimId, claims, customAssignedCoverInput, handleUpdateAssignedCoverAmount]);
+  }, [assignedCoverEditor?.participantId, assignmentDraftClaims, customAssignedCoverInput, handleUpdateAssignedCoverAmount]);
 
   const handleItemLongPress = useCallback((item: EditableItem) => {
     Keyboard.dismiss();
     setAssigningItem(item);
-  }, []);
+    setAssignmentDraftClaims(
+      claims
+        .filter(claim => claim.item_id === item.key)
+        .map(claim => ({ ...claim }))
+    );
+  }, [claims]);
+
+  const handleAssignDraftClaims = useCallback(async () => {
+    if (!assigningItem || isUpdatingClaim) return;
+
+    const itemKey = assigningItem.key;
+    const originalClaims = claims.filter(claim => claim.item_id === itemKey);
+    const draftClaims = assignmentDraftClaims.filter(
+      claim => claim.amount_cents > 0 && Number(claim.portion || 0) > 0
+    );
+
+    const findParticipant = (participantId: string) =>
+      participants.find(participant => participant.id === participantId);
+
+    const originalByParticipant = new Map(
+      originalClaims.map(claim => [claim.participant_id, claim])
+    );
+    const draftByParticipant = new Map(
+      draftClaims.map(claim => [claim.participant_id, claim])
+    );
+
+    const claimsToDelete = originalClaims.filter((claim) => {
+      const participant = findParticipant(claim.participant_id);
+      return !draftByParticipant.has(claim.participant_id) && !isClaimLockedParticipant(participant);
+    });
+
+    const claimsToUpdate = draftClaims.filter((draftClaim) => {
+      const originalClaim = originalByParticipant.get(draftClaim.participant_id);
+      if (!originalClaim?.id) return false;
+      return (
+        Math.abs(Number(originalClaim.portion || 0) - Number(draftClaim.portion || 0)) > 0.0001 ||
+        originalClaim.amount_cents !== draftClaim.amount_cents
+      );
+    });
+
+    const claimsToInsert = draftClaims.filter(
+      draftClaim => !originalByParticipant.has(draftClaim.participant_id)
+    );
+
+    if (claimsToDelete.length === 0 && claimsToUpdate.length === 0 && claimsToInsert.length === 0) {
+      closeAssignmentModal();
+      return;
+    }
+
+    setIsUpdatingClaim(true);
+    try {
+      const supabase = getSupabaseClient();
+
+      if (claimsToDelete.length > 0) {
+        const { error } = await supabase
+          .from('item_claims')
+          .delete()
+          .in('id', claimsToDelete.map(claim => claim.id));
+        if (error) throw error;
+      }
+
+      for (const claim of claimsToUpdate) {
+        if (!claim.id) continue;
+        const { error } = await supabase
+          .from('item_claims')
+          .update({
+            portion: claim.portion,
+            amount_cents: claim.amount_cents,
+          })
+          .eq('id', claim.id);
+        if (error) throw error;
+      }
+
+      let insertedClaims: ItemClaim[] = [];
+      if (claimsToInsert.length > 0) {
+        const { data, error } = await supabase
+          .from('item_claims')
+          .insert(
+            claimsToInsert.map(claim => ({
+              item_id: itemKey,
+              participant_id: claim.participant_id,
+              portion: claim.portion,
+              amount_cents: claim.amount_cents,
+            }))
+          )
+          .select('id, item_id, participant_id, portion, amount_cents');
+        if (error) throw error;
+        insertedClaims = data ?? [];
+      }
+
+      const nextItemClaims: ItemClaim[] = [
+        ...originalClaims.filter((claim) => {
+          const participant = findParticipant(claim.participant_id);
+          return !draftByParticipant.has(claim.participant_id) && isClaimLockedParticipant(participant);
+        }),
+        ...draftClaims
+          .filter((claim): claim is ItemClaim => Boolean(claim.id))
+          .map(claim => ({
+            id: claim.id,
+            item_id: itemKey,
+            participant_id: claim.participant_id,
+            portion: claim.portion,
+            amount_cents: claim.amount_cents,
+          })),
+        ...insertedClaims,
+      ];
+
+      closeAssignmentModal();
+      setClaims(current => [
+        ...current.filter(claim => claim.item_id !== itemKey),
+        ...nextItemClaims,
+      ]);
+    } catch (err) {
+      console.error('[ReceiptDetail] Failed to assign item:', err);
+      Alert.alert('Error', 'Failed to assign item');
+    } finally {
+      setIsUpdatingClaim(false);
+    }
+  }, [
+    assigningItem,
+    assignmentDraftClaims,
+    claims,
+    closeAssignmentModal,
+    isUpdatingClaim,
+    participants,
+  ]);
 
   /* ── Render ──────────────────────────────────────────────── */
 
@@ -1711,10 +1825,14 @@ export default function ReceiptDetailScreen() {
                                 const claimer = participants.find(p => p.id === claim.participant_id);
                                 if (!claimer) return null;
                                 const quantity = parseQuantityInput(item.quantity);
+                                const claimerIsPaid = claimer.payment_status === 'paid';
                                 return (
                                   <View
                                     key={claim.id}
-                                    style={[s.claimerBadge, { borderLeftColor: claimer.color_token ?? colors.primary }]}
+                                    style={[
+                                      s.claimerBadge,
+                                      claimerIsPaid ? s.claimerBadgePaid : s.claimerBadgeClaimed,
+                                    ]}
                                   >
                                     <Text style={s.claimerEmoji}>{claimer.emoji}</Text>
                                     <Text style={s.claimerName}>{claimer.display_name}</Text>
@@ -1722,7 +1840,7 @@ export default function ReceiptDetailScreen() {
                                       <Text style={s.claimerMeta}>×{formatQuantity(Number(claim.portion || 0))}</Text>
                                     ) : null}
                                     <Text style={s.claimerMeta}>{formatCurrency(claim.amount_cents / 100)}</Text>
-                                    {claimer.payment_status === 'paid' && (
+                                    {claimerIsPaid && (
                                       <Ionicons name="checkmark" size={12} color={colors.primary} />
                                     )}
                                   </View>
@@ -2012,7 +2130,7 @@ export default function ReceiptDetailScreen() {
             ) : (
               <>
                 <Ionicons name="share-outline" size={16} color="#04110D" />
-                <Text style={s.shareButtonText}>Share Tablink</Text>
+                <Text style={s.shareButtonText}>Share</Text>
                 <Ionicons name="arrow-forward" size={16} color="#04110D" />
               </>
             )}
@@ -2065,7 +2183,7 @@ export default function ReceiptDetailScreen() {
         tablinkUrl={shareSheetUrl}
         merchantName={receipt.merchant_name}
         onClose={() => setShareSheetUrl(null)}
-        onShared={() => {
+        onDone={() => {
           console.log('[ReceiptDetail] Shared successfully');
           setShareSheetUrl(null);
         }}
@@ -2083,7 +2201,7 @@ export default function ReceiptDetailScreen() {
             {imageUrl && (
               <Image
                 source={{ uri: imageUrl }}
-                resizeMode="cover"
+                resizeMode="contain"
                 style={s.modalImage}
               />
             )}
@@ -2125,8 +2243,10 @@ export default function ReceiptDetailScreen() {
             </View>
 
             {(() => {
-              const itemClaimers = assigningItem ? getItemClaimers(assigningItem.key) : [];
-              const assignedClaims = assigningItem ? claims.filter(claim => claim.item_id === assigningItem.key) : [];
+              const assignedClaims = assignmentDraftClaims;
+              const itemClaimers = assignedClaims
+                .map(claim => participants.find(participant => participant.id === claim.participant_id))
+                .filter((participant): participant is Participant => Boolean(participant));
               const assignedItemPriceCents = assigningItem
                 ? dollarsToCents(parseCurrencyInput(assigningItem.price))
                 : 0;
@@ -2135,7 +2255,7 @@ export default function ReceiptDetailScreen() {
                 assignedItemPriceCents > 0 &&
                 assignedClaimedAmountCents >= assignedItemPriceCents &&
                 itemClaimers.length > 0 &&
-                itemClaimers.every(c => c.payment_status === 'paid');
+                itemClaimers.every((claimer) => isClaimLockedParticipant(claimer));
 
               if (isItemSettled) {
                 return (
@@ -2151,20 +2271,20 @@ export default function ReceiptDetailScreen() {
                 <View style={s.assignParticipantList}>
                   {participants.map(p => {
                     const assignedClaim = assigningItem
-                      ? claims.find(c => c.item_id === assigningItem.key && c.participant_id === p.id)
+                      ? assignmentDraftClaims.find(c => c.participant_id === p.id)
                       : undefined;
                     const isAssigned = Boolean(assignedClaim);
                     const itemQuantity = assigningItem ? parseQuantityInput(assigningItem.quantity) : 1;
                     const claimedByOthers = assigningItem && assignedClaim
-                      ? claims
-                          .filter(c => c.item_id === assigningItem.key && c.id !== assignedClaim.id)
+                      ? assignmentDraftClaims
+                          .filter(c => c.participant_id !== assignedClaim.participant_id)
                           .reduce((sum, claim) => sum + Number(claim.portion || 0), 0)
                       : 0;
                     const maxAssignedPortion = Math.max(0, itemQuantity - claimedByOthers);
-                    const participantIsPaid = p.payment_status === 'paid';
+                    const participantClaimLocked = isClaimLockedParticipant(p);
                     const canAdjustClaim =
                       Boolean(assignedClaim) &&
-                      !participantIsPaid &&
+                      !participantClaimLocked &&
                       !isUpdatingClaim &&
                       itemQuantity > 1;
                     const canIncreaseClaim =
@@ -2200,7 +2320,7 @@ export default function ReceiptDetailScreen() {
                                   {itemQuantity > 1 ? `×${formatQuantity(Number(assignedClaim.portion || 0))} · ` : ''}
                                   {formatCurrency(assignedClaim.amount_cents / 100)}
                                 </Text>
-                                {!participantIsPaid ? (
+                                {!participantClaimLocked ? (
                                   <Pressable
                                     onPress={(event) => {
                                       event.stopPropagation();
@@ -2222,10 +2342,10 @@ export default function ReceiptDetailScreen() {
                               onPress={() => handleStepperPress(Number(assignedClaim.portion || 0) - 1)}
                               style={({ pressed }) => [
                                 s.assignQuantityButton,
-                                participantIsPaid && s.buttonDisabled,
+                                participantClaimLocked && s.buttonDisabled,
                                 pressed && s.pressed,
                               ]}
-                              disabled={participantIsPaid || isUpdatingClaim}
+                              disabled={participantClaimLocked || isUpdatingClaim}
                               hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                             >
                               <Text style={s.assignQuantityButtonText}>-</Text>
@@ -2275,10 +2395,11 @@ export default function ReceiptDetailScreen() {
             })()}
 
             <Pressable
-              style={({ pressed }) => [s.assignDoneButton, pressed && s.ctaPressed]}
-              onPress={closeAssignmentModal}
+              style={({ pressed }) => [s.assignDoneButton, isUpdatingClaim && s.buttonDisabled, pressed && s.ctaPressed]}
+              onPress={handleAssignDraftClaims}
+              disabled={isUpdatingClaim}
             >
-              <Text style={s.assignDoneButtonText}>Done</Text>
+              <Text style={s.assignDoneButtonText}>{isUpdatingClaim ? 'Saving...' : 'Save'}</Text>
             </Pressable>
           </Pressable>
         </Pressable>
@@ -2297,7 +2418,7 @@ export default function ReceiptDetailScreen() {
         >
           <Pressable style={s.coverModalContent} onPress={(event) => event.stopPropagation()}>
             {(() => {
-              const claim = claims.find(itemClaim => itemClaim.id === assignedCoverEditor?.claimId);
+              const claim = assignmentDraftClaims.find(itemClaim => itemClaim.participant_id === assignedCoverEditor?.participantId);
               const participant = claim ? participants.find(p => p.id === claim.participant_id) : undefined;
               const editorItem = assignedCoverEditor?.item;
               if (!claim || !editorItem) return null;
@@ -2305,8 +2426,8 @@ export default function ReceiptDetailScreen() {
               const itemPrice = dollarsToCents(parseCurrencyInput(editorItem.price));
               const itemQuantity = parseQuantityInput(editorItem.quantity);
               const selectedValueCents = calculateClaimAmountCents(itemPrice, itemQuantity, Number(claim.portion || 0));
-              const otherClaimedAmount = claims
-                .filter(itemClaim => itemClaim.item_id === editorItem.key && itemClaim.id !== claim.id)
+              const otherClaimedAmount = assignmentDraftClaims
+                .filter(itemClaim => itemClaim.participant_id !== claim.participant_id)
                 .reduce((sum, itemClaim) => sum + itemClaim.amount_cents, 0);
               const maxAmountCents = Math.max(0, itemPrice - otherClaimedAmount);
               const options = [
@@ -2336,20 +2457,20 @@ export default function ReceiptDetailScreen() {
                   </Text>
                   <View style={s.coverOptionGrid}>
                     {options.map(option => {
-                      const amount = Math.min(option.amount, maxAmountCents);
+                      const isUnavailable = option.amount <= 0 || option.amount > maxAmountCents;
                       return (
                         <Pressable
                           key={option.label}
                           style={({ pressed }) => [
                             s.coverOptionButton,
-                            amount <= 0 && s.buttonDisabled,
+                            isUnavailable && s.buttonDisabled,
                             pressed && s.pressed,
                           ]}
-                          onPress={() => void handleUpdateAssignedCoverAmount(claim, amount)}
-                          disabled={amount <= 0 || isUpdatingClaim}
+                          onPress={() => void handleUpdateAssignedCoverAmount(claim, option.amount)}
+                          disabled={isUnavailable || isUpdatingClaim}
                         >
                           <Text style={s.coverOptionLabel}>{option.label}</Text>
-                          <Text style={s.coverOptionAmount}>{formatCurrency(amount / 100)}</Text>
+                          <Text style={s.coverOptionAmount}>{formatCurrency(option.amount / 100)}</Text>
                         </Pressable>
                       );
                     })}
@@ -2690,12 +2811,19 @@ const s = StyleSheet.create({
   claimerBadge: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: 'rgba(255, 255, 255, 0.04)',
     paddingHorizontal: 8,
     paddingVertical: 3,
     borderRadius: 4,
     borderLeftWidth: 3,
     gap: 4,
+  },
+  claimerBadgeClaimed: {
+    backgroundColor: 'rgba(251, 191, 36, 0.07)',
+    borderLeftColor: '#FBBF24',
+  },
+  claimerBadgePaid: {
+    backgroundColor: 'rgba(52, 211, 153, 0.08)',
+    borderLeftColor: '#34D399',
   },
   claimerEmoji: {
     fontSize: 12,
@@ -3040,7 +3168,7 @@ const s = StyleSheet.create({
     width: '100%',
     flex: 1,
     borderRadius: 12,
-    backgroundColor: colors.surfaceBorder,
+    backgroundColor: 'transparent',
     overflow: 'hidden',
   },
   modalCloseButton: {

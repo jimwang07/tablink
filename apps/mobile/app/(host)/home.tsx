@@ -4,6 +4,7 @@ import { Link, useRouter, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import Animated, { FadeInDown } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { SkeletonBlock, SkeletonPulse } from '@/src/components/Skeleton';
 import { ShareTablinkSheet } from '@/src/components/ShareTablinkSheet';
 import { colors } from '@/src/theme';
@@ -28,6 +29,7 @@ const SORT_LABEL: Record<SortMode, string> = {
   status: 'Status',
 };
 const MENU_ACTION_DISMISS_FALLBACK_MS = 400;
+const PAYMENT_SETUP_DISMISSED_PREFIX = 'tablink-payment-setup-dismissed';
 
 type ProgressData = {
   unclaimed: number;
@@ -116,18 +118,52 @@ function calculateProgress(receipt: ReceiptWithDetails): ProgressData {
   };
 }
 
-function getEffectiveStatus(receipt: ReceiptWithDetails, progress: ProgressData): ReceiptStatus {
-  if (receipt.status === 'settled') return 'settled';
+function isReceiptFullyClaimed(receipt: ReceiptWithDetails): boolean {
+  const items = receipt.receipt_items || [];
+  if (items.length === 0) return false;
+
+  return items.every((item) => {
+    const claimedAmountCents = (item.item_claims || []).reduce(
+      (sum, claim) => sum + claim.amount_cents,
+      0
+    );
+    return item.price_cents > 0 && claimedAmountCents >= item.price_cents;
+  });
+}
+
+function isReceiptFullySettled(receipt: ReceiptWithDetails): boolean {
+  if (!isReceiptFullyClaimed(receipt)) return false;
+
+  const participantPaymentStatus = new Map(
+    (receipt.receipt_participants || []).map((participant) => [
+      participant.id,
+      participant.payment_status,
+    ])
+  );
+
+  return (receipt.receipt_items || []).every((item) =>
+    (item.item_claims || []).every(
+      (claim) => participantPaymentStatus.get(claim.participant_id) === 'paid'
+    )
+  );
+}
+
+function getEffectiveStatus(receipt: ReceiptWithDetails): ReceiptStatus {
   if (receipt.status === 'draft') return 'draft';
-  if (progress.total > 0 && progress.unclaimed === 0 && progress.claimed === 0 && progress.paid > 0) {
+
+  if (isReceiptFullySettled(receipt)) {
     return 'settled';
   }
+
+  if (receipt.status === 'settled') {
+    return isReceiptFullyClaimed(receipt) ? 'fully_claimed' : 'partially_claimed';
+  }
+
   return receipt.status;
 }
 
 function isReceiptCompleted(receipt: ReceiptWithDetails): boolean {
-  const progress = calculateProgress(receipt);
-  return getEffectiveStatus(receipt, progress) === 'settled';
+  return getEffectiveStatus(receipt) === 'settled';
 }
 
 /* ── Components ────────────────────────────────────────────── */
@@ -215,7 +251,7 @@ function ReceiptCard({
   const btnRef = useRef<View>(null);
   const progress = useMemo(() => calculateProgress(receipt), [receipt]);
   const showProgress = receipt.status !== 'draft' && progress.total > 0;
-  const effectiveStatus = useMemo(() => getEffectiveStatus(receipt, progress), [receipt, progress]);
+  const effectiveStatus = useMemo(() => getEffectiveStatus(receipt), [receipt]);
   const accent = STATUS_COLOR[effectiveStatus] || STATUS_COLOR.draft;
 
   const handleMenuPress = useCallback(() => {
@@ -286,7 +322,7 @@ function EmptyState({ tab }: { tab: Tab }) {
       </Text>
       <Text style={s.emptyDescription}>
         {isActive
-          ? 'Scan or upload a receipt to start splitting with friends.'
+          ? 'Scan or upload a receipt, then share a Tablink for friends to claim their items.'
           : 'Fully paid receipts will appear here.'}
       </Text>
       {isActive && (
@@ -298,6 +334,47 @@ function EmptyState({ tab }: { tab: Tab }) {
           </Pressable>
         </Link>
       )}
+    </Animated.View>
+  );
+}
+
+function PaymentSetupPrompt({
+  onSetUpProfile,
+  onSkip,
+}: {
+  onSetUpProfile: () => void;
+  onSkip: () => void;
+}) {
+  return (
+    <Animated.View entering={FadeInDown.duration(420)} style={s.paymentSetupContainer}>
+      <View style={s.paymentSetupCard}>
+        <View style={s.paymentSetupCopy}>
+          <View style={s.paymentSetupTitleRow}>
+            <View style={s.paymentSetupIcon}>
+              <Ionicons name="wallet-outline" size={18} color={colors.primary} />
+            </View>
+            <Text style={s.paymentSetupTitle}>Set up how friends see and pay you</Text>
+          </View>
+          <Text style={s.paymentSetupBody}>
+            Add your name and one payment option so guests know who to pay back.
+          </Text>
+        </View>
+        <View style={s.paymentSetupActions}>
+          <Pressable
+            style={({ pressed }) => [s.paymentSetupPrimaryButton, pressed && s.paymentSetupButtonPressed]}
+            onPress={onSetUpProfile}
+          >
+            <Text style={s.paymentSetupPrimaryText}>Set up profile</Text>
+            <Ionicons name="arrow-forward" size={14} color="#04110D" />
+          </Pressable>
+          <Pressable
+            style={({ pressed }) => [s.paymentSetupSecondaryButton, pressed && s.paymentSetupButtonPressed]}
+            onPress={onSkip}
+          >
+            <Text style={s.paymentSetupSecondaryText}>Skip for now</Text>
+          </Pressable>
+        </View>
+      </View>
     </Animated.View>
   );
 }
@@ -329,7 +406,7 @@ function OwedSummary({ receipts }: { receipts: ReceiptWithDetails[] }) {
 
     for (const r of receipts) {
       const progress = calculateProgress(r);
-      const effectiveStatus = getEffectiveStatus(r, progress);
+      const effectiveStatus = getEffectiveStatus(r);
       if (effectiveStatus === 'draft' || effectiveStatus === 'settled') continue;
       if (progress.claimed > 0) {
         totalOwed += progress.claimed;
@@ -458,6 +535,8 @@ export default function HomeScreen() {
     url: string;
     merchantName: string | null;
   } | null>(null);
+  const [hasPaymentMethods, setHasPaymentMethods] = useState<boolean | null>(null);
+  const [paymentSetupDismissed, setPaymentSetupDismissed] = useState(true);
   const [pendingMenuAction, setPendingMenuAction] = useState<(() => void) | null>(null);
   const didHandleMenuDismissRef = useRef(false);
 
@@ -467,6 +546,39 @@ export default function HomeScreen() {
       subscribe();
       return unsubscribe;
     }, [refresh, subscribe, unsubscribe])
+  );
+
+  const loadPaymentSetupStatus = useCallback(async () => {
+    const userId = session?.user?.id;
+    if (!userId) {
+      setHasPaymentMethods(null);
+      setPaymentSetupDismissed(true);
+      return;
+    }
+
+    const storageKey = `${PAYMENT_SETUP_DISMISSED_PREFIX}:${userId}`;
+    const [dismissedValue, profileResult] = await Promise.all([
+      AsyncStorage.getItem(storageKey),
+      getSupabaseClient()
+        .from('user_profiles')
+        .select('venmo_handle, cashapp_handle, paypal_handle')
+        .eq('user_id', userId)
+        .maybeSingle(),
+    ]);
+
+    const profile = profileResult.data;
+    setPaymentSetupDismissed(dismissedValue === '1');
+    setHasPaymentMethods(Boolean(
+      profile?.venmo_handle ||
+      profile?.cashapp_handle ||
+      profile?.paypal_handle
+    ));
+  }, [session?.user?.id]);
+
+  useFocusEffect(
+    useCallback(() => {
+      void loadPaymentSetupStatus();
+    }, [loadPaymentSetupStatus])
   );
 
   const activeReceipts = useMemo(
@@ -650,6 +762,18 @@ export default function HomeScreen() {
     action?.();
   }, [pendingMenuAction]);
 
+  const handleSkipPaymentSetup = useCallback(async () => {
+    const userId = session?.user?.id;
+    if (!userId) return;
+
+    await AsyncStorage.setItem(`${PAYMENT_SETUP_DISMISSED_PREFIX}:${userId}`, '1');
+    setPaymentSetupDismissed(true);
+  }, [session?.user?.id]);
+
+  const handleSetUpProfile = useCallback(() => {
+    router.push('/(host)/settings');
+  }, [router]);
+
   useEffect(() => {
     if (!menuState || menuState.visible) return;
 
@@ -663,7 +787,7 @@ export default function HomeScreen() {
     return [
       {
         key: 'share',
-        label: 'Share Tablink',
+        label: 'Share',
         icon: 'link-outline',
         onPress: () => handleMenuShare(receipt),
       },
@@ -708,6 +832,13 @@ export default function HomeScreen() {
 
         {/* Summary (only when money is owed) */}
         <OwedSummary receipts={yourReceipts} />
+
+        {hasPaymentMethods === false && !paymentSetupDismissed ? (
+          <PaymentSetupPrompt
+            onSetUpProfile={handleSetUpProfile}
+            onSkip={handleSkipPaymentSetup}
+          />
+        ) : null}
 
         {/* Tabs */}
         <View style={s.tabBar}>
@@ -760,7 +891,7 @@ export default function HomeScreen() {
         tablinkUrl={shareSheetState?.url ?? null}
         merchantName={shareSheetState?.merchantName}
         onClose={() => setShareSheetState(null)}
-        onShared={() => {
+        onDone={() => {
           console.log('[Home] Shared successfully');
           setShareSheetState(null);
         }}
@@ -856,6 +987,95 @@ const s = StyleSheet.create({
     color: colors.muted,
     fontSize: 13,
     marginTop: 4,
+  },
+
+  /* Payment setup */
+  paymentSetupContainer: {
+    paddingHorizontal: 24,
+    paddingTop: 18,
+    paddingBottom: 2,
+  },
+  paymentSetupCard: {
+    backgroundColor: 'rgba(52, 211, 153, 0.055)',
+    borderRadius: 16,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(52, 211, 153, 0.14)',
+  },
+  paymentSetupIcon: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(52, 211, 153, 0.10)',
+    borderWidth: 1,
+    borderColor: 'rgba(52, 211, 153, 0.18)',
+    flexShrink: 0,
+  },
+  paymentSetupCopy: {
+    gap: 8,
+  },
+  paymentSetupTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  paymentSetupTitle: {
+    flex: 1,
+    color: colors.text,
+    fontSize: 17,
+    fontWeight: '800',
+    letterSpacing: -0.2,
+  },
+  paymentSetupBody: {
+    color: colors.textSecondary,
+    fontSize: 13,
+    lineHeight: 19,
+  },
+  paymentSetupActions: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 16,
+  },
+  paymentSetupPrimaryButton: {
+    flex: 1,
+    minHeight: 44,
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    backgroundColor: colors.primary,
+  },
+  paymentSetupPrimaryText: {
+    color: '#04110D',
+    fontSize: 12,
+    fontWeight: '800',
+    letterSpacing: 0.45,
+    textTransform: 'uppercase',
+  },
+  paymentSetupSecondaryButton: {
+    minHeight: 44,
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255, 255, 255, 0.035)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.08)',
+  },
+  paymentSetupSecondaryText: {
+    color: colors.textSecondary,
+    fontSize: 12,
+    fontWeight: '700',
+    letterSpacing: 0.35,
+    textTransform: 'uppercase',
+  },
+  paymentSetupButtonPressed: {
+    opacity: 0.78,
+    transform: [{ scale: 0.99 }],
   },
 
   /* Tabs */

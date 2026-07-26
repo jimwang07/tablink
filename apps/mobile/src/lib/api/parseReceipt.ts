@@ -37,7 +37,7 @@ export const PARSE_OPTION_CONFIG: Record<ParseOptionName, ParseOptionConfig> = {
 };
 
 const PARSE_FUNCTION_STORAGE_KEY = 'debug.parse_function_override';
-const DEFAULT_PARSE_FUNCTION: ParseFunctionName = 'groq-llama-4-scout';
+const DEFAULT_PARSE_FUNCTION: ParseFunctionName = 'gemini';
 
 function normalizeParseOption(value: string): ParseOptionName | null {
   if ((PARSE_OPTIONS as readonly string[]).includes(value)) {

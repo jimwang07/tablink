@@ -22,6 +22,7 @@ import { useAuth } from '@/src/hooks/useAuth';
 import {
   ActivityItem,
   fetchRecentActivity,
+  markActivitySeen,
   subscribeToActivity,
 } from '@/src/services/activityService';
 
@@ -31,6 +32,7 @@ const TYPE_COLOR: Record<string, string> = {
   claim: '#FBBF24',
   payment: '#34D399',
   join: '#60A5FA',
+  settled: '#34D399',
 };
 
 const TYPE_ICON: Record<string, keyof typeof Ionicons.glyphMap> = {
@@ -130,6 +132,8 @@ function ActivityItemRow({
       ? `claimed "${item.itemName}"`
       : item.type === 'payment'
       ? `paid ${item.amountCents ? formatCents(item.amountCents) : ''}${item.paymentMethod ? ` via ${item.paymentMethod}` : ''}`
+      : item.type === 'settled'
+      ? 'is fully settled!'
       : `joined the receipt`;
 
   return (
@@ -140,7 +144,11 @@ function ActivityItemRow({
     >
       <View style={s.activityMain}>
         <View style={[s.iconContainer, { backgroundColor: `${accent}10` }]}>
-          <Ionicons name={icon} size={16} color={accent} />
+          {item.type === 'settled' ? (
+            <Text style={s.activityEmoji}>🎉</Text>
+          ) : (
+            <Ionicons name={icon} size={16} color={accent} />
+          )}
         </View>
         <View style={s.activityContent}>
           <Text style={s.activityText}>
@@ -209,6 +217,7 @@ export default function ActivityScreen() {
       loadActivity();
 
       if (!user?.id) return;
+      void markActivitySeen(user.id);
 
       const addActivity = (activity: ActivityItem) => {
         setActivities((prev) => {
@@ -221,6 +230,7 @@ export default function ActivityScreen() {
         onClaim: addActivity,
         onJoin: addActivity,
         onPayment: addActivity,
+        onSettled: addActivity,
       });
 
       return unsubscribe;
@@ -350,6 +360,10 @@ const s = StyleSheet.create({
     alignItems: 'center',
     flexShrink: 0,
     marginRight: 18,
+  },
+  activityEmoji: {
+    fontSize: 16,
+    lineHeight: 18,
   },
   activityContent: {
     flex: 1,

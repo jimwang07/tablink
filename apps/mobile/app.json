@@ -1,18 +1,21 @@
 {
   "expo": {
-    "name": "tablink",
+    "name": "Tablink",
     "slug": "tablink",
-    "version": "1.0.0",
+    "version": "1.1.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "tablink",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "ios": {
-      "supportsTablet": true,
+      "supportsTablet": false,
+      "usesAppleSignIn": true,
       "bundleIdentifier": "com.anonymous.tablink",
       "infoPlist": {
-        "ITSAppUsesNonExemptEncryption": false
+        "ITSAppUsesNonExemptEncryption": false,
+        "NSCameraUsageDescription": "Tablink uses the camera to take receipt photos so it can itemize them for splitting, for example scanning a dinner receipt.",
+        "NSPhotoLibraryUsageDescription": "Tablink uses your photo library to let you choose receipt images to itemize for splitting, for example uploading a saved grocery receipt."
       }
     },
     "android": {
